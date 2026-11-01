@@ -1973,6 +1973,37 @@ namespace Gallop.RenderPipeline
                         break;
                 }
 
+                // "Diffusion Limit": misma pasada SIN Diffusion (Bloom/DOF/PostFilm intactos) en una RT
+                // aparte; CharaPostEffectLimiterApplyPass la usa en los pixeles de los cantantes.
+                if ((int)renderPassEvent <= 550 && CharaPostEffectLimiter.WantsNoDiffusion)
+                {
+                    var mode = param.UseDofDiffusionBloomType;
+                    bool hasDiffusion =
+                        mode == DofDiffusionBloomOverlayParam.DofDiffusionBloomType.DiffusionBloom ||
+                        mode == DofDiffusionBloomOverlayParam.DofDiffusionBloomType.DiffusionDofBloom;
+                    RenderTextureHandle noDiffusion = RenderTextureHandle.Make(
+                        CharaPostEffectLimiter.NoDiffusionId, width, height);
+                    Allocate(cmd, noDiffusion, width, height);
+                    if (hasDiffusion)
+                    {
+                        // Copia del parametro: las sub-pasadas modifican overlays por ref.
+                        Parameter noDiffusionParam = param;
+                        noDiffusionParam.IsEnableDiffusion = false;
+                        cmd.SetGlobalTexture(ShaderManager.GetPropertyId(ShaderManager.PropertyId._Bloom),
+                            Texture2D.blackTexture);
+                        if (mode == DofDiffusionBloomOverlayParam.DofDiffusionBloomType.DiffusionDofBloom)
+                            OnRenderImageDofBloom(ref context, cmd, ref noDiffusionParam, source, noDiffusion);
+                        else
+                            OnRenderImageFastBloom(ref context, cmd, ref noDiffusionParam, source, noDiffusion);
+                    }
+                    else
+                    {
+                        // Este frame no hay Diffusion: la version "sin Diffusion" es la misma imagen.
+                        Blit(cmd, destination, noDiffusion, null, -1);
+                    }
+                    CharaPostEffectLimiter.NoDiffusionReady = true;
+                }
+
                 // Official behavior: passes at or before 550 hand the temporary RT to
                 // PostImageEffectFeature; later passes write directly to camera color.
                 if ((int)renderPassEvent <= 550)

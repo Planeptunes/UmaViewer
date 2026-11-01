@@ -45,6 +45,15 @@ public class LiveRecordPanel : MonoBehaviour
     private Segmented _antiAliasing;
     private Segmented _quality;
     private ToggleSwitch _postProcess, _lyrics;
+
+    //(Post effects) Interruptor ON/OFF de la cadena de imagen + botón con la lista de los 16 efectos.
+    private Button _postEffectsButton;
+    private Text _postEffectsCaption;
+    private GameObject _postEffectsPopup;
+    private GameObject _postEffectsBlocker;
+    private readonly List<ToggleSwitch> _postEffectRows = new List<ToggleSwitch>();
+    //Ids apagados en ESTA grabación (índices en el mismo orden que PostEffectSelection.All).
+    private readonly HashSet<string> _postEffectsOff = new HashSet<string>(StringComparer.Ordinal);
     private Text _status;
     private Text _hint;
     private Text _maxNotice;
@@ -174,7 +183,7 @@ public class LiveRecordPanel : MonoBehaviour
         var baked = FindScenePanel();
         if (baked != null)
         {
-            baked._settings = defaults != null ? defaults.Clone() : new LiveRecordSettings();
+            baked._settings = LoadLastUsed(defaults);
             baked._onAccept = onAccept;
             baked._songLabel = songLabel;
 
@@ -199,7 +208,7 @@ public class LiveRecordPanel : MonoBehaviour
         var go = new GameObject("LiveRecordPanel",
             typeof(RectTransform), typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
         var panel = go.AddComponent<LiveRecordPanel>();
-        panel._settings = defaults != null ? defaults.Clone() : new LiveRecordSettings();
+        panel._settings = LoadLastUsed(defaults);
         panel._onAccept = onAccept;
         panel._songLabel = songLabel;
 
@@ -214,6 +223,17 @@ public class LiveRecordPanel : MonoBehaviour
 
         Instance = panel;
         return panel;
+    }
+
+    //El menú arranca con los valores de la última grabación ACEPTADA (Config.RecordSettings), para no
+    //tener que rehacerlos cada vez. Cancelar no cambia nada: sólo aceptar guarda. 'defaults' (si
+    //viene) manda sobre lo guardado.
+    private static LiveRecordSettings LoadLastUsed(LiveRecordSettings defaults)
+    {
+        if (defaults != null) return defaults.Clone();
+        var config = Config.Instance;
+        if (config != null && config.RecordSettings != null) return config.RecordSettings.Clone();
+        return new LiveRecordSettings();
     }
 
     //El panel vive en la escena (Version2.unity) como objeto inactivo; aquí se busca para reutilizarlo.
@@ -314,6 +334,7 @@ public class LiveRecordPanel : MonoBehaviour
         _quality = BindSegmented("Quality_", QualityValues, () => RefreshHint());
         _postProcess = BindToggle("PostToggle", _settings.postProcess);
         _lyrics = BindToggle("LyricsToggle", _settings.lyrics);
+        CreatePostEffectsUI();
 
         _start = BindInput(win, "StartInput", _settings.startTime.ToString("0.##", CultureInfo.InvariantCulture));
         _end = BindInput(win, "EndInput", _settings.endTime.ToString("0.##", CultureInfo.InvariantCulture));
@@ -441,10 +462,243 @@ public class LiveRecordPanel : MonoBehaviour
         return toggle;
     }
 
+    //======================================================================
+    // (POST EFFECTS) Lista de los 16 postefectos DE LA GRABACIÓN
+    //
+    // El interruptor ON/OFF "Post effects" sigue siendo la maestra de la cadena de imagen. A su
+    // derecha, un botón con el recuento abre un panel flotante con una fila por efecto: la misma
+    // mecánica que el panel de ajustes del live (maestra + interruptor propio), pero con la estética
+    // de este menú y una selección PROPIA de la grabación, que no toca la del live.
+    //
+    // El panel flotante se crea por código (tanto con el panel horneado como con el de respaldo), así
+    // que no hay que tocar la escena ni desplazar las filas de la ventana: el botón va en la misma
+    // línea del interruptor y la lista se pinta FUERA de la ventana, a su derecha.
+    //======================================================================
+
+    private void CreatePostEffectsUI()
+    {
+        if (_panel == null) return;
+
+        if (_postEffectsPopup == null)
+        {
+            //Los objetos creados por código dejados por una recarga de scripts en Play Mode sobreviven
+            //en la escena: se borran para no duplicar la UI al volver a enganchar el panel.
+            DestroyNamed(transform, "PostEffectsPopup");
+            DestroyNamed(transform, "PostEffectsBlocker");
+            DestroyNamed(_panel, "PostEffectsButton");
+            BuildPostEffectsUI();
+        }
+        //El interruptor se reconstruye en cada apertura (BindToggle quita sus listeners), así que el
+        //aviso de "maestra apagada" se vuelve a enganchar aquí.
+        var masterButton = _postProcess != null && _postProcess.Background != null
+            ? _postProcess.Background.GetComponent<Button>() : null;
+        if (masterButton != null)
+            masterButton.onClick.AddListener(delegate { ApplyPostEffectRowsInteractable(); });
+
+        LoadPostEffects();
+        ClosePostEffectsPopup();
+    }
+
+    private static void DestroyNamed(Transform parent, string name)
+    {
+        if (parent == null) return;
+        var child = parent.Find(name);
+        if (child == null) return;
+        if (Application.isPlaying) Destroy(child.gameObject);
+        else DestroyImmediate(child.gameObject);
+    }
+
+    private void BuildPostEffectsUI()
+    {
+        var ids = Gallop.RenderPipeline.PostEffectSelection.All;
+
+        //Botón del recuento, en la misma línea del interruptor (a su derecha).
+        var source = _panel.Find("PostToggle") as RectTransform;
+        Vector2 sourcePosition = source != null ? source.anchoredPosition : new Vector2(ControlX, 75f);
+        float sourceWidth = source != null ? source.sizeDelta.x : 104f;
+        const float buttonWidth = 180f;
+        const float buttonHeight = 34f;
+
+        //Se construye a mano (no con AddButton) para quedarse con las referencias del botón y de su
+        //texto sin buscarlas por nombre: así no se confunde con un resto de una recarga de scripts.
+        var buttonRect = NewRect("PostEffectsButton", _panel);
+        buttonRect.anchorMin = buttonRect.anchorMax = new Vector2(0.5f, 0.5f);
+        buttonRect.pivot = new Vector2(0.5f, 0.5f);
+        buttonRect.sizeDelta = new Vector2(buttonWidth, buttonHeight);
+        buttonRect.anchoredPosition = new Vector2(
+            sourcePosition.x + sourceWidth * 0.5f + 12f + buttonWidth * 0.5f, sourcePosition.y);
+
+        var buttonImage = buttonRect.gameObject.AddComponent<Image>();
+        buttonImage.color = new Color(0.20f, 0.30f, 0.45f, 1f);
+        _postEffectsButton = buttonRect.gameObject.AddComponent<Button>();
+        _postEffectsButton.targetGraphic = buttonImage;
+        _postEffectsCaption = AddText(buttonRect, "Text", Vector2.zero, new Vector2(buttonWidth, buttonHeight),
+            20, Color.white, TextAnchor.MiddleCenter);
+        _postEffectsButton.onClick.AddListener(TogglePostEffectsPopup);
+        //Medidas: una fila por efecto, más una cabecera.
+        const float popupWidth = 420f;
+        const float headerHeight = 42f;
+        const float rowStep = 36f;
+        float popupHeight = headerHeight + rowStep * ids.Length + 12f;
+
+        //A la derecha de la ventana; si no cupiera en pantalla, a la izquierda.
+        float halfPanel = _panel.sizeDelta.x * 0.5f;
+        float popupX = halfPanel + 12f + popupWidth * 0.5f;
+        var canvasRect = transform as RectTransform;
+        float halfScreen = canvasRect != null && canvasRect.rect.width > 1f
+            ? canvasRect.rect.width * 0.5f : 960f;
+        if (popupX + popupWidth * 0.5f > halfScreen - 8f) popupX = -(halfPanel + 12f + popupWidth * 0.5f);
+
+        //Capa transparente a pantalla completa: cierra la lista al clicar fuera.
+        var blocker = NewRect("PostEffectsBlocker", transform);
+        Stretch(blocker);
+        var blockerImage = blocker.gameObject.AddComponent<Image>();
+        blockerImage.color = new Color(0f, 0f, 0f, 0f);
+        blockerImage.raycastTarget = true;
+        var blockerButton = blocker.gameObject.AddComponent<Button>();
+        blockerButton.transition = Selectable.Transition.None;
+        blockerButton.onClick.AddListener(ClosePostEffectsPopup);
+        _postEffectsBlocker = blocker.gameObject;
+        blocker.gameObject.SetActive(false);
+
+        //Ventana flotante con las 16 filas.
+        var popup = NewRect("PostEffectsPopup", transform);
+        popup.anchorMin = popup.anchorMax = new Vector2(0.5f, 0.5f);
+        popup.pivot = new Vector2(0.5f, 0.5f);
+        popup.sizeDelta = new Vector2(popupWidth, popupHeight);
+        popup.anchoredPosition = new Vector2(popupX, 0f);
+        var popupImage = popup.gameObject.AddComponent<Image>();
+        popupImage.color = new Color(0.09f, 0.10f, 0.12f, 0.99f);
+        _postEffectsPopup = popup.gameObject;
+
+        var title = AddText(popup, "Title", new Vector2(0f, popupHeight * 0.5f - headerHeight * 0.5f),
+            new Vector2(popupWidth - 28f, 30f), 20, new Color(1f, 0.87f, 0.35f, 1f), TextAnchor.MiddleCenter);
+        title.text = "Post effects in the recording";
+
+        float top = popupHeight * 0.5f - headerHeight;
+        for (int i = 0; i < ids.Length; i++)
+        {
+            float y = top - rowStep * 0.5f - i * rowStep;
+
+            var label = AddText(popup, "Effect " + ids[i], new Vector2(-popupWidth * 0.5f + 16f + 125f, y),
+                new Vector2(250f, 30f), 20, new Color(0.85f, 0.88f, 0.92f, 1f), TextAnchor.MiddleLeft);
+            label.text = Gallop.RenderPipeline.PostEffectSelection.Label(ids[i]);
+
+            var toggle = AddToggle(popup, "Toggle " + ids[i],
+                new Vector2(popupWidth * 0.5f - 16f - 52f, y), true);
+
+            int index = i;
+            var rowButton = toggle != null && toggle.Background != null
+                ? toggle.Background.GetComponent<Button>() : null;
+            if (rowButton != null)
+                rowButton.onClick.AddListener(delegate { OnPostEffectRowChanged(index); });
+
+            _postEffectRows.Add(toggle);
+        }
+
+        popup.gameObject.SetActive(false);
+    }
+
+    //Un tick ha cambiado: se guarda en la lista de esta grabación y se repinta el recuento.
+    private void OnPostEffectRowChanged(int index)
+    {
+        var ids = Gallop.RenderPipeline.PostEffectSelection.All;
+        if (index < 0 || index >= ids.Length || index >= _postEffectRows.Count) return;
+        var row = _postEffectRows[index];
+        if (row == null) return;
+
+        string id = ids[index].ToString();
+        if (row.IsOn) _postEffectsOff.Remove(id);
+        else _postEffectsOff.Add(id);
+        ApplyPostEffectRows();
+    }
+
+    //Carga la selección guardada de esta grabación (al abrir el menú) y la pinta en las filas.
+    private void LoadPostEffects()
+    {
+        _postEffectsOff.Clear();
+        if (_settings != null && _settings.postEffectsDisabled != null)
+        {
+            for (int i = 0; i < _settings.postEffectsDisabled.Count; i++)
+            {
+                string id = _settings.postEffectsDisabled[i];
+                if (!string.IsNullOrEmpty(id)) _postEffectsOff.Add(id);
+            }
+        }
+        ApplyPostEffectRows();
+    }
+
+    //Pinta las filas con lo que diga _postEffectsOff (no recarga nada: un clic se respeta).
+    private void ApplyPostEffectRows()
+    {
+        var ids = Gallop.RenderPipeline.PostEffectSelection.All;
+        for (int i = 0; i < _postEffectRows.Count && i < ids.Length; i++)
+        {
+            var row = _postEffectRows[i];
+            if (row == null) continue;
+            row.IsOn = !_postEffectsOff.Contains(ids[i].ToString());
+            row.Apply();
+        }
+
+        ApplyPostEffectRowsInteractable();
+        UpdatePostEffectsCaption();
+    }
+
+    //Con la maestra apagada ningún efecto se dibuja: las filas siguen visibles pero no editables,
+    //igual que en el panel del live (el botón de la lista sí se puede abrir).
+    private void ApplyPostEffectRowsInteractable()
+    {
+        bool master = _postProcess == null || _postProcess.IsOn;
+        for (int i = 0; i < _postEffectRows.Count; i++)
+        {
+            var row = _postEffectRows[i];
+            if (row == null) continue;
+
+            var button = row.Background != null ? row.Background.GetComponent<Button>() : null;
+            if (button != null) button.interactable = master;
+            if (row.Label != null) row.Label.color = new Color(1f, 1f, 1f, master ? 1f : 0.4f);
+        }
+    }
+
+    private void UpdatePostEffectsCaption()
+    {
+        if (_postEffectsCaption == null) return;
+        int total = _postEffectRows.Count;
+        int on = 0;
+        for (int i = 0; i < _postEffectRows.Count; i++)
+            if (_postEffectRows[i] != null && _postEffectRows[i].IsOn) on++;
+        _postEffectsCaption.text = on + "/" + total;
+    }
+
+    private void TogglePostEffectsPopup()
+    {
+        if (_postEffectsPopup == null) return;
+        if (_postEffectsPopup.activeSelf) ClosePostEffectsPopup();
+        else OpenPostEffectsPopup();
+    }
+
+    private void OpenPostEffectsPopup()
+    {
+        if (_postEffectsPopup == null) return;
+        if (_postEffectsBlocker != null) _postEffectsBlocker.SetActive(true);
+        _postEffectsPopup.SetActive(true);
+        _postEffectsPopup.transform.SetAsLastSibling();
+    }
+
+    private void ClosePostEffectsPopup()
+    {
+        if (_postEffectsPopup != null) _postEffectsPopup.SetActive(false);
+        if (_postEffectsBlocker != null) _postEffectsBlocker.SetActive(false);
+    }
+
     //Las listas de los desplegables del panel se crean en un canvas propio a orden 30000, por DEBAJO del
     //panel (32760): aquí se suben para que se vean.
     private void LateUpdate()
     {
+        //La lista de postefectos se cierra con Escape (o clic fuera, vía el blocker).
+        if (_postEffectsPopup != null && _postEffectsPopup.activeSelf && Input.GetKeyDown(KeyCode.Escape))
+            ClosePostEffectsPopup();
+
         for (int i = 0; i < _ownDropdowns.Count; i++)
         {
             var dropdown = _ownDropdowns[i];
@@ -606,6 +860,7 @@ public class LiveRecordPanel : MonoBehaviour
 
         AddLabel("Post effects", y);
         _postProcess = AddToggle(_panel, "PostToggle", new Vector2(ControlX, y), _settings.postProcess);
+        CreatePostEffectsUI();
         y -= step;
 
         AddLabel("Lyrics in video", y);
@@ -1318,6 +1573,7 @@ public class LiveRecordPanel : MonoBehaviour
                 superSamplePercent = _superSample != null ? Mathf.RoundToInt(_superSample.value) : 100,
                 msaa = _antiAliasing != null ? _antiAliasing.Current : 1,
                 postProcess = _postProcess != null && _postProcess.IsOn,
+                postEffectsDisabled = new List<string>(_postEffectsOff),
                 lyrics = _lyrics != null && _lyrics.IsOn,
                 qualityLevel = _quality != null ? _quality.Current : 1,
                 //El nivel Max incluye el máster FFV1 sin pérdida; los demás, no.
@@ -1328,6 +1584,18 @@ public class LiveRecordPanel : MonoBehaviour
                 fileName = _name.text.Trim()
             };
             settings.Validate();
+
+            //Recuerda esta iteración: la próxima vez el menú arranca con estos valores. El tramo no se
+            //guarda (es de la canción: siempre "todo el show" al abrir).
+            var config = Config.Instance;
+            if (config != null)
+            {
+                var lastUsed = settings.Clone();
+                lastUsed.startTime = 0f;
+                lastUsed.endTime = 0f;
+                config.RecordSettings = lastUsed;
+                config.UpdateConfig(false);
+            }
 
             var accept = _onAccept;
             _onAccept = null;

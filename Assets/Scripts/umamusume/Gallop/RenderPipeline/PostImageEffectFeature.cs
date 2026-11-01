@@ -45,6 +45,8 @@ namespace Gallop.RenderPipeline
         private MultiCameraCompositePass _multiCameraCompositePass;
         private MultiCameraFinalCompositePass _multiCameraFinalCompositePass;
         private ProjectorRenderPass _projectorPass;
+        private CharaPostEffectLimiterCapturePass _charaLimiterCapturePass;
+        private CharaPostEffectLimiterApplyPass _charaLimiterApplyPass;
 
         private RenderTextureHandle _sourceRT;
         private List<ScriptableRenderPass> _registerPass;
@@ -146,6 +148,8 @@ namespace Gallop.RenderPipeline
             _multiCameraCompositePass = new MultiCameraCompositePass();
             _multiCameraFinalCompositePass = new MultiCameraFinalCompositePass();
             _projectorPass = new ProjectorRenderPass();
+            _charaLimiterCapturePass = new CharaPostEffectLimiterCapturePass();
+            _charaLimiterApplyPass = new CharaPostEffectLimiterApplyPass();
 
             _registerPass = new List<ScriptableRenderPass>(REGISTER_PASS_SIZE);
 
@@ -330,9 +334,28 @@ namespace Gallop.RenderPipeline
                 _globalFogPass.ConfigureInput(ScriptableRenderPassInput.Depth);
                 _registerPass.Add(_globalFogPass);
             }
+            // Limitadores sobre los cantantes ("Saturation Limit" / "Diffusion Limit"): captura antes de
+            // SunShafts/LightShafts/Bloom/PostFilm. Solo cuando la cadena DOF/Bloom entrega su RT al
+            // feature (evento <= 550).
+            bool charaLimiter = _charaLimiterCapturePass != null && _charaLimiterApplyPass != null &&
+                (dofReady || sunReady || shaftsReady) && (!dofReady || (int)effectEvent <= 550) &&
+                CharaPostEffectLimiter.IsActive;
+            if (charaLimiter)
+            {
+                _charaLimiterCapturePass.Setup(this, (RenderPassEvent)schedule.FirstEvent);
+                _registerPass.Add(_charaLimiterCapturePass);
+            }
             if (sunReady) _registerPass.Add(_sunShaftsPass);
             if (shaftsReady) _registerPass.Add(_indirectLightShaftsPass);
             if (dofReady) _registerPass.Add(_dofDiffusionBloomOverlayPass);
+            // ... y aplicacion justo despues de Bloom/PostFilm.
+            if (charaLimiter)
+            {
+                int applyEvent = System.Math.Max(dofReady ? (int)effectEvent : 0,
+                    (sunReady || shaftsReady) ? (int)RenderPassEvent.BeforeRenderingPostProcessing : 0);
+                _charaLimiterApplyPass.Setup(this, (RenderPassEvent)applyEvent);
+                _registerPass.Add(_charaLimiterApplyPass);
+            }
             // Native GallopImageEffect chain order: DOF/Diffusion/Bloom -> TiltShift -> RadialBlur.
             if (tiltReady)
             {

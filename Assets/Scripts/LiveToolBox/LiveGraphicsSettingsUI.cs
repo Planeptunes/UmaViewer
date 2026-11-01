@@ -66,6 +66,10 @@ public class LiveGraphicsSettingsUI : MonoBehaviour
             });
         }
 
+        // Ticks "Saturation Limit" y "Diffusion Limit": se añaden por codigo al final del listado de post
+        // efectos (clonando el ultimo tick de la escena) antes de cablearlo.
+        PostEffectToggles = Gallop.RenderPipeline.CharaPostEffectLimiterUI.AppendListToggle(PostEffectToggles);
+
         WirePostEffectRows();
 
         //Aplica el estado guardado nada mas entrar al live (el interruptor puede venir apagado).

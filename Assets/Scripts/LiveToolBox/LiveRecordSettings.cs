@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 
@@ -25,6 +26,11 @@ public class LiveRecordSettings
     public int msaa = 1;
     //Postefectos del live (bloom, difusión, DOF, desenfoque radial, corrección de color...).
     public bool postProcess = true;
+    //Postefectos que ESTA grabación deja FUERA de la cadena (ids de
+    //Gallop.RenderPipeline.PostEffectId, en texto). Es una selección propia del grabador: no toca la
+    //del live (Config.PostEffectsDisabled) y sólo se aplica mientras dura la captura. Se guarda con
+    //el resto del panel para recuperarla la próxima vez que se abra.
+    public List<string> postEffectsDisabled = new List<string>();
     //Quemar la letra del show en el vídeo.
     public bool lyrics = true;
     //Calidad de codificación de ENTREGA:
@@ -95,7 +101,11 @@ public class LiveRecordSettings
 
     public LiveRecordSettings Clone()
     {
-        return (LiveRecordSettings)MemberwiseClone();
+        var copy = (LiveRecordSettings)MemberwiseClone();
+        copy.postEffectsDisabled = postEffectsDisabled != null
+            ? new List<string>(postEffectsDisabled)
+            : new List<string>();
+        return copy;
     }
 
     private static string SanitizeFileName(string name)

@@ -1414,6 +1414,9 @@ namespace Gallop.Live
                 ApplyTimelineLateUpdate();
             }
 
+            // Colas de render de las piezas alpha de los personajes (por profundidad, como el juego).
+            LiveModelRenderQueue.Update(this);
+
             if (_enableMirrorReflection && _mirrorRenderInLateUpdate)
             {
                 UpdateMirrorReflections();

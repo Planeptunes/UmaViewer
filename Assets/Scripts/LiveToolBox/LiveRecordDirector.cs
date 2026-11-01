@@ -221,6 +221,9 @@ public class LiveRecordDirector : MonoBehaviour
     private void OnDestroy()
     {
         RenderPipelineManager.endCameraRendering -= OnCameraRendered;
+        //Si la grabación se corta de golpe (p. ej. al salir del Play Mode), la selección de
+        //postefectos de la captura no debe quedarse impuesta.
+        PostEffectSelection.PopOverride();
         //Diagnóstico: si se sale del Play Mode a mitad de grabación, deja igualmente lo medido hasta ahí.
         LiveRecordProfile.Dump();
         if (Instance == this) Instance = null;
@@ -555,6 +558,10 @@ public class LiveRecordDirector : MonoBehaviour
             _savedEnableRendering = feature.EnableRendering;
             feature.EnableRendering = _settings.postProcess;
         }
+
+        //Selección de postefectos de ESTA grabación (independiente de la del live). Se impone sólo
+        //mientras dura la captura y Restore() la retira, así que el live no cambia.
+        PostEffectSelection.PushOverride(_settings.postEffectsDisabled);
 
         //La letra (si toca) se dibuja con una cámara propia DENTRO del RenderTexture de captura. El HUD
         //del live ya se ocultó y el cuadro de progreso ya está montado (se hizo al arrancar).
@@ -1720,6 +1727,9 @@ public class LiveRecordDirector : MonoBehaviour
             bool restore = Config.Instance != null ? Config.Instance.PostEffects : _savedEnableRendering;
             if (feature != null) feature.EnableRendering = restore;
         }
+
+        //La selección de postefectos de la grabación deja de aplicarse (vuelve la del live).
+        PostEffectSelection.PopOverride();
 
         if (_frameCamera != null) _frameCamera.targetTexture = _savedCameraTarget;
 

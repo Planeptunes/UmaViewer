@@ -89,6 +89,9 @@ public class Config
     public string PostEffectsDisabledTip = "Individual live post effects switched off. An effect is drawn only when 'Post effects' and its own switch are both on.";
     public List<string> PostEffectsDisabled = new List<string>();
 
+    public string RecordSettingsTip = "Last values accepted in the RECORD panel (fps, resolution, quality, post effects...). The panel starts from them every time it opens; the start/end times are not kept.";
+    public LiveRecordSettings RecordSettings = new LiveRecordSettings();
+
     public bool RegionDetectionPassed = false;
 
     public string VmdMorphConvertSettingTip = "The mapping of MMD mprphs to UMA mprphs during VMD recording, multiple UMA expression weights will be combined (not exceeding 1)";

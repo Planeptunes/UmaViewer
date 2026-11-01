@@ -10,6 +10,10 @@ namespace Gallop.RenderPipeline
     /// off the whole chain is bypassed, exactly as before. These per-effect switches are a second
     /// gate on top of it — an effect draws only when the global switch AND its own tick are on.
     ///
+    /// The RECORD panel keeps its own list (<see cref="LiveRecordSettings.postEffectsDisabled"/>),
+    /// imposed only while a capture runs (see <see cref="PostEffectSelection.PushOverride"/>), so a
+    /// recording can drop effects without changing what the live shows.
+    ///
     /// Storage is the list of *disabled* ids in Config, so an effect added later defaults to on.
     /// </summary>
     public enum PostEffectId
@@ -29,13 +33,21 @@ namespace Gallop.RenderPipeline
         ToneCurve,
         SunShafts,
         LightShafts,
-        LensFlare
+        LensFlare,
+        // Limitadores sobre los cantantes (ver CharaPostEffectLimiter): luz añadida por
+        // Bloom/PostFilm/SunShafts ("Saturation Limit") y Diffusion ("Diffusion Limit").
+        CharaLimit,
+        DiffusionLimit
     }
 
     public static class PostEffectSelection
     {
         private static readonly HashSet<string> Disabled = new HashSet<string>(StringComparer.Ordinal);
         private static bool _loaded;
+
+        // Lista impuesta temporalmente por el grabador (ver PushOverride). Mientras existe manda sobre
+        // la del live, así que una grabación puede usar su propia selección sin tocar Config.
+        private static HashSet<string> _overrideDisabled;
 
         // Panel order and labels.
         public static readonly PostEffectId[] All =
@@ -55,7 +67,9 @@ namespace Gallop.RenderPipeline
             PostEffectId.ToneCurve,
             PostEffectId.SunShafts,
             PostEffectId.LightShafts,
-            PostEffectId.LensFlare
+            PostEffectId.LensFlare,
+            PostEffectId.CharaLimit,
+            PostEffectId.DiffusionLimit
         };
 
         public static string Label(PostEffectId id)
@@ -78,6 +92,8 @@ namespace Gallop.RenderPipeline
                 case PostEffectId.SunShafts: return "Sun shafts";
                 case PostEffectId.LightShafts: return "Light shafts";
                 case PostEffectId.LensFlare: return "Lens flare";
+                case PostEffectId.CharaLimit: return "Saturation Limit";
+                case PostEffectId.DiffusionLimit: return "Diffusion Limit";
                 default: return id.ToString();
             }
         }
@@ -99,8 +115,36 @@ namespace Gallop.RenderPipeline
 
         public static bool IsEnabled(PostEffectId id)
         {
+            if (_overrideDisabled != null) return !_overrideDisabled.Contains(id.ToString());
             LoadFromConfig();
             return !Disabled.Contains(id.ToString());
+        }
+
+        // =========================================================================================
+        // Override temporal (grabación)
+        //
+        // El panel de grabación tiene SU PROPIA selección (LiveRecordSettings.postEffectsDisabled):
+        // al empezar una captura se impone con PushOverride y al terminar se quita con PopOverride,
+        // de modo que el live sigue con la lista que tenía antes de grabar. No escribe en Config.
+        // =========================================================================================
+
+        public static bool OverrideActive => _overrideDisabled != null;
+
+        /// <summary> Imposes a disabled list until <see cref="PopOverride"/> (recording only). </summary>
+        public static void PushOverride(IEnumerable<string> disabled)
+        {
+            var set = new HashSet<string>(StringComparer.Ordinal);
+            if (disabled != null)
+            {
+                foreach (string id in disabled)
+                    if (!string.IsNullOrEmpty(id)) set.Add(id);
+            }
+            _overrideDisabled = set;
+        }
+
+        public static void PopOverride()
+        {
+            _overrideDisabled = null;
         }
 
         /// <summary> Stores the switch in Config and refreshes the runtime chain. </summary>
