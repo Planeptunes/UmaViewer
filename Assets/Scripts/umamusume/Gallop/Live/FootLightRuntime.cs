@@ -26,6 +26,7 @@ namespace Gallop.Live
 
         private readonly List<Binding> _bindings = new List<Binding>();
         private Func<int, Vector3> _groundPositionResolver;
+        private Action<Gallop.RenderPipeline.CustomProjector, bool> _projectorRegistrar;
 
         // Optional path resolvers allow an explicitly known per-character resource selection.
         // Null/empty selections always use the default; do not guess how a root names array
@@ -33,7 +34,9 @@ namespace Gallop.Live
         public void Initialize(Transform stageRoot, IList<Transform> characterRoots,
             Func<int, Vector3> groundPositionResolver, Func<string, GameObject> prefabResolver,
             Func<int, bool, Transform> footResolver,
-            Func<int, string> spotlightPathResolver = null, Func<int, string> shadowPathResolver = null)
+            Func<int, string> spotlightPathResolver = null, Func<int, string> shadowPathResolver = null,
+            Func<int, Transform> positionNodeResolver = null,
+            Action<Gallop.RenderPipeline.CustomProjector, bool> projectorRegistrar = null)
         {
             Dispose();
             if (stageRoot == null) throw new ArgumentNullException(nameof(stageRoot));
@@ -42,6 +45,7 @@ namespace Gallop.Live
             if (prefabResolver == null) throw new ArgumentNullException(nameof(prefabResolver));
             if (footResolver == null) throw new ArgumentNullException(nameof(footResolver));
             _groundPositionResolver = groundPositionResolver;
+            _projectorRegistrar = projectorRegistrar;
             var prefabs = new Dictionary<string, GameObject>(StringComparer.Ordinal);
             try
             {
@@ -66,13 +70,15 @@ namespace Gallop.Live
                         }
                         else binding.spotlight.Bind(character, character);
                     }
-                    // Sombras de pie (FakeShadowController) desactivadas: en este visor no se usa la
-                    // sombra falsa del prefab (su malla es una cruz). La sombra del personaje la da
-                    // el shadow map real. Ver PENDIENTE_SOMBRA_PERSONAJE.md.
-                    // binding.leftShadow = CreateFootShadow(i, true, footResolver(i, true), character,
-                    //     shadowPathResolver?.Invoke(i), stageRoot, prefabResolver, prefabs);
-                    // binding.rightShadow = CreateFootShadow(i, false, footResolver(i, false), character,
-                    //     shadowPathResolver?.Invoke(i), stageRoot, prefabResolver, prefabs);
+                    // Foot shadows (CharacterObject._shadowL/_shadowR): root = ankle, location =
+                    // model position node. Driven by the BgColor1 Shadow* tracks (ApplyShadow).
+                    Transform positionNode = positionNodeResolver?.Invoke(i);
+                    binding.leftShadow = CreateFootShadow(i, true, footResolver(i, true), positionNode,
+                        shadowPathResolver?.Invoke(i), stageRoot, prefabResolver, prefabs);
+                    binding.rightShadow = CreateFootShadow(i, false, footResolver(i, false), positionNode,
+                        shadowPathResolver?.Invoke(i), stageRoot, prefabResolver, prefabs);
+                    RegisterProjector(binding.leftShadow, true);
+                    RegisterProjector(binding.rightShadow, true);
                 }
                 AlterLateUpdate();
             }
@@ -84,7 +90,7 @@ namespace Gallop.Live
         }
 
         private static FakeShadowController CreateFootShadow(int index, bool left, Transform foot,
-            Transform character, string path, Transform stageRoot, Func<string, GameObject> resolver,
+            Transform positionNode, string path, Transform stageRoot, Func<string, GameObject> resolver,
             Dictionary<string, GameObject> prefabs)
         {
             if (foot == null)
@@ -102,7 +108,8 @@ namespace Gallop.Live
                 return null;
             }
             instance.name += left ? "_LeftFoot" : "_RightFoot";
-            controller.Bind(character, foot);
+            controller.Initialize();
+            controller.Bind(foot, positionNode);
             return controller;
         }
 
@@ -122,8 +129,44 @@ namespace Gallop.Live
             return instance;
         }
 
+        private void RegisterProjector(FakeShadowController shadow, bool add)
+        {
+            if (_projectorRegistrar == null || shadow == null || !shadow.IsLightProjection) return;
+            var projector = shadow.LightProjection.Projector;
+            if (projector != null) _projectorRegistrar(projector, add);
+        }
+
+        // StageController.UpdateShadowColor1: BgColor1 Shadow* tracks select characters and set
+        // power / colour (alpha = max alpha) / projection on both foot shadows.
+        // Returns true when the track is a shadow track (handled, spotlight not evaluated).
+        public bool ApplyShadow(ref BgColor1UpdateInfo info)
+        {
+            int mask;
+            switch (info.TimelineName)
+            {
+                case "ShadowCenter": mask = 1; break;
+                case "ShadowLeft": mask = 2; break;
+                case "ShadowRight": mask = 4; break;
+                case "ShadowBack": mask = 0xFFFF8; break;
+                case "ShadowOther": mask = 0xFFFFE; break;
+                case "ShadowColor": mask = info.flags == 0 ? 0xFFFFF : info.flags; break;
+                case "Shadow": mask = info.flags; break;
+                default: return false;
+            }
+            if (mask <= 0) return true;
+            var type = info.IsProjector ? FakeShadowController.Type.Projection : FakeShadowController.Type.Normal;
+            foreach (var binding in _bindings)
+            {
+                if (binding.characterIndex >= 20 || (mask & (1 << binding.characterIndex)) == 0) continue;
+                binding.leftShadow?.UpdateShadowFactor(info.colorPower, info.color, type);
+                binding.rightShadow?.UpdateShadowFactor(info.colorPower, info.color, type);
+            }
+            return true;
+        }
+
         public void ApplySpotlight(ref BgColor1UpdateInfo info)
         {
+            if (ApplyShadow(ref info)) return;
             LiveCharaPositionFlag group;
             switch (info.TimelineName)
             {
@@ -155,11 +198,14 @@ namespace Gallop.Live
                 bool active = binding.character != null && binding.character.gameObject.activeInHierarchy;
                 if (binding.spotlight != null && binding.spotlight.gameObject.activeSelf != active)
                     binding.spotlight.gameObject.SetActive(active);
-                if (binding.leftShadow != null && binding.leftShadow.gameObject.activeSelf != active)
-                    binding.leftShadow.gameObject.SetActive(active);
-                if (binding.rightShadow != null && binding.rightShadow.gameObject.activeSelf != active)
-                    binding.rightShadow.gameObject.SetActive(active);
+                // OnLiveCharaVisible: foot shadows follow the character visibility.
+                if (binding.leftShadow != null && binding.leftShadow.IsVisible != active)
+                    binding.leftShadow.IsVisible = active;
+                if (binding.rightShadow != null && binding.rightShadow.IsVisible != active)
+                    binding.rightShadow.IsVisible = active;
                 if (!active) continue;
+                binding.leftShadow?.AlterLateUpdate();
+                binding.rightShadow?.AlterLateUpdate();
                 Vector3 position = _groundPositionResolver(binding.characterIndex);
                 if (binding.spotlight != null) binding.spotlight.AlterLateUpdate(position);
                 if (binding.spotlight != null) binding.spotlight.SetCharacterVisible(active);
@@ -189,11 +235,14 @@ namespace Gallop.Live
             {
                 Binding binding = _bindings[i];
                 if (binding.spotlight != null) DestroyInstance(binding.spotlight.gameObject);
+                RegisterProjector(binding.leftShadow, false);
+                RegisterProjector(binding.rightShadow, false);
                 if (binding.leftShadow != null) DestroyInstance(binding.leftShadow.gameObject);
                 if (binding.rightShadow != null) DestroyInstance(binding.rightShadow.gameObject);
             }
             _bindings.Clear();
             _groundPositionResolver = null;
+            _projectorRegistrar = null;
         }
 
         private static void DestroyInstance(GameObject instance)

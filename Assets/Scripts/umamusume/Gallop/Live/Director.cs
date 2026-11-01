@@ -738,6 +738,19 @@ namespace Gallop.Live
                     if (character == null || character.LiveLocator?.Bones == null) return null;
                     character.LiveLocator.Bones.TryGetValue(left ? "Ankle_L" : "Ankle_R", out var foot);
                     return foot;
+                },
+                positionNodeResolver: index =>
+                {
+                    var character = CharaContainerScript[index];
+                    if (character == null || character.LiveLocator?.Bones == null) return null;
+                    character.LiveLocator.Bones.TryGetValue("Position", out var node);
+                    return node;
+                },
+                projectorRegistrar: (projector, add) =>
+                {
+                    if (_lightProjectionController == null) return;
+                    if (add) _lightProjectionController.AddExternalProjector(projector);
+                    else _lightProjectionController.RemoveExternalProjector(projector);
                 });
             _liveTimelineControl.OnUpdateBgColor1 += _footLightRuntime.ApplySpotlight;
             // El juego da sombra real a los personajes (CharacterObject.IsCastShadow /

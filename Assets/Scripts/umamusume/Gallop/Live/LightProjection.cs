@@ -16,6 +16,13 @@ namespace Gallop.Live
         public int ProjectionTypeValue => _projectionType;
         public bool IsAnimationProjection => _projectionType == 1;
         public CustomProjector Projector => _projector != null ? _projector : GetComponent<CustomProjector>();
+        public Material Material => _runtimeMaterial;
+
+        public bool IsEnable
+        {
+            get { var projector = Projector; return projector != null && projector.enabled; }
+            set { var projector = Projector; if (projector != null && projector.enabled != value) projector.enabled = value; }
+        }
 
         public bool Initialize()
         {

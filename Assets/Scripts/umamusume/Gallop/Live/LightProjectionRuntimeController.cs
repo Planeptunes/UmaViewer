@@ -77,6 +77,18 @@ namespace Gallop.Live
             }
         }
 
+        // Projectors owned by other runtimes (foot shadow projection) that must be drawn by the
+        // same projector pass. They are not timeline-bound and are not restored on Dispose.
+        public void AddExternalProjector(CustomProjector projector)
+        {
+            if (projector != null && !_projectors.Contains(projector)) _projectors.Add(projector);
+        }
+
+        public void RemoveExternalProjector(CustomProjector projector)
+        {
+            if (projector != null) _projectors.Remove(projector);
+        }
+
         public void ConfigureMovieFrames(MovieFrameResolver resolver) { _movieResolver = resolver; }
         public void ConfigureCharacterPosition(Func<int, Vector3> resolver) { _characterPositionResolver = resolver; }
         public void ConfigureMirrorBallTextures(Func<int, Texture> resolver) { _mirrorTextureResolver = resolver; }
