@@ -161,7 +161,7 @@ namespace Gallop.Live
         // 0x1ad7370 / 0x1ad8710: switch fade is in seconds rounded to 60-Hz frames;
         // geometric/color interpolation belongs to the next key.
         public void ApplyTimeline(LiveTimelineKeyMultiCameraPositionData current,
-            LiveTimelineKeyMultiCameraPositionData next, float frame)
+            LiveTimelineKeyMultiCameraPositionData next, float frame, Color bgColor)
         {
             if (current == null) return;
             float t = next != null && next.IsInterpolateKey()
@@ -192,8 +192,11 @@ namespace Gallop.Live
                 RenderCamera.nearClipPlane = current.nearClip;
                 RenderCamera.farClipPlane = current.farClip;
                 RenderCamera.fieldOfView = Mathf.LerpUnclamped(current.fov, next.fov, t);
+                // AlterUpdate_MultiCameraPosition (0x7ffffc859a20): multi-camera keys always lock
+                // the culling layer, so the mask is applied unconditionally; BgColor stays flagged.
+                RenderCamera.cullingMask = current.GetCullingMask();
                 if (((int)current.attribute & 0x40000) != 0)
-                    RenderCamera.backgroundColor = current.BgColor;
+                    RenderCamera.backgroundColor = bgColor;
             }
             if (current.maskType == LiveTimelineKeyMultiCameraPositionData.MaskType.Single && transitioning)
             {

@@ -193,12 +193,40 @@ namespace Gallop.Live.Cutt
             if ((cullingLayer & LiveCameraCullingLayer.Character3d) != 0) mask |= 1 << 13;
             if ((cullingLayer & LiveCameraCullingLayer.Character3d_0) != 0) mask |= 1 << 27;
             if ((cullingLayer & LiveCameraCullingLayer.Character3d_1) != 0) mask |= 1 << 28;
-            if ((cullingLayer & LiveCameraCullingLayer.Character3d_NotReflect) != 0) mask |= 1 << 26;
+            if ((cullingLayer & LiveCameraCullingLayer.Character3d_NotReflect) != 0)
+            {
+                mask |= 1 << 26;
+                // The game binds live characters to Character3D_NotReflect (26); the viewer keeps
+                // them on CHAR (13), so a key that wants the characters must include that layer too.
+                mask |= 1 << 13;
+            }
             if ((cullingLayer & LiveCameraCullingLayer.NotLayerDefault) == 0)
                 mask |= GraphicSettings.GetCullingLayer(GraphicSettings.LayerIndex.LayerDefault);
             if ((cullingLayer & LiveCameraCullingLayer.NotLayer3d) == 0)
                 mask |= GraphicSettings.GetCullingLayer(GraphicSettings.LayerIndex.Layer3D);
             return mask;
+        }
+
+        // Native GetBgColor (0x3FF1760): BgColor is the fallback; the other types read the
+        // master colour of the character at BgColorTargetCharacterIndex.
+        public Color GetBgColor()
+        {
+            string column;
+            switch (BgColorType)
+            {
+                case LiveCameraBgColorType.CharacterImageColorMain: column = "image_color_main"; break;
+                case LiveCameraBgColorType.CharacterImageColorSub: column = "image_color_sub"; break;
+                case LiveCameraBgColorType.CharacterUIColorMain: column = "ui_color_main"; break;
+                case LiveCameraBgColorType.CharacterUIColorSub: column = "ui_color_sub"; break;
+                default: return BgColor;
+            }
+            var director = Director.instance;
+            if (director == null || director.CharaContainerScript == null ||
+                BgColorTargetCharacterIndex < 0 || BgColorTargetCharacterIndex >= director.CharaContainerScript.Count)
+                return BgColor;
+            var row = director.CharaContainerScript[BgColorTargetCharacterIndex]?.CharaData;
+            if (row == null || !row.Table.Columns.Contains(column)) return BgColor;
+            return ColorUtility.TryParseHtmlString("#" + row[column], out var color) ? color : BgColor;
         }
 
         public virtual Vector3 GetValue(LiveTimelineControl timelineControl)

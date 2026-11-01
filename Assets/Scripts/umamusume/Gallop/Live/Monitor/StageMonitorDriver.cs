@@ -390,7 +390,7 @@ namespace Gallop.Live
                 for (int j = 0; j < materials.Length; j++)
                 {
                     Material material = materials[j];
-                    if (!IsMonitorMaterial(material))
+                    if (!IsMonitorMaterial(material) && !_stage.IsAuthoredMonitorMaterial(material))
                         continue;
 
                     MonitorMaterialBinding binding = new MonitorMaterialBinding
@@ -1246,7 +1246,21 @@ namespace Gallop.Live
             _resolveBuffer.Clear();
             string compact = CompactName(normalized);
 
-            AddMatchesExact(normalized, compact, _resolveBuffer);
+            // Native UpdateMonitor: MonitorA..Z index the stage's authored _movieMaterialInfos;
+            // an index outside that array updates nothing, so no heuristic fallback then.
+            if (TryExtractMonitorLetterIndex(normalized, out int authoredIndex))
+            {
+                AddMatchesByAuthoredMaterial(authoredIndex, _resolveBuffer);
+                if (_stage != null && _stage.HasAuthoredMonitorMaterials)
+                {
+                    List<MonitorMaterialBinding> authored = new List<MonitorMaterialBinding>(_resolveBuffer);
+                    _bindingCache[normalized] = authored;
+                    return authored;
+                }
+            }
+
+            if (_resolveBuffer.Count == 0)
+                AddMatchesExact(normalized, compact, _resolveBuffer);
             if (_resolveBuffer.Count == 0)
                 AddMatchesContains(normalized, compact, _resolveBuffer);
 
@@ -1268,6 +1282,22 @@ namespace Gallop.Live
 
             _bindingCache[normalized] = resolved;
             return resolved;
+        }
+
+        private void AddMatchesByAuthoredMaterial(int index, List<MonitorMaterialBinding> result)
+        {
+            Material authored = _stage != null ? _stage.GetMonitorMaterial(index) : null;
+            if (authored == null)
+                return;
+
+            // Bindings hold per-renderer instances; match them back to the authored shared material.
+            string authoredKey = NormalizeName(authored.name);
+            for (int i = 0; i < _bindings.Count; i++)
+            {
+                MonitorMaterialBinding binding = _bindings[i];
+                if (binding != null && binding.materialKey == authoredKey)
+                    result.Add(binding);
+            }
         }
 
         private void AddMatchesExact(string normalized, string compact, List<MonitorMaterialBinding> result)

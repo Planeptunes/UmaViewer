@@ -855,6 +855,9 @@ namespace Gallop.Live
 
                 var sceneCamera = camObj.AddComponent<Camera>();
                 if (presentationCamera != null) sceneCamera.CopyFrom(presentationCamera);
+                // Native InitializeCamera clears live cameras with a solid colour, which is what
+                // makes the timeline BgColor visible behind the characters.
+                sceneCamera.clearFlags = CameraClearFlags.SolidColor;
                 sceneCamera.targetTexture = null;
                 sceneCamera.depth = i + 1;
                 var cameraData = camObj.AddComponent<UnityEngine.Rendering.Universal.UniversalAdditionalCameraData>();

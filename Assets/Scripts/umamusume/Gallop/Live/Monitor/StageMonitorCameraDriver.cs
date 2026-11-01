@@ -13,6 +13,7 @@ namespace Gallop.Live
     {
         private static Func<LiveTimelineKeyCameraPositionData, LiveTimelineControl,
             LiveTimelineControl.FindTimelineConfig, Vector3> _getPosition = GetPosition;
+        private static readonly int MainTexId = Shader.PropertyToID("_MainTex");
         private readonly BezierCalcWork _lookAtBezier = new BezierCalcWork();
         private readonly List<Renderer> _screens = new List<Renderer>();
         private readonly List<bool> _screenVisibility = new List<bool>();
@@ -63,8 +64,9 @@ namespace Gallop.Live
         }
 
         // No camera render is requested from render callbacks: monitor/reflection
-        // cameras cannot recursively trigger another monitor capture. Suppress the
-        // screen geometry only while this camera renders to avoid RT feedback.
+        // cameras cannot recursively trigger another monitor capture. Only the screens
+        // that are currently displaying this capture are suppressed while it renders
+        // (RT feedback); screens playing their own movie stay visible in the capture.
         private void OnBeginCameraRendering(ScriptableRenderContext context, Camera camera)
         {
             if (camera != _captureCamera || !IsActive || _screensHidden) return;
@@ -72,10 +74,22 @@ namespace Gallop.Live
             for (int i = 0; i < _screens.Count; i++)
             {
                 Renderer screen = _screens[i];
-                if (screen == null) continue;
-                _screenVisibility[i] = screen.forceRenderingOff;
+                _screenVisibility[i] = screen != null && screen.forceRenderingOff;
+                if (screen == null || !ShowsCapture(screen)) continue;
                 screen.forceRenderingOff = true;
             }
+        }
+
+        private bool ShowsCapture(Renderer screen)
+        {
+            Material[] materials = screen.sharedMaterials;
+            for (int i = 0; i < materials.Length; i++)
+            {
+                Material material = materials[i];
+                if (material != null && material.HasProperty(MainTexId) &&
+                    material.GetTexture(MainTexId) == _texture) return true;
+            }
+            return false;
         }
 
         private void OnEndCameraRendering(ScriptableRenderContext context, Camera camera)

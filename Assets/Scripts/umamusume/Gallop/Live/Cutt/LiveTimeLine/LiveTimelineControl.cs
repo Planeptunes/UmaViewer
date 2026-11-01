@@ -1911,7 +1911,7 @@ namespace Gallop.Live.Cutt
             if (((int)liveTimelineKeyCameraPositionData.attribute & 0x20000) != 0)
                 camera.camera.cullingMask = liveTimelineKeyCameraPositionData.GetCullingMask();
             if (((int)liveTimelineKeyCameraPositionData.attribute & 0x40000) != 0)
-                camera.camera.backgroundColor = liveTimelineKeyCameraPositionData.BgColor;
+                camera.camera.backgroundColor = liveTimelineKeyCameraPositionData.GetBgColor();
             if (CalculateCameraPos(out var pos, sheet, curKey, nextKey, currentFrame))
             {
                 camera.cacheTransform.position = pos;
@@ -2257,12 +2257,43 @@ namespace Gallop.Live.Cutt
                     camera.DisableCameraTimeline();
                     continue;
                 }
-                camera.Composite.ApplyTimeline(current, nextKey as LiveTimelineKeyMultiCameraPositionData, currentFrame);
+                camera.Composite.ApplyTimeline(current, nextKey as LiveTimelineKeyMultiCameraPositionData, currentFrame,
+                    ResolveMultiCameraBgColor(sheet, i, current, nextKey));
                 camera.Composite.UpdateLayerOffset(current.charaRelativeBase, liveCharactorLocators);
                 _multiCameraCache[i].cacheTransform.position = pos;
                 _multiCameraPositionValid[i] = true;
                 if (camera.gameObject.activeSelf) _isMultiCameraEnable = true;
             }
+        }
+
+        // The game never lets the same character appear twice, so per-character background colours
+        // are always distinct. The viewer allows repeated characters: when another multi-camera that
+        // overlaps this key in time resolves to the same colour, fall back to the authored BgColor
+        // so the split panels stay distinguishable.
+        private static Color ResolveMultiCameraBgColor(LiveTimelineWorkSheet sheet, int cameraIndex,
+            LiveTimelineKeyMultiCameraPositionData current, LiveTimelineKey nextKey)
+        {
+            Color color = current.GetBgColor();
+            if (current.BgColorType == LiveCameraBgColorType.Direct) return color;
+            int start = current.frame;
+            int end = nextKey != null ? nextKey.frame : int.MaxValue;
+            for (int j = 0; j < sheet.multiCameraPosKeys.Count; j++)
+            {
+                if (j == cameraIndex) continue;
+                var keys = sheet.multiCameraPosKeys[j]?.keys;
+                if (keys == null) continue;
+                for (int k = 0; k < keys.Count; k++)
+                {
+                    var other = keys[k] as LiveTimelineKeyMultiCameraPositionData;
+                    if (other == null || !other.enableMultiCamera ||
+                        ((int)other.attribute & 0x40000) == 0 || other.BgColorType == LiveCameraBgColorType.Direct)
+                        continue;
+                    int otherEnd = k + 1 < keys.Count ? keys[k + 1].frame : int.MaxValue;
+                    if (other.frame >= end || otherEnd <= start) continue;
+                    if (other.GetBgColor() == color) return current.BgColor;
+                }
+            }
+            return color;
         }
 
         private static Vector3 GetMultiCameraLookAtValue(LiveTimelineKeyCameraLookAtData keyData, LiveTimelineControl timelineControl, Vector3 camPos, FindTimelineConfig config)

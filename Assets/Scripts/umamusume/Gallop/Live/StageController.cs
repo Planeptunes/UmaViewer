@@ -60,6 +60,17 @@ namespace Gallop.Live
         public Material BackMaterial => _backMaterial;
     }
 
+    // Serialized layout of the stage prefab's MovieMaterialController.MovieMaterialInfo.
+    [Serializable]
+    public class MovieMaterialInfo
+    {
+        [SerializeField] private Material _movieMaterial;
+        [SerializeField] private int _movieType;
+        [SerializeField] private int _renderOrder;
+
+        public Material MovieMaterial => _movieMaterial;
+    }
+
     public class StageController : MonoBehaviour
     {
         private enum BgColor2RuntimeKind
@@ -146,6 +157,31 @@ namespace Gallop.Live
 
         [SerializeField] private Material[] _footLightMaterials;
         [SerializeField] private NeonMaterialInfo[] _neonMaterialInfos;
+        // Timeline monitors MonitorA..MonitorZ address this array by letter index
+        // (StageController.UpdateMonitor + sLabelToIDBgMonitor).
+        [SerializeField] private MovieMaterialInfo[] _movieMaterialInfos;
+
+        public Material GetMonitorMaterial(int index)
+        {
+            if (_movieMaterialInfos == null || index < 0 || index >= _movieMaterialInfos.Length) return null;
+            return _movieMaterialInfos[index]?.MovieMaterial;
+        }
+
+        public bool HasAuthoredMonitorMaterials => _movieMaterialInfos != null && _movieMaterialInfos.Length > 0;
+
+        // Authored monitors are not limited to the Monitor shader (e.g. additive floor screens);
+        // renderers hold per-renderer instances, so compare against the shared material name.
+        public bool IsAuthoredMonitorMaterial(Material material)
+        {
+            if (material == null || _movieMaterialInfos == null) return false;
+            string name = material.name.Replace(" (Instance)", string.Empty);
+            for (int i = 0; i < _movieMaterialInfos.Length; i++)
+            {
+                Material authored = _movieMaterialInfos[i]?.MovieMaterial;
+                if (authored != null && authored.name == name) return true;
+            }
+            return false;
+        }
 
         [Header("BgColor direct driver")]
         [SerializeField] private bool _enableBgColorDriver = true;
