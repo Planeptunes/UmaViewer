@@ -1359,6 +1359,17 @@ public class UmaContainerCharacter : UmaContainer
         }
     }
 
+    // Pista CharaNode del live: que partes/raices de CySpring aplican su resultado (las que no,
+    // las mueve el clip). El controller solo reaplica cuando cambia la key.
+    public void ApplyLiveCharaNode(object key, bool head, bool ear, bool body, bool tail, bool skirt,
+        IList<string> boneNames, IList<bool> boneEnables)
+    {
+        if (IsMini || _cySpringController == null)
+            return;
+
+        _cySpringController.ApplyCharaNode(key, head, ear, body, tail, skirt, boneNames, boneEnables);
+    }
+
     public void ConfigureLivePhysics()
     {
         if (!IsLive || IsMini || cySpringDataContainers == null) return;

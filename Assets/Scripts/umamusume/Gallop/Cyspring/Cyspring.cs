@@ -941,7 +941,7 @@ namespace Gallop
                 return;
 
             for (int i = 0; i < roots.Length; i++)
-                roots[i]?.SetRootShouldReflectCalcResult(enable);
+                roots[i]?.SetShouldReflectCalcResult(enable);
         }
 
         public void SetResetLinkCySpringBone(bool enable, string targetRootBoneName)
@@ -960,7 +960,7 @@ namespace Gallop
                 return;
 
             for (int i = 0; i < _rootBoneArray.Length; i++)
-                _rootBoneArray[i]?.SetRootShouldReflectCalcResult(false);
+                _rootBoneArray[i]?.SetShouldReflectCalcResult(false);
         }
 
         public void EnableAllCySpringBones()
@@ -969,7 +969,7 @@ namespace Gallop
                 return;
 
             for (int i = 0; i < _rootBoneArray.Length; i++)
-                _rootBoneArray[i]?.SetRootShouldReflectCalcResult(true);
+                _rootBoneArray[i]?.SetShouldReflectCalcResult(true);
         }
 
         public CySpringRootBone[] FindRootCySpringBones(string targetRoot, bool isPrefix = false)

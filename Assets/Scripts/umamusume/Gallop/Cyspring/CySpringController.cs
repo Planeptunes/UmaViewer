@@ -362,6 +362,8 @@ namespace Gallop
             SetupSpringParentWork();
             ReleaseLoadObject();
             _initialized = true;
+            // New chains start applied: force the next CharaNode key to be applied again.
+            _charaNodeKey = null;
         }
 
         public void LoadHeadCollisionParamSequence(Dictionary<string, Transform> transformCacheDic)
@@ -1048,6 +1050,45 @@ namespace Gallop
 
                 spring.PostSpring();
             }
+        }
+
+        // CharaNode (LiveModelController.SetEnable*CySpring + CySpringController.SetEnableCySpringBone):
+        // head / body switch the whole part, ears / tail / skirt only their root chains; then each
+        // listed root bone. A disabled chain is still simulated but its result is not applied, so
+        // the motion clip drives it. Applied only when the key changes (or after a reload).
+        private const string EarRootPrefix = "Sp_He_Ear";
+        private const string TailRootName = "Sp_Hi_Tail0_B_00";
+        // Skirt roots of the body part (ModelController skirt prefixes).
+        private static readonly string[] SkirtRootPrefixes = { "Sp_Hi_LSkirt", "Sp_Hi_CSkirt", "Sp_Hi_MSkirt" };
+        private object _charaNodeKey;
+
+        public void ApplyCharaNode(object key, bool head, bool ear, bool body, bool tail, bool skirt,
+            IList<string> boneNames, IList<bool> boneEnables)
+        {
+            if (_springArray == null || ReferenceEquals(key, _charaNodeKey))
+                return;
+            _charaNodeKey = key;
+
+            SetEnableCySpringBone(head, Parts.Head);
+            SetRootsReflect(FindRootSpring(EarRootPrefix, Parts.Head, true), ear);
+            SetEnableCySpringBone(body, Parts.Body);
+            CySpringRootBone[] tailRoots = FindRootSpring(TailRootName, Parts.Tail, false);
+            if (tailRoots.Length > 0)
+                tailRoots[0]?.SetShouldReflectCalcResult(tail);
+            for (int i = 0; i < SkirtRootPrefixes.Length; i++)
+                SetRootsReflect(FindRootSpring(SkirtRootPrefixes[i], Parts.Body, true), skirt);
+
+            if (boneNames == null || boneEnables == null)
+                return;
+            int count = Mathf.Min(boneNames.Count, boneEnables.Count);
+            for (int i = 0; i < count; i++)
+                SetEnableCySpringBone(boneEnables[i], boneNames[i], false);
+        }
+
+        private static void SetRootsReflect(CySpringRootBone[] roots, bool enable)
+        {
+            for (int i = 0; i < roots.Length; i++)
+                roots[i]?.SetShouldReflectCalcResult(enable);
         }
 
         // Reapplies the last solved rotations without stepping the solver. Used on render frames

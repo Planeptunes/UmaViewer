@@ -766,6 +766,7 @@ namespace Gallop.Live.Cutt
                 AlterUpdate_Laser(ws, _currentFrame);
                 AlterUpdate_UVScrollLight(ws, _currentFrame);
                 AlterUpdate_Particles(ws, _currentFrame);
+                AlterUpdate_CharaNode(ws, _currentFrame);
             }
             // Blink is dispatched above in this port's late-update loop; sample its current
             // frame before projection color sync. No key-change gate: paused seeks also apply.
@@ -894,6 +895,40 @@ namespace Gallop.Live.Cutt
                 _charaCollisionModelDataArray[i] = new CharaCollisionModelData();
 
             _charaCollisionInitialized = true;
+        }
+
+        // LiveTimelineControl.AlterUpdate_CharaNode: for every enabled CharaNode track, the current
+        // key switches the CySpring parts (head, ears, body, tail, skirt) and the listed root bones
+        // of each character whose position bit is set (up to 20 positions).
+        public void AlterUpdate_CharaNode(LiveTimelineWorkSheet sheet, float currentFrame)
+        {
+            var groups = sheet != null ? sheet.CharaNodeDataList : null;
+            if (groups == null || groups.Count == 0)
+                return;
+
+            for (int g = 0; g < groups.Count; g++)
+            {
+                var keys = groups[g] != null ? groups[g].keys : null;
+                if (keys == null || keys.Count == 0 || keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable) ||
+                    !keys.EnablePlayModeTimeline(_playMode))
+                    continue;
+
+                var key = keys.FindCurrentKey(currentFrame)?.key as LiveTimelineKeyCharaNodeData;
+                if (key == null)
+                    continue;
+
+                for (int i = 0; i < _liveCharactorLocators.Length && i < 20; i++)
+                {
+                    if (!key.PositionFlag.hasFlag((LiveCharaPosition)i))
+                        continue;
+
+                    var chara = (_liveCharactorLocators[i] as LiveTimelineCharaLocator)?.UmaContainer;
+                    if (chara != null)
+                        chara.ApplyLiveCharaNode(key, key.EnableHeadCySpring, key.EnableEarCySpring,
+                            key.EnableBodyCySpring, key.EnableTailCySpring, key.EnableSkirtCySpring,
+                            key.TargetCySpringBornNameList, key.TargetCySpringBornEnableList);
+                }
+            }
         }
 
         public void AlterUpdate_CharaCollision(LiveTimelineWorkSheet sheet, float currentFrame)

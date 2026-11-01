@@ -431,6 +431,8 @@ namespace Gallop.Live.Cutt
         [SerializeField] public List<LiveTimelineAnimationData> animationList = new List<LiveTimelineAnimationData>();
         // Colisiones de entorno del cutt (suelo/atrezzo) que se aplican al pelo, la ropa y la cola.
         [SerializeField] public List<LiveTimelineCharaCollisionData> CharaCollisionDataList;
+        // Physics on/off per part and per root bone for the selected characters (CharaNode).
+        [SerializeField] public List<LiveTimelineCharaNodeData> CharaNodeDataList;
 
         [SerializeField] public LiveTimelineKeyCameraSwitcherDataList cameraSwitcherKeys;
         [SerializeField] public LiveTimelineKeyLipSyncDataList ripSyncKeys;
