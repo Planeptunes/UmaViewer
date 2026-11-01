@@ -1245,6 +1245,7 @@ namespace Gallop.Live
                 _liveTimelineControl.currentLiveTime * 60f, _liveTimelineControl.PlayMode);
             _footLightRuntime?.AlterLateUpdate();
             _effectController?.Pause(!IsRecordVMD && (!_syncTime || sliderControl.is_Touched));
+            _stageParticleController?.SetPaused(!IsRecordVMD && (!_syncTime || sliderControl.is_Touched));
             _spotlightRuntime?.AlterLateUpdate();
             _stageFlares?.AlterUpdate(MainRenderCamera);
             if (_volumeLightController != null)
