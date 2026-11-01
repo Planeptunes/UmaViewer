@@ -624,12 +624,29 @@ namespace Gallop.Live
 
             _liveTimelineControl.OnUpdateBgColor1 += delegate (ref BgColor1UpdateInfo updateInfo)
             {
-                if (updateInfo.TimelineName != "CharaCenter" && updateInfo.TimelineName != "CharaLeft" &&
-                    updateInfo.TimelineName != "CharaRight" && updateInfo.TimelineName != "CharaColor") return;
+                // StageController.UpdateCharaColor1: the track NAME picks the characters
+                // (HASH_CHARA_*); the key's flags only matter for "CharaColor". 1091's "CharaLeft"
+                // keys carry flags = 1, so reading flags painted the centre with the left colours
+                // and left the left position with the material defaults.
+                int charaMask;
+                switch (updateInfo.TimelineName)
+                {
+                    case "CharaCenter": charaMask = 0x1; break;
+                    case "CharaLeft": charaMask = 0x2; break;
+                    case "CharaRight": charaMask = 0x4; break;
+                    case "CharaBack": charaMask = 0xFFFF8; break;
+                    case "CharaOther": charaMask = 0xFFFFE; break;
+                    case "CharaColor":
+                        if (updateInfo.flags == 0) charaMask = 0xFFFFF;
+                        else if (updateInfo.flags < 1) return;
+                        else charaMask = updateInfo.flags;
+                        break;
+                    default: return;
+                }
                 foreach (var locator in _liveTimelineControl.liveCharactorLocators)
                 {
-                    var EFlags = (LiveCharaPositionFlag)updateInfo.flags;
-                    if (locator != null && (updateInfo.flags == 0 || EFlags.hasFlag(locator.liveCharaStandingPosition)) && locator is LiveTimelineCharaLocator charaLocator)
+                    var EFlags = (LiveCharaPositionFlag)charaMask;
+                    if (locator != null && EFlags.hasFlag(locator.liveCharaStandingPosition) && locator is LiveTimelineCharaLocator charaLocator)
                     {
                         var container = charaLocator.UmaContainer;
                         if (container)
