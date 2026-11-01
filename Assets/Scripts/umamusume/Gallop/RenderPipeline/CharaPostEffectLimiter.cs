@@ -1,22 +1,31 @@
 // =====================================================================================================
 // Limitadores de post efectos sobre los CANTANTES del live (dos interruptores del listado de post efectos):
 //
-//   "Saturation Limit" (PostEffectId.CharaLimit): comprime la luz que SunShafts, LightShafts,
-//       Bloom/Diffusion y PostFilm AÑADEN sobre los cantantes (brillo y "blancura"). El escenario no cambia.
+//   "Saturation Limit" (PostEffectId.CharaLimit): limitador POR CAPAS sobre los cantantes. Se evaluan en
+//       orden Bloom -> PostFilm -> SunShafts/LightShafts; cada capa mira el cambio ACUMULADO medio sobre el
+//       cantante y recibe un factor unico para todo el personaje (se conserva o se reduce, hasta
+//       maxReduction; nunca se apaga).
+//       La pasada DOF/Bloom/PostFilm se repite con la imagen sin shafts y con Bloom/PostFilm apagados
+//       para obtener cada capa por separado. El escenario no cambia.
 //   "Diffusion Limit" (PostEffectId.DiffusionLimit): los cantantes no reciben Diffusion (la pasada
 //       DOF/Bloom/PostFilm se ejecuta otra vez sin Diffusion y se usa esa version en sus pixeles).
 //
 // Pasadas (las registra PostImageEffectFeature):
 //   CapturePass : tras SourceSetup/GlobalFog y ANTES de SunShafts -> copia la imagen "limpia" y dibuja la
 //                 mascara de personajes (R = profundidad lineal, G = peso, B = id de cantante).
-//   ApplyPass   : tras DofDiffusionBloomOverlay -> mide la cobertura de cada cantante, aplica el shader
-//                 (Resources/Shaders/CharaPostEffectLimiter) y entrega el resultado como nuevo SourceRT.
+//   ApplyPass   : tras DofDiffusionBloomOverlay -> mide la cobertura de cada cantante y el cambio de cada
+//                 capa, aplica el shader (Resources/Shaders/CharaPostEffectLimiter) y entrega el resultado
+//                 como nuevo SourceRT.
+//
+// Capas (las genera DofDiffusionBloomOverlayPass a partir de _CharaLimitOrig, imagen sin shafts):
+//   Base = DOF/Diffusion | B = Base + Bloom | BPF = B + PostFilm | Normal = BPF + SunShafts/LightShafts.
+//   Una capa que no existe este frame es alias de la siguiente (sin coste).
 //
 // Criterios:
 //   - Solo cantantes: slot < Director.partInfo.SingerCount (mobs intactos, ver mobStrength).
 //   - Siluetas: peso por personaje segun max(_CharaColor.rgb) (pista BgColor1); oscuro -> no actua.
 //   - Planos abiertos: cada cantante se gradua con SU fraccion de pantalla visible (coverageStart/End).
-//   - Referencia "antes" = maximo local del original: el desenfoque de DOF/Diffusion no se limita.
+//   - La capa Base ya lleva DOF/Diffusion: el desenfoque no cuenta como luz añadida.
 //   - Mascara: solo renderers que se dibujan este frame (un SkinnedMeshRenderer descartado por culling no
 //     actualiza su skinning y se pintaria con una pose antigua).
 // =====================================================================================================
@@ -32,29 +41,16 @@ namespace Gallop.RenderPipeline
     {
         public static readonly CharaPostEffectLimiterSettings Instance = new CharaPostEffectLimiterSettings();
 
-        // Maxima luminancia que los efectos pueden AÑADIR sobre un cantante (0-1 en LDR).
-        public float maxAddedLuminance = 0.25f;
-
-        // Maxima "blancura" añadida (componente gris comun a R,G,B: lo que desatura/lava el color).
-        public float maxAddedWhite = 0.04f;
-
-        // Curva por tramos en multiplos del limite L (con L = 0.25 -> 0.3 / 0.5 / 1.0):
-        //   x <= 0.5L      : sin cambio
-        //   0.5L .. 1.2L   : compresion suave (en 1.2L queda ~73% del valor)
-        //   1.2L .. 2L     : el % conservado baja progresivamente hasta ratioAt2L
-        //   2L .. 4L       : baja progresivamente hasta ratioAt4L
-        //   > 4L           : se conserva ratioAt4L (luces frontales fuertes: se espera blancura)
-        public float ratioAt2L = 0.6f;
-        public float ratioAt4L = 0.5f;
-
-        // Porcentajes propios de la curva de BLANCURA (mismos tramos, mas estrictos: la neblina gris de
-        // la Diffusion no es luz frontal que convenga dejar pasar).
-        public float whiteRatioAt2W = 0.45f;
-        public float whiteRatioAt4W = 0.3f;
-
-        // Radio (px de la imagen de render) del maximo local usado como referencia "antes". El desenfoque
-        // de DOF/Diffusion no supera ese maximo y no se limita. 0 = comparar pixel a pixel.
-        public float referenceRadius = 6f;
+        // ---- Limitador por capas (Bloom -> PostFilm -> SunShafts/LightShafts) ----
+        // Las capas se evaluan en orden; cada una mira el cambio ACUMULADO sobre el cantante (las capas
+        // anteriores ya con su reduccion). El cambio es la media, sobre los pixeles visibles del cantante,
+        // de lum(luz añadida) + whiteWeight * gris(luz añadida) (el gris comun a R,G,B lava el color).
+        // Ninguna capa se apaga: la reduccion crece de 0 (acumulado <= notable) a maxReduction
+        // (acumulado >= excessive) con una rampa suave.
+        public float notable = 0.05f;      // diferencia notoria: empieza a reducir
+        public float excessive = 0.15f;    // excesivo: reduccion maxima
+        public float maxReduction = 0.6f;  // reduccion maxima por capa (0.6 = se conserva un 40 %)
+        public float whiteWeight = 2.5f;   // peso extra de la "blancura" en la medida
 
         // 0 = sin efecto, 1 = limitador completo.
         public float strength = 1f;
@@ -76,10 +72,12 @@ namespace Gallop.RenderPipeline
         public bool diffusionUseSilhouetteFade = false;
         public bool diffusionUseCoverageFade = true;
 
-        public Vector4 ShaderParams => new Vector4(maxAddedLuminance, maxAddedWhite, strength, 0f);
-        public Vector4 ShaderCurveParams => new Vector4(ratioAt2L, ratioAt4L, coverageStart, coverageEnd);
-        public Vector4 ShaderRefParams => new Vector4(referenceRadius, 0f, 0f, 0f);
-        public Vector4 ShaderWhiteParams => new Vector4(whiteRatioAt2W, whiteRatioAt4W, 0f, 0f);
+        public Vector4 ShaderParams => new Vector4(0f, 0f, strength, 0f);
+        public Vector4 ShaderCurveParams => new Vector4(0f, 0f, coverageStart, coverageEnd);
+        // x = notable, y = excessive, z = maxReduction
+        public Vector4 ShaderThresholds => new Vector4(notable, excessive, Mathf.Clamp01(maxReduction), 0f);
+        // z = whiteWeight
+        public Vector4 ShaderReduce => new Vector4(0f, 0f, whiteWeight, 0f);
     }
 
     /// <summary>
@@ -175,7 +173,23 @@ namespace Gallop.RenderPipeline
         internal static readonly int ParamsId = Shader.PropertyToID("_CharaLimitParams");
         internal static readonly int CurveParamsId = Shader.PropertyToID("_CharaLimitCurve");
         internal static readonly int RefParamsId = Shader.PropertyToID("_CharaLimitRef");
-        internal static readonly int WhiteParamsId = Shader.PropertyToID("_CharaLimitWhite");
+        internal static readonly int ThresholdsId = Shader.PropertyToID("_CharaLimitThresholds");
+        internal static readonly int ReduceId = Shader.PropertyToID("_CharaLimitReduce");
+        // Capas del limitador por capas (ver cabecera). Las RT las reserva DofDiffusionBloomOverlayPass.
+        internal static readonly int LayerBaseId = Shader.PropertyToID("_CharaLayerBase");
+        internal static readonly int LayerBloomId = Shader.PropertyToID("_CharaLayerBloom");
+        internal static readonly int LayerBPFId = Shader.PropertyToID("_CharaLayerBPF");
+        // Entradas de la pasada de medida (pass 3) y sus 3 x 2 RT de salida (transicion x grupo).
+        internal static readonly int LayerAId = Shader.PropertyToID("_CharaLayerA");
+        internal static readonly int LayerBId = Shader.PropertyToID("_CharaLayerB");
+        internal static readonly int[] MeasureIds =
+        {
+            // Base->B (Bloom), B->BPF (PostFilm), BPF->Normal (SunShafts/LightShafts)
+            Shader.PropertyToID("_CharaLimitMeasureB0"), Shader.PropertyToID("_CharaLimitMeasureB1"),
+            Shader.PropertyToID("_CharaLimitMeasurePF0"), Shader.PropertyToID("_CharaLimitMeasurePF1"),
+            Shader.PropertyToID("_CharaLimitMeasureS0"), Shader.PropertyToID("_CharaLimitMeasureS1"),
+        };
+        internal static readonly int LayerFlagsId = Shader.PropertyToID("_CharaLimitLayers");
         internal static readonly int WeightId = Shader.PropertyToID("_CharaLimitWeight");
         internal static readonly int SingerId = Shader.PropertyToID("_CharaLimitSinger");
         // Cobertura POR CANTANTE: RT0 = cantantes 1-4 (RGBA), RT1 = cantantes 5-8.
@@ -204,6 +218,37 @@ namespace Gallop.RenderPipeline
         internal static bool Captured;
         // true si DofDiffusionBloomOverlayPass genero este frame la version sin Diffusion.
         internal static bool NoDiffusionReady;
+        // true si este frame hay SunShafts/LightShafts entre la captura y la pasada DOF (lo fija
+        // PostImageEffectFeature al registrar las pasadas).
+        internal static bool ShaftsQueued;
+
+        // Capas generadas este frame por DofDiffusionBloomOverlayPass. Cada entrada es el nameID de la RT
+        // de esa capa, o LAYER_NORMAL si es la imagen final (alias: esa capa no aporta nada este frame).
+        internal const int LAYER_NORMAL = -1;
+        internal static bool LayersReady;
+        internal static int LayerBase = LAYER_NORMAL, LayerB = LAYER_NORMAL, LayerBPF = LAYER_NORMAL;
+        internal static readonly List<int> LayerAllocated = new List<int>(3);
+
+        internal static void ResetLayers()
+        {
+            LayersReady = false;
+            LayerBase = LayerB = LayerBPF = LAYER_NORMAL;
+            LayerAllocated.Clear();
+        }
+
+        /// <summary>Lo consulta DofDiffusionBloomOverlayPass: generar las capas del Saturation Limit.</summary>
+        public static bool WantsLayers => Captured && SaturationActive;
+
+        /// <summary>Mayor id de cantante (1..8) entre los personajes escaneados (0 = ninguno).</summary>
+        internal static int MaxSingerId
+        {
+            get
+            {
+                int m = 0;
+                for (int i = 0; i < _charaSingerId.Count; i++) m = Mathf.Max(m, _charaSingerId[i]);
+                return m;
+            }
+        }
 
         /// <summary>Se registran las pasadas si esta activo cualquiera de los dos ticks.</summary>
         public static bool IsActive => Material != null && (SaturationActive || DiffusionActive);
@@ -392,6 +437,7 @@ namespace Gallop.RenderPipeline
         {
             CharaPostEffectLimiter.Captured = false;
             CharaPostEffectLimiter.NoDiffusionReady = false;
+            CharaPostEffectLimiter.ResetLayers();
             var material = CharaPostEffectLimiter.Material;
             if (_feature == null || material == null) return;
 
@@ -486,13 +532,12 @@ namespace Gallop.RenderPipeline
                         cmd.SetGlobalTexture(CharaPostEffectLimiter.NoDiffusionId, Texture2D.blackTexture);
 
                     cmd.SetGlobalVector(CharaPostEffectLimiter.CurveParamsId, settings.ShaderCurveParams);
-                    // x = radio de referencia; yz = tamaño de texel de la imagen de render (no se depende
-                    // de que Unity rellene *_TexelSize en texturas globales temporales).
-                    var refParams = settings.ShaderRefParams;
-                    refParams.y = 1f / Mathf.Max(1, desc.width);
-                    refParams.z = 1f / Mathf.Max(1, desc.height);
-                    cmd.SetGlobalVector(CharaPostEffectLimiter.RefParamsId, refParams);
-                    cmd.SetGlobalVector(CharaPostEffectLimiter.WhiteParamsId, settings.ShaderWhiteParams);
+                    // yz = tamaño de texel de la imagen de render (no se depende de que Unity rellene
+                    // *_TexelSize en texturas globales temporales).
+                    cmd.SetGlobalVector(CharaPostEffectLimiter.RefParamsId, new Vector4(0f,
+                        1f / Mathf.Max(1, desc.width), 1f / Mathf.Max(1, desc.height), 0f));
+                    cmd.SetGlobalVector(CharaPostEffectLimiter.ThresholdsId, settings.ShaderThresholds);
+                    cmd.SetGlobalVector(CharaPostEffectLimiter.ReduceId, settings.ShaderReduce);
                     cmd.SetGlobalTexture(CharaPostEffectLimiter.OrigId, CharaPostEffectLimiter.OrigId);
                     cmd.SetGlobalTexture(CharaPostEffectLimiter.MaskId, CharaPostEffectLimiter.MaskId);
 
@@ -506,19 +551,78 @@ namespace Gallop.RenderPipeline
                         autoGenerateMips = true,
                         msaaSamples = 1
                     };
+                    bool twoGroups = CharaPostEffectLimiter.MaxSingerId > 4;
                     cmd.GetTemporaryRT(CharaPostEffectLimiter.Coverage0Id, coverageDesc, FilterMode.Bilinear);
-                    cmd.GetTemporaryRT(CharaPostEffectLimiter.Coverage1Id, coverageDesc, FilterMode.Bilinear);
                     cmd.SetGlobalFloat(CharaPostEffectLimiter.CoverageGroupId, 0f);
                     cmd.Blit(CharaPostEffectLimiter.MaskId, CharaPostEffectLimiter.Coverage0Id, material, 2);
-                    cmd.SetGlobalFloat(CharaPostEffectLimiter.CoverageGroupId, 1f);
-                    cmd.Blit(CharaPostEffectLimiter.MaskId, CharaPostEffectLimiter.Coverage1Id, material, 2);
                     cmd.SetGlobalTexture(CharaPostEffectLimiter.Coverage0Id, CharaPostEffectLimiter.Coverage0Id);
-                    cmd.SetGlobalTexture(CharaPostEffectLimiter.Coverage1Id, CharaPostEffectLimiter.Coverage1Id);
+                    if (twoGroups)
+                    {
+                        cmd.GetTemporaryRT(CharaPostEffectLimiter.Coverage1Id, coverageDesc, FilterMode.Bilinear);
+                        cmd.SetGlobalFloat(CharaPostEffectLimiter.CoverageGroupId, 1f);
+                        cmd.Blit(CharaPostEffectLimiter.MaskId, CharaPostEffectLimiter.Coverage1Id, material, 2);
+                        cmd.SetGlobalTexture(CharaPostEffectLimiter.Coverage1Id, CharaPostEffectLimiter.Coverage1Id);
+                    }
+                    else
+                        cmd.SetGlobalTexture(CharaPostEffectLimiter.Coverage1Id, Texture2D.blackTexture);
                     cmd.SetGlobalFloat(CharaPostEffectLimiter.CoverageMipId, CharaPostEffectLimiter.COVERAGE_LAST_MIP);
+
+                    // ---- Limitador por capas ----
+                    // "Normal" = imagen final (en los cantantes, la version sin Diffusion si actua el
+                    // Diffusion Limit). Sin pasada DOF este frame (solo shafts): Base = B = BPF = original.
+                    bool layers = CharaPostEffectLimiter.SaturationActive;
+                    _measured.Clear();
+                    if (layers)
+                    {
+                        RenderTargetIdentifier normal = noDiff
+                            ? new RenderTargetIdentifier(CharaPostEffectLimiter.NoDiffusionId) : source.RtId;
+                        int baseL, bL, bpfL;
+                        if (CharaPostEffectLimiter.LayersReady)
+                        {
+                            baseL = CharaPostEffectLimiter.LayerBase;
+                            bL = CharaPostEffectLimiter.LayerB;
+                            bpfL = CharaPostEffectLimiter.LayerBPF;
+                        }
+                        else
+                        {
+                            baseL = bL = bpfL = CharaPostEffectLimiter.ShaftsQueued
+                                ? CharaPostEffectLimiter.OrigId : CharaPostEffectLimiter.LAYER_NORMAL;
+                        }
+
+                        cmd.SetGlobalTexture(CharaPostEffectLimiter.LayerBaseId, Resolve(baseL, normal));
+                        cmd.SetGlobalTexture(CharaPostEffectLimiter.LayerBloomId, Resolve(bL, normal));
+                        cmd.SetGlobalTexture(CharaPostEffectLimiter.LayerBPFId, Resolve(bpfL, normal));
+
+                        // Medida por transicion (Base->B, B->BPF, BPF->Normal): media del cambio en el
+                        // canal de cada cantante (ultimo mip). Si las dos capas son la misma, 0 sin coste.
+                        _from[0] = baseL; _from[1] = bL; _from[2] = bpfL;
+                        _to[0] = bL; _to[1] = bpfL; _to[2] = CharaPostEffectLimiter.LAYER_NORMAL;
+                        for (int t = 0; t < 3; t++)
+                        {
+                            for (int g = 0; g < 2; g++)
+                            {
+                                int mid = CharaPostEffectLimiter.MeasureIds[t * 2 + g];
+                                if (_from[t] == _to[t] || (g == 1 && !twoGroups))
+                                {
+                                    cmd.SetGlobalTexture(mid, Texture2D.blackTexture);
+                                    continue;
+                                }
+                                cmd.GetTemporaryRT(mid, coverageDesc, FilterMode.Bilinear);
+                                _measured.Add(mid);
+                                cmd.SetGlobalTexture(CharaPostEffectLimiter.LayerAId, Resolve(_from[t], normal));
+                                cmd.SetGlobalTexture(CharaPostEffectLimiter.LayerBId, Resolve(_to[t], normal));
+                                cmd.SetGlobalFloat(CharaPostEffectLimiter.CoverageGroupId, g);
+                                cmd.Blit(CharaPostEffectLimiter.MaskId, mid, material, 3);
+                                cmd.SetGlobalTexture(mid, mid);
+                            }
+                        }
+                    }
+                    cmd.SetGlobalVector(CharaPostEffectLimiter.LayerFlagsId, new Vector4(layers ? 1f : 0f, 0f, 0f, 0f));
 
                     cmd.Blit(source.RtId, CharaPostEffectLimiter.OutId, material, 1);
                     cmd.ReleaseTemporaryRT(CharaPostEffectLimiter.Coverage0Id);
-                    cmd.ReleaseTemporaryRT(CharaPostEffectLimiter.Coverage1Id);
+                    if (twoGroups) cmd.ReleaseTemporaryRT(CharaPostEffectLimiter.Coverage1Id);
+                    for (int i = 0; i < _measured.Count; i++) cmd.ReleaseTemporaryRT(_measured[i]);
                     _feature.SetSourceRT(RenderTextureHandle.Make(CharaPostEffectLimiter.OutId,
                         desc.width, desc.height), cmd, ref renderingData);
                 }
@@ -529,14 +633,24 @@ namespace Gallop.RenderPipeline
                 }
                 if (CharaPostEffectLimiter.NoDiffusionReady)
                     cmd.ReleaseTemporaryRT(CharaPostEffectLimiter.NoDiffusionId);
+                for (int i = 0; i < CharaPostEffectLimiter.LayerAllocated.Count; i++)
+                    cmd.ReleaseTemporaryRT(CharaPostEffectLimiter.LayerAllocated[i]);
                 context.ExecuteCommandBuffer(cmd);
             }
             finally
             {
                 CharaPostEffectLimiter.Captured = false;
                 CharaPostEffectLimiter.NoDiffusionReady = false;
+                CharaPostEffectLimiter.ResetLayers();
                 CommandBufferPool.Release(cmd);
             }
         }
+
+        private readonly List<int> _measured = new List<int>(6);
+        private readonly int[] _from = new int[3];
+        private readonly int[] _to = new int[3];
+
+        private static RenderTargetIdentifier Resolve(int layer, RenderTargetIdentifier normal) =>
+            layer == CharaPostEffectLimiter.LAYER_NORMAL ? normal : new RenderTargetIdentifier(layer);
     }
 }

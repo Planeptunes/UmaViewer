@@ -956,9 +956,7 @@ namespace Gallop.RenderPipeline
                 ref param,
                 source);
 
-            cmd.SetGlobalTexture(
-                ShaderManager.GetPropertyId(ShaderManager.PropertyId._Bloom),
-                GetHandleIdentifier(bloomTexture));
+            SetBloomTexture(cmd, bloomTexture);
 
             SetBloomScreenBlend(cmd, param.BloomBlendMode);
 
@@ -984,9 +982,7 @@ namespace Gallop.RenderPipeline
             cmd.SetGlobalFloat(bloomDofWeightId, param.BloomDofWeight);
 
             RenderTextureHandle bloom = CreateBloomTexture(ref context, cmd, ref param, source);
-            cmd.SetGlobalTexture(
-                ShaderManager.GetPropertyId(ShaderManager.PropertyId._Bloom),
-                GetHandleIdentifier(bloom));
+            SetBloomTexture(cmd, bloom);
             SetBloomScreenBlend(cmd, param.BloomBlendMode);
 
             if (!InvokePostFilmBlit(
@@ -1396,9 +1392,7 @@ namespace Gallop.RenderPipeline
                 dofBloomTexture,
                 downSampleTexture);
 
-            cmd.SetGlobalTexture(
-                ShaderManager.GetPropertyId(ShaderManager.PropertyId._Bloom),
-                GetHandleIdentifier(bloomTexture));
+            SetBloomTexture(cmd, bloomTexture);
             SetBloomScreenBlend(cmd, param.BloomBlendMode);
 
             if (!InvokePostFilmBlit(
@@ -1633,9 +1627,7 @@ namespace Gallop.RenderPipeline
                     param.DiffusionContrast,
                     param.DiffusionThreshold));
 
-            cmd.SetGlobalTexture(
-                ShaderManager.GetPropertyId(ShaderManager.PropertyId._Bloom),
-                GetHandleIdentifier(bloomTexture));
+            SetBloomTexture(cmd, bloomTexture);
 
             cmd.SetGlobalTexture(
                 ShaderManager.GetPropertyId(ShaderManager.PropertyId._RgbTex),
@@ -1852,9 +1844,7 @@ namespace Gallop.RenderPipeline
                         diffusionDofBloom,
                         downSample);
 
-                cmd.SetGlobalTexture(
-                    ShaderManager.GetPropertyId(ShaderManager.PropertyId._Bloom),
-                    GetHandleIdentifier(bloomTexture));
+                SetBloomTexture(cmd, bloomTexture);
 
                 SetBloomScreenBlend(cmd, param.BloomBlendMode);
                 basePass = 8;
@@ -1934,67 +1924,27 @@ namespace Gallop.RenderPipeline
                     ShaderManager.GetPropertyId(ShaderManager.PropertyId._Bloom),
                     Texture2D.blackTexture);
 
-                switch (param.UseDofDiffusionBloomType)
-                {
-                    case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.DofBloom:
-                        OnRenderImageDofBloom(ref context, cmd, ref param, source, destination);
-                        break;
-
-                    case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.DiffusionDofBloom:
-                        OnRenderImageDiffusionDofBloom(ref context, cmd, ref param, source, destination);
-                        break;
-
-                    case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.Bloom:
-                        OnRenderImageFastBloom(ref context, cmd, ref param, source, destination);
-                        break;
-
-                    case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.DiffusionBloom:
-                        OnRenderImageDiffusionFastBloom(ref context, cmd, ref param, source, destination);
-                        break;
-
-                    case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.Dof:
-                        OnRenderImageDof(ref context, cmd, ref param, source, destination);
-                        break;
-
-                    case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.OldDof:
-                        OnRenderImageOldDof(ref param, ref context, cmd, source, destination);
-                        break;
-
-                    case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.OldDofFastBloom:
-                        OnRenderImageOldFastBloom(ref context, cmd, ref param, source, destination);
-                        break;
-
-                    case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.OverlayOnly:
-                        OnRenderImageOverlay(ref context, cmd, ref param, source, destination);
-                        break;
-
-                    default:
-                        Blit(cmd, source, destination, null, -1);
-                        break;
-                }
+                RenderMode(ref context, cmd, ref param, param.UseDofDiffusionBloomType, source, destination);
 
                 // "Diffusion Limit": misma pasada SIN Diffusion (Bloom/DOF/PostFilm intactos) en una RT
                 // aparte; CharaPostEffectLimiterApplyPass la usa en los pixeles de los cantantes.
                 if ((int)renderPassEvent <= 550 && CharaPostEffectLimiter.WantsNoDiffusion)
                 {
                     var mode = param.UseDofDiffusionBloomType;
-                    bool hasDiffusion =
-                        mode == DofDiffusionBloomOverlayParam.DofDiffusionBloomType.DiffusionBloom ||
-                        mode == DofDiffusionBloomOverlayParam.DofDiffusionBloomType.DiffusionDofBloom;
                     RenderTextureHandle noDiffusion = RenderTextureHandle.Make(
                         CharaPostEffectLimiter.NoDiffusionId, width, height);
                     Allocate(cmd, noDiffusion, width, height);
-                    if (hasDiffusion)
+                    if (HasDiffusion(mode))
                     {
                         // Copia del parametro: las sub-pasadas modifican overlays por ref.
                         Parameter noDiffusionParam = param;
                         noDiffusionParam.IsEnableDiffusion = false;
                         cmd.SetGlobalTexture(ShaderManager.GetPropertyId(ShaderManager.PropertyId._Bloom),
                             Texture2D.blackTexture);
-                        if (mode == DofDiffusionBloomOverlayParam.DofDiffusionBloomType.DiffusionDofBloom)
-                            OnRenderImageDofBloom(ref context, cmd, ref noDiffusionParam, source, noDiffusion);
-                        else
-                            OnRenderImageFastBloom(ref context, cmd, ref noDiffusionParam, source, noDiffusion);
+                        // DiffusionDofBloom sin Bloom (tick apagado): la ruta DofBloom no debe añadirlo.
+                        _suppressBloom = !ModeHasBloom(mode, ref param);
+                        try { RenderMode(ref context, cmd, ref noDiffusionParam, mode, source, noDiffusion, true); }
+                        finally { _suppressBloom = false; }
                     }
                     else
                     {
@@ -2003,6 +1953,11 @@ namespace Gallop.RenderPipeline
                     }
                     CharaPostEffectLimiter.NoDiffusionReady = true;
                 }
+
+                // "Saturation Limit" por capas: la misma pasada sobre la imagen SIN shafts
+                // (_CharaLimitOrig) con Bloom/PostFilm apagados para separar cada capa.
+                if ((int)renderPassEvent <= 550 && CharaPostEffectLimiter.WantsLayers)
+                    RenderLimiterLayers(ref context, cmd, ref param, width, height);
 
                 // Official behavior: passes at or before 550 hand the temporary RT to
                 // PostImageEffectFeature; later passes write directly to camera color.
@@ -2037,6 +1992,177 @@ namespace Gallop.RenderPipeline
             }
         }
 
+        // ---- Limitador de post efectos por capas (ver CharaPostEffectLimiter) ----
+        // Con estos flags la pasada se ejecuta igual pero sin Bloom (_Bloom en negro: neutro tanto en
+        // suma como en modo screen) y/o sin PostFilm (cada ruta hace su Blit base sin overlay).
+        private bool _suppressBloom;
+        private bool _suppressPostFilm;
+
+        private void SetBloomTexture(CommandBuffer cmd, RenderTextureHandle bloom)
+        {
+            int id = ShaderManager.GetPropertyId(ShaderManager.PropertyId._Bloom);
+            if (_suppressBloom) cmd.SetGlobalTexture(id, Texture2D.blackTexture);
+            else cmd.SetGlobalTexture(id, GetHandleIdentifier(bloom));
+        }
+
+        private static bool HasDiffusion(DofDiffusionBloomOverlayParam.DofDiffusionBloomType mode) =>
+            mode == DofDiffusionBloomOverlayParam.DofDiffusionBloomType.DiffusionBloom ||
+            mode == DofDiffusionBloomOverlayParam.DofDiffusionBloomType.DiffusionDofBloom;
+
+        private static bool ModeHasBloom(DofDiffusionBloomOverlayParam.DofDiffusionBloomType mode, ref Parameter param)
+        {
+            switch (mode)
+            {
+                case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.DofBloom:
+                case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.Bloom:
+                case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.DiffusionBloom:
+                case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.OldDofFastBloom:
+                    return true;
+                case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.DiffusionDofBloom:
+                    return param.IsEnableBloom;
+                default:
+                    return false;
+            }
+        }
+
+        // Rutas que llaman a InvokePostFilmBlit (OldDof / OldDofFastBloom no tienen PostFilm).
+        private static bool ModeHasPostFilm(DofDiffusionBloomOverlayParam.DofDiffusionBloomType mode)
+        {
+            switch (mode)
+            {
+                case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.DofBloom:
+                case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.DiffusionDofBloom:
+                case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.Bloom:
+                case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.DiffusionBloom:
+                case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.Dof:
+                case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.OverlayOnly:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        /// <summary>
+        /// Ejecuta la ruta del modo indicado. noDiffusion = true: las rutas con Diffusion se sustituyen por
+        /// su equivalente sin Diffusion (DiffusionDofBloom -> DofBloom, DiffusionBloom -> FastBloom).
+        /// </summary>
+        private void RenderMode(
+            ref ScriptableRenderContext context,
+            CommandBuffer cmd,
+            ref Parameter param,
+            DofDiffusionBloomOverlayParam.DofDiffusionBloomType mode,
+            RenderTextureHandle source,
+            RenderTextureHandle destination,
+            bool noDiffusion = false)
+        {
+            switch (mode)
+            {
+                case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.DofBloom:
+                    OnRenderImageDofBloom(ref context, cmd, ref param, source, destination);
+                    break;
+
+                case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.DiffusionDofBloom:
+                    if (noDiffusion) OnRenderImageDofBloom(ref context, cmd, ref param, source, destination);
+                    else OnRenderImageDiffusionDofBloom(ref context, cmd, ref param, source, destination);
+                    break;
+
+                case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.Bloom:
+                    OnRenderImageFastBloom(ref context, cmd, ref param, source, destination);
+                    break;
+
+                case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.DiffusionBloom:
+                    if (noDiffusion) OnRenderImageFastBloom(ref context, cmd, ref param, source, destination);
+                    else OnRenderImageDiffusionFastBloom(ref context, cmd, ref param, source, destination);
+                    break;
+
+                case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.Dof:
+                    OnRenderImageDof(ref context, cmd, ref param, source, destination);
+                    break;
+
+                case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.OldDof:
+                    OnRenderImageOldDof(ref param, ref context, cmd, source, destination);
+                    break;
+
+                case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.OldDofFastBloom:
+                    OnRenderImageOldFastBloom(ref context, cmd, ref param, source, destination);
+                    break;
+
+                case DofDiffusionBloomOverlayParam.DofDiffusionBloomType.OverlayOnly:
+                    OnRenderImageOverlay(ref context, cmd, ref param, source, destination);
+                    break;
+
+                default:
+                    Blit(cmd, source, destination, null, -1);
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// Genera las capas del Saturation Limit a partir de _CharaLimitOrig (imagen antes de shafts):
+        ///   BPF  = Bloom + PostFilm (solo si hay shafts; si no, es la imagen final)
+        ///   B    = sin PostFilm     (solo si hay PostFilm; si no, alias de BPF)
+        ///   Base = sin Bloom ni PostFilm (solo si el modo tiene Bloom; si no, alias de B)
+        /// Si actua el Diffusion Limit, todas se generan sin Diffusion (como la imagen de los cantantes).
+        /// </summary>
+        private void RenderLimiterLayers(
+            ref ScriptableRenderContext context,
+            CommandBuffer cmd,
+            ref Parameter param,
+            int width,
+            int height)
+        {
+            var mode = param.UseDofDiffusionBloomType;
+            bool noDiffusion = CharaPostEffectLimiter.WantsNoDiffusion && HasDiffusion(mode);
+            bool hasBloom = ModeHasBloom(mode, ref param);
+            bool hasPostFilm = ModeHasPostFilm(mode) && _overlayRender != null && param.IsEnableOverlay &&
+                PostEffectSelection.IsEnabled(PostEffectId.PostFilm);
+            var orig = RenderTextureHandle.Make(CharaPostEffectLimiter.OrigId, width, height);
+
+            int next = CharaPostEffectLimiter.LAYER_NORMAL;
+            if (CharaPostEffectLimiter.ShaftsQueued)
+                next = RenderLayer(ref context, cmd, ref param, mode, orig, CharaPostEffectLimiter.LayerBPFId,
+                    width, height, hasBloom, hasPostFilm, noDiffusion);
+            CharaPostEffectLimiter.LayerBPF = next;
+            if (hasPostFilm)
+                next = RenderLayer(ref context, cmd, ref param, mode, orig, CharaPostEffectLimiter.LayerBloomId,
+                    width, height, hasBloom, false, noDiffusion);
+            CharaPostEffectLimiter.LayerB = next;
+            if (hasBloom)
+                next = RenderLayer(ref context, cmd, ref param, mode, orig, CharaPostEffectLimiter.LayerBaseId,
+                    width, height, false, false, noDiffusion);
+            CharaPostEffectLimiter.LayerBase = next;
+            CharaPostEffectLimiter.LayersReady = true;
+        }
+
+        private int RenderLayer(
+            ref ScriptableRenderContext context,
+            CommandBuffer cmd,
+            ref Parameter param,
+            DofDiffusionBloomOverlayParam.DofDiffusionBloomType mode,
+            RenderTextureHandle source,
+            int layerId,
+            int width,
+            int height,
+            bool bloom,
+            bool postFilm,
+            bool noDiffusion)
+        {
+            RenderTextureHandle layer = RenderTextureHandle.Make(layerId, width, height);
+            Allocate(cmd, layer, width, height);
+            CharaPostEffectLimiter.LayerAllocated.Add(layerId);
+
+            // Copia del parametro: las sub-pasadas modifican overlays por ref.
+            Parameter layerParam = param;
+            if (noDiffusion) layerParam.IsEnableDiffusion = false;
+            cmd.SetGlobalTexture(ShaderManager.GetPropertyId(ShaderManager.PropertyId._Bloom),
+                Texture2D.blackTexture);
+            _suppressBloom = !bloom;
+            _suppressPostFilm = !postFilm;
+            try { RenderMode(ref context, cmd, ref layerParam, mode, source, layer, noDiffusion); }
+            finally { _suppressBloom = _suppressPostFilm = false; }
+            return layerId;
+        }
+
         private bool InvokePostFilmBlit(
             ScriptableRenderContext context,
             CommandBuffer cmd,
@@ -2052,6 +2178,9 @@ namespace Gallop.RenderPipeline
         {
             // Per-effect switch of the live settings panel ("Post film").
             if (!PostEffectSelection.IsEnabled(PostEffectId.PostFilm))
+                return false;
+            // Capa sin PostFilm del limitador por capas.
+            if (_suppressPostFilm)
                 return false;
             if (_overlayRender == null)
                 return false;

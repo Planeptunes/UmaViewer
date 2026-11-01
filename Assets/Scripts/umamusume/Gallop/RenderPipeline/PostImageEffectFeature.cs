@@ -342,6 +342,7 @@ namespace Gallop.RenderPipeline
                 CharaPostEffectLimiter.IsActive;
             if (charaLimiter)
             {
+                CharaPostEffectLimiter.ShaftsQueued = sunReady || shaftsReady;
                 _charaLimiterCapturePass.Setup(this, (RenderPassEvent)schedule.FirstEvent);
                 _registerPass.Add(_charaLimiterCapturePass);
             }
