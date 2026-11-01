@@ -1050,6 +1050,17 @@ namespace Gallop
             }
         }
 
+        // Reapplies the last solved rotations without stepping the solver. Used on render frames
+        // that fall between two fixed physics steps: the animator has already written the animated
+        // pose back to the spring bones, so without this they would snap to it and flicker.
+        public void ReapplyLastSimulation()
+        {
+            if (_springArray == null || !_isPlaying || !_initialized)
+                return;
+
+            PostSpringAll();
+        }
+
         // (DIAG) Acceso de solo lectura a la cadena de un part (0=Head, 1=Body, 2=Tail).
         public CySpring GetSpringArray(int index)
         {

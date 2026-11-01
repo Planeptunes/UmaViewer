@@ -1532,6 +1532,12 @@ public class UmaContainerCharacter : UmaContainer
                 steps++;
             }
 
+            // Frame de render sin paso de fisica (120 fps con el solver a 30/60 Hz): el Animator ya
+            // ha vuelto a escribir la pose animada en los huesos del spring, asi que se reaplica el
+            // ultimo resultado; si no, pelo y tela saltan entre la pose animada y la simulada.
+            if (steps == 0)
+                _cySpringController.ReapplyLastSimulation();
+
             // Si el frame fue muy largo (carga, hitch) no acumulamos deuda infinita.
             if (_cySpringStepAccumulator > fixedStep * 2.0f)
                 _cySpringStepAccumulator = fixedStep;
