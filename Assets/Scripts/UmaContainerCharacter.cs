@@ -1514,6 +1514,12 @@ public class UmaContainerCharacter : UmaContainer
             float targetFps = _cySpringController.TargetCySpringFPS;
             float fixedStep = targetFps > 0.0f ? 1.0f / targetFps : 0.0f;
 
+            // Los clips del live pueden traer curvas de posicion/escala en huesos Sp_* hechas para
+            // el modelo original de la cancion (1091: anm_liv_son1091_1st/2nd desplazan la raiz de
+            // las coletas 4-5 cm). La fisica solo decide rotaciones, asi que se devuelve cada hueso
+            // simulado a su traslacion/escala de bind ANTES del paso (el solver lee localPosition).
+            _cySpringController.RestoreSimulatedBoneBindTranslation();
+
             if (fixedStep <= 0.0f)
             {
                 _cySpringController.BeginSimulation(dt, false);

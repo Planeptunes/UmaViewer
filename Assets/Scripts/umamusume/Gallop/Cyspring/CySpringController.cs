@@ -1061,6 +1061,37 @@ namespace Gallop
             PostSpringAll();
         }
 
+        // Puts the local position and scale of every simulated spring bone back to its bind pose
+        // (FirstLocalMatrix, captured from the model when the springs are created). Live motion
+        // clips may carry position/scale curves on Sp_* bones authored for the song's original
+        // model; on any other model they move the chain roots away from where the mesh expects
+        // them (e.g. twintails detached from their hair ties). The solver only drives rotations,
+        // so without this those foreign offsets survive the simulation. Bones whose result is not
+        // applied (ShouldReflectCalcResult == false) keep the clip's full animation.
+        public void RestoreSimulatedBoneBindTranslation()
+        {
+            if (_springArray == null || !_isPlaying || !_initialized)
+                return;
+
+            foreach (CySpringBoneBase bone in FindAllCySpringBones())
+            {
+                if (bone == null || !bone.Exist || !bone.ShouldReflectCalcResult)
+                    continue;
+
+                Transform t = bone.Transform;
+                if (t == null)
+                    continue;
+
+                Matrix4x4 bind = bone.FirstLocalMatrix;
+                Vector3 position = bind.GetColumn(3);
+                Vector3 scale = bind.lossyScale;
+                if (t.localPosition != position)
+                    t.localPosition = position;
+                if (t.localScale != scale)
+                    t.localScale = scale;
+            }
+        }
+
         // (DIAG) Acceso de solo lectura a la cadena de un part (0=Head, 1=Body, 2=Tail).
         public CySpring GetSpringArray(int index)
         {
