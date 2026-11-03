@@ -19,8 +19,9 @@ namespace Gallop.Live
     // data condition, not an engine failure, so it is reported once as a warning instead of an error.
     public sealed class MirrorScanLightRuntime : IDisposable
     {
-        public const string ControllerPath =
-            "3d/env/live/common/mirrorscanlight/pfb_env_live_cmn_mslight_controller000";
+        // Native StageController only binds mirror-scan lights when one of the stage's own prefabs
+        // carries this token; the controller is instantiated with the rest of the stage objects.
+        public const string ControllerToken = "_mslight_controller";
 
         private const string MaterialPathFormat =
             "3d/env/live/common/mirrorscanlight/materials/mtl_env_live_cmn_mslight{0:000}";
@@ -64,21 +65,24 @@ namespace Gallop.Live
         public static string GetTexturePath(int textureId) => string.Format(
             System.Globalization.CultureInfo.InvariantCulture, TexturePathFormat, textureId);
 
-        public void Initialize(Transform stageRoot, IList<LiveTimelineProjectorData> groups,
-            Func<string, GameObject> prefabResolver, Func<int, Material> materialResolver,
-            IList<Texture> textures = null)
+        // Stage objects are instantiated as direct children of the stage root.
+        public static GameObject FindController(Transform stageRoot)
+        {
+            if (stageRoot == null) return null;
+            foreach (Transform child in stageRoot)
+                if (child.name.IndexOf(ControllerToken, StringComparison.OrdinalIgnoreCase) >= 0)
+                    return child.gameObject;
+            return null;
+        }
+
+        // `controller` is the stage's own controller instance; fixtures are spawned beneath it.
+        public void Initialize(GameObject controller, IList<LiveTimelineProjectorData> groups,
+            Func<int, Material> materialResolver, IList<Texture> textures = null)
         {
             Dispose();
             _textures = textures != null && textures.Count > 0 ? textures : null;
-            if (stageRoot == null) throw new ArgumentNullException(nameof(stageRoot));
-            GameObject controller = prefabResolver != null ? prefabResolver(ControllerPath) : null;
-            if (controller == null)
-            {
-                Debug.LogError("[MirrorScanLight] Authored controller prefab is unavailable: " + ControllerPath);
-                return;
-            }
-            _root = Object.Instantiate(controller, stageRoot, false);
-            _root.name = "mslight_runtime";
+            if (controller == null) throw new ArgumentNullException(nameof(controller));
+            _root = controller;
             AssetHolder holder = _root.GetComponentInChildren<AssetHolder>(true);
             if (holder == null)
             {
@@ -229,14 +233,14 @@ namespace Gallop.Live
 
         public void Dispose()
         {
+            // The controller belongs to the stage; only the fixtures spawned here are destroyed.
+            for (int i = 0; i < _bindings.Count; i++)
+                if (_bindings[i].instance != null) Object.Destroy(_bindings[i].instance);
             _bindings.Clear();
             _byHash.Clear();
             _missingGroups.Clear();
             _textures = null;
             Array.Clear(_materials, 0, _materials.Length);
-            if (_root == null) return;
-            _root.SetActive(false);
-            Object.Destroy(_root);
             _root = null;
         }
     }

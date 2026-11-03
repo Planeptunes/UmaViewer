@@ -730,7 +730,11 @@ namespace Gallop.Live
                 _mirrorScanLightRuntime.Dispose();
                 _mirrorScanLightRuntime = null;
             }
-            if (_stageController != null)
+            // Native: without a `_mslight_controller` among the stage objects the `projecterList`
+            // track has no fixture to drive and draws nothing (stage 10114 authors keys but no controller).
+            GameObject mirrorScanController = _stageController != null
+                ? MirrorScanLightRuntime.FindController(_stageController.transform) : null;
+            if (mirrorScanController != null)
             {
                 _mirrorScanLightRuntime = new MirrorScanLightRuntime();
                 var mirrorScanTextures = new List<Texture>();
@@ -738,9 +742,8 @@ namespace Gallop.Live
                     foreach (int textureId in live.GetMirrorScanLightTextureIds())
                         mirrorScanTextures.Add(LiveFlashResourceUtility.LoadOnView<Texture>(
                             MirrorScanLightRuntime.GetTexturePath(textureId)));
-                _mirrorScanLightRuntime.Initialize(_stageController.transform,
+                _mirrorScanLightRuntime.Initialize(mirrorScanController,
                     _liveTimelineControl.GetWorkSheetBySheetIndex(LiveTimelineDefine.SheetIndex.MainLive)?.projecterList,
-                    path => LiveFlashResourceUtility.LoadOnView<GameObject>(path),
                     id => LiveFlashResourceUtility.LoadOnView<Material>(MirrorScanLightRuntime.GetMaterialPath(id)),
                     mirrorScanTextures);
                 _liveTimelineControl.OnUpdateProjector += _mirrorScanLightRuntime.Apply;
