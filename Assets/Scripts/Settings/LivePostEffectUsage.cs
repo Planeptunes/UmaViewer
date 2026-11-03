@@ -5,10 +5,9 @@ using UnityEngine;
 namespace Gallop.RenderPipeline
 {
     /// <summary>
-    /// Qué post efectos con pista propia usa de verdad la canción cargada. Los efectos de esta lista
-    /// que la canción nunca activa (p. ej. Vortex, que solo usa una canción) se ocultan del listado de
-    /// post efectos. El resto de efectos (DOF, bloom, PostFilm, niebla, shafts, limitadores...) no
-    /// dependen de una pista de la cámara y se muestran siempre.
+    /// Qué post efectos usa de verdad la canción cargada. Los que la canción nunca activa (p. ej.
+    /// Vortex, que solo usa una canción) se ocultan del listado de post efectos. Los limitadores
+    /// (Saturation Limit, DOF Limit) se muestran solo si la canción usa algún efecto que limitan.
     ///
     /// Una pista "se usa" si alguna key cambia algo: el criterio es el mismo con el que se hizo la
     /// auditoría de docs/POST_EFFECTS_POR_CANCION.md.
@@ -22,24 +21,21 @@ namespace Gallop.RenderPipeline
         /// <summary>Se dispara cuando cambia la canción analizada.</summary>
         public static event System.Action Changed;
 
-        /// <summary>false si el efecto tiene pista propia y la canción cargada no la usa.</summary>
+        /// <summary>false si la canción cargada no usa el efecto.</summary>
         public static bool IsRelevant(PostEffectId id)
         {
             if (_used == null) return true;
             switch (id)
             {
-                case PostEffectId.RadialBlur:
-                case PostEffectId.TiltShift:
-                case PostEffectId.ChromaticAberration:
-                case PostEffectId.Vortex:
-                case PostEffectId.Fluctuation:
-                case PostEffectId.ColorCorrection:
-                case PostEffectId.Exposure:
-                case PostEffectId.ToneCurve:
-                case PostEffectId.LightShafts:
-                    return _used.Contains(id);
+                // Limitan la luz añadida por Bloom/PostFilm/SunShafts/Diffusion sobre los cantantes.
+                case PostEffectId.CharaLimit:
+                case PostEffectId.DiffusionLimit:
+                    return _used.Contains(PostEffectId.Bloom) || _used.Contains(PostEffectId.PostFilm) ||
+                           _used.Contains(PostEffectId.SunShafts) || _used.Contains(PostEffectId.Diffusion);
+                case PostEffectId.DofLimit:
+                    return _used.Contains(PostEffectId.Dof);
                 default:
-                    return true;
+                    return _used.Contains(id);
             }
         }
 
@@ -136,8 +132,76 @@ namespace Gallop.RenderPipeline
                         if (group != null && group.keys != null)
                             foreach (var k in group.keys.thisList)
                                 if (k != null && k.enabled) used.Add(PostEffectId.LightShafts);
+
+                // DOF: bit 18 del atributo (SetupDOFUpdateInfo).
+                if (sheet.postEffectDOFKeys != null)
+                    foreach (var k in sheet.postEffectDOFKeys.thisList)
+                        if (k != null && ((int)k.attribute & (1 << 18)) != 0) used.Add(PostEffectId.Dof);
+
+                if (sheet.postEffectBloomDiffusionKeys != null)
+                    foreach (var k in sheet.postEffectBloomDiffusionKeys.thisList)
+                        AddBloomDiffusion(used, k);
+                if (sheet.postEffectBloomDiffusionMultiCameraKeys != null)
+                    foreach (var group in sheet.postEffectBloomDiffusionMultiCameraKeys)
+                        if (group != null && group.keys != null)
+                            foreach (var k in group.keys.thisList)
+                                AddBloomDiffusion(used, k);
+
+                AddPostFilm(used, sheet.postFilmKeys);
+                AddPostFilm(used, sheet.postFilm2Keys);
+                AddPostFilm(used, sheet.postFilm3Keys);
+                AddPostFilm(used, sheet.postFilm1MultiCameraKeys);
+                AddPostFilm(used, sheet.postFilm2MultiCameraKeys);
+                AddPostFilm(used, sheet.postFilm3MultiCameraKeys);
+
+                // Global fog: con distancia y altura apagadas la key solo deja la niebla desactivada.
+                if (sheet.globalFogDataLists != null)
+                    foreach (var group in sheet.globalFogDataLists)
+                        if (group != null && group.keys != null)
+                            foreach (var k in group.keys.thisList)
+                                if (k != null && (k.isDistance || k.isHeight)) used.Add(PostEffectId.GlobalFog);
+
+                // Sun shafts: los activa la pista VolumeLight (LiveVolumeLightController.UpdateVolume).
+                if (sheet.volumeLightKeys != null)
+                    foreach (var group in sheet.volumeLightKeys)
+                        if (group != null && group.keys != null)
+                            foreach (var k in group.keys.thisList)
+                                if (k != null && k.enable && k.power > 0f) used.Add(PostEffectId.SunShafts);
+
+                if (sheet.lensFlareList != null)
+                    foreach (var group in sheet.lensFlareList)
+                        if (group != null && group.keys != null)
+                            foreach (var k in group.keys.thisList)
+                                if (k != null && k.enableFlare) used.Add(PostEffectId.LensFlare);
+
+                if (sheet.TransmittedLightKeys != null)
+                    foreach (var k in sheet.TransmittedLightKeys.thisList)
+                        if (k != null && k.IsEnable) used.Add(PostEffectId.TransmittedLight);
             }
             return used;
+        }
+
+        private static void AddBloomDiffusion(HashSet<PostEffectId> used, LiveTimelineKeyPostEffectBloomDiffusionData k)
+        {
+            if (k == null) return;
+            if (k.IsEnabledBloom) used.Add(PostEffectId.Bloom);
+            if (k.IsEnabledDiffusion) used.Add(PostEffectId.Diffusion);
+        }
+
+        private static void AddPostFilm(HashSet<PostEffectId> used, LiveTimelineKeyPostFilmDataList keys)
+        {
+            if (keys == null) return;
+            foreach (var k in keys.thisList)
+                if (k != null && k.filmMode != PostFilmMode.None && k.filmPower > 0f) used.Add(PostEffectId.PostFilm);
+        }
+
+        private static void AddPostFilm(HashSet<PostEffectId> used, List<LiveTimelineMultiCameraPostFilmData> groups)
+        {
+            if (groups == null) return;
+            foreach (var group in groups)
+                if (group != null && group.keys != null)
+                    foreach (var k in group.keys.thisList)
+                        if (k != null && k.filmMode != PostFilmMode.None && k.filmPower > 0f) used.Add(PostEffectId.PostFilm);
         }
 
         // Curva de color "no hace nada": f(t) = t.
