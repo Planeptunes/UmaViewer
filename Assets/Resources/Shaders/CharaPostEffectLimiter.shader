@@ -34,8 +34,20 @@ Shader "Hidden/UmaViewer/CharaPostEffectLimiter"
 
     sampler2D_float _CharaLimitMask;
     sampler2D_float _CameraDepthTexture;
-    // z = whiteWeight
+    // z = whiteWeight, w = 1 si esta activa la puerta de blancura del resultado (ver TEMPORAL abajo)
     float4 _CharaLimitReduce;
+    // TEMPORAL (puerta de blancura; borrar junto con el pass 4 y los usos de _CharaLimitReduce.w si se
+    // decide quedarse con el metodo anterior, que solo mide la luz añadida por capa).
+    // x/y = blancura de pixel (min(r,g,b)) donde empieza / termina de contar como "quemado",
+    // z/w = fraccion de pixeles quemados del cantante a partir de la cual empieza / alcanza el 100 % la puerta.
+    float4 _CharaLimitWhite;
+
+    // TEMPORAL: 0 = pixel con color, 1 = pixel lavado a blanco.
+    float PixelWhite(float3 c)
+    {
+        float w = min(saturate(c.r), min(saturate(c.g), saturate(c.b)));
+        return smoothstep(_CharaLimitWhite.x, max(_CharaLimitWhite.y, _CharaLimitWhite.x + 1e-4), w);
+    }
 
     // Muestra de la mascara si el personaje es visible (sin escenario delante); 0 en otro caso.
     // x = peso, y = id de cantante (1..8; 0 = mob).
@@ -147,6 +159,11 @@ Shader "Hidden/UmaViewer/CharaPostEffectLimiter"
             sampler2D _CharaLimitMeasurePF1;
             sampler2D _CharaLimitMeasureS0;
             sampler2D _CharaLimitMeasureS1;
+            // TEMPORAL: fraccion de pixeles quemados del resultado final (pass 4), grupo 0 / 1.
+            // Texture2D + sampler en linea (solo D3D11): el pass ya agota los 16 samplers con sampler2D.
+            Texture2D _CharaLimitMeasureW0;
+            Texture2D _CharaLimitMeasureW1;
+            SamplerState sampler_linear_clamp;
 
             // Media (ultimo mip) del canal del cantante k (0..7) en el par de RT (grupo 0 / grupo 1).
             #define SINGER_MEAN(T0, T1, k) Channel((k) < 4 \
@@ -176,9 +193,8 @@ Shader "Hidden/UmaViewer/CharaPostEffectLimiter"
             }
 
             // Diffusion Limit: 1 donde hay un CANTANTE visible, con las atenuaciones opcionales.
-            float SingerVisible(float2 uv)
+            float SingerVisible(float2 c)
             {
-                float2 c = VisibleChara(uv);
                 if (c.y <= 0.5) return 0.0;
                 float v = _CharaLimitDiff.y > 0.5 ? c.x : 1.0;
                 if (_CharaLimitDiff.z > 0.5) v *= CoverageFadeOf(c.y);
@@ -197,6 +213,21 @@ Shader "Hidden/UmaViewer/CharaPostEffectLimiter"
             // Factores (kB, kPF, kS) del cantante 'id' a partir del cambio medio de cada transicion.
             // Orden: 1) Bloom, 2) PostFilm (sobre el Bloom ya reducido), 3) SunShafts/LightShafts (sobre
             // ambos ya reducidos).
+            // TEMPORAL: puerta de blancura del cantante 'id' (1 si esta desactivada): fraccion de sus pixeles ya
+            // quemados en el resultado final, de gateStart a gateEnd. La comparten el Saturation Limit y la
+            // parte de Diffusion (ambos solo actuan si el cantante esta de verdad lavado a blanco).
+            float BurnGate(float id)
+            {
+                if (_CharaLimitReduce.w <= 0.5) return 1.0;
+                int k = (int)round(id) - 1;
+                float cov = max(CoverageOf(id), 1e-4);
+                float4 w4 = k < 4
+                    ? _CharaLimitMeasureW0.SampleLevel(sampler_linear_clamp, float2(0.5, 0.5), _CharaLimitCoverageMip)
+                    : _CharaLimitMeasureW1.SampleLevel(sampler_linear_clamp, float2(0.5, 0.5), _CharaLimitCoverageMip);
+                float burnt = max(Channel(w4, k - (k < 4 ? 0 : 4)), 0.0) / cov;
+                return smoothstep(_CharaLimitWhite.z, max(_CharaLimitWhite.w, _CharaLimitWhite.z + 1e-4), burnt);
+            }
+
             float3 LayerFactors(float id)
             {
                 int k = (int)round(id) - 1;
@@ -224,29 +255,38 @@ Shader "Hidden/UmaViewer/CharaPostEffectLimiter"
                 float4 fxSample = tex2D(_MainTex, uv);
                 float3 fx = fxSample.rgb;
 
-                // Diffusion Limit: neutralizacion completa (no reduccion) en los cantantes visibles.
+                // Muestras de la mascara (centro y 4 vecinas para suavizar el borde). El cantante del pixel
+                // es el del centro o, en el borde, el de la muestra vecina que lo tenga.
+                float2 c0 = VisibleChara(uv);
+                float2 c1 = VisibleChara(uv + float2(d.x, 0));
+                float2 c2 = VisibleChara(uv - float2(d.x, 0));
+                float2 c3 = VisibleChara(uv + float2(0, d.y));
+                float2 c4 = VisibleChara(uv - float2(0, d.y));
+                float id = c0.y > 0.5 ? c0.y : max(max(c1.y, c2.y), max(c3.y, c4.y));
+
+                // ETAPA 1 (Diffusion): neutralizacion completa en los cantantes visibles, como cuando era un
+                // limitador aparte. Sin puerta de blancura.
                 if (_CharaLimitDiff.x > 0.5)
                 {
-                    float singerMask = (SingerVisible(uv) * 2.0
-                        + SingerVisible(uv + float2(d.x, 0)) + SingerVisible(uv - float2(d.x, 0))
-                        + SingerVisible(uv + float2(0, d.y)) + SingerVisible(uv - float2(0, d.y))) / 6.0;
+                    float singerMask = (SingerVisible(c0) * 2.0 + SingerVisible(c1) + SingerVisible(c2)
+                        + SingerVisible(c3) + SingerVisible(c4)) / 6.0;
                     fx = lerp(fx, tex2D(_CharaNoDiffusion, uv).rgb, singerMask);
                 }
 
                 if (_CharaLimitLayers.x < 0.5 || _CharaLimitParams.z <= 0.0)
                     return float4(fx, fxSample.a);
 
-                // Mascara del Saturation Limit (graduada por la cobertura de cada cantante), con el borde
-                // suavizado con 5 muestras. El cantante del pixel es el del centro o, en el borde, el de
-                // la muestra vecina que lo tenga.
-                float2 c0 = VisibleChara(uv);
-                float2 c1 = VisibleChara(uv + float2(d.x, 0));
-                float2 c2 = VisibleChara(uv - float2(d.x, 0));
-                float2 c3 = VisibleChara(uv + float2(0, d.y));
-                float2 c4 = VisibleChara(uv - float2(0, d.y));
+                // ETAPA 2 (Saturation, sobre el resultado de la etapa 1).
+                // TEMPORAL (puerta de blancura): actua donde el resultado esta de verdad lavado a blanco
+                // (por pixel) y si el cantante tiene una fraccion apreciable de pixeles quemados. Con la
+                // puerta desactivada (_CharaLimitReduce.w = 0) vale 1 (comportamiento anterior).
+                float burn = 1.0;
+                if (_CharaLimitReduce.w > 0.5)
+                    burn = id > 0.5 ? BurnGate(id) * PixelWhite(fx) : 0.0;
+
+                // Mascara del Saturation Limit (graduada por la cobertura de cada cantante).
                 float mask = (SaturationWeight(c0) * 2.0 + SaturationWeight(c1) + SaturationWeight(c2)
                     + SaturationWeight(c3) + SaturationWeight(c4)) / 6.0;
-                float id = c0.y > 0.5 ? c0.y : max(max(c1.y, c2.y), max(c3.y, c4.y));
                 if (mask <= 0.0 || id <= 0.5)
                     return float4(fx, fxSample.a);
 
@@ -256,7 +296,18 @@ Shader "Hidden/UmaViewer/CharaPostEffectLimiter"
                 float3 bpf = tex2D(_CharaLayerBPF, uv).rgb;
                 float3 composed = base + k.x * (bloom - base) + k.y * (bpf - bloom) + k.z * (fx - bpf);
 
-                float3 result = lerp(fx, composed, saturate(mask * _CharaLimitParams.z));
+                // TEMPORAL (restaurar color): reducir cada capa quita tambien el color que aportaban (bloom azul,
+                // tinte del PostFilm) y deja el pelo grisaceo. Se conserva el brillo de 'composed' pero con la
+                // saturacion de la capa Base (el color propio del personaje, antes de los efectos).
+                // _CharaLimitReduce.x = cuanto (0 = como antes). Para quitarlo: borrar este bloque y el campo
+                // chromaRestore del C#.
+                const float3 lw = float3(0.2126, 0.7152, 0.0722);
+                float Lb = dot(base, lw);
+                float Lc = dot(composed, lw);
+                float3 chromaTarget = (base - Lb) * min(Lc / max(Lb, 0.05), 3.0);
+                composed = max(Lc + lerp(composed - Lc, chromaTarget, saturate(_CharaLimitReduce.x)), 0.0);
+
+                float3 result = lerp(fx, composed, saturate(mask * _CharaLimitParams.z * burn));
                 return float4(result, fxSample.a);
             }
             ENDCG
@@ -305,6 +356,28 @@ Shader "Hidden/UmaViewer/CharaPostEffectLimiter"
                 float m = dot(delta, float3(0.2126, 0.7152, 0.0722))
                     + _CharaLimitReduce.z * min(delta.r, min(delta.g, delta.b));
                 return SingerChannel(i.uv, _CharaLimitCoverageGroup, m);
+            }
+            ENDCG
+        }
+
+        // Pass 4 (TEMPORAL, puerta de blancura): como el pass 3, pero mide el RESULTADO (_CharaLayerB =
+        // imagen final) en vez del cambio entre capas: en el canal del cantante va 1 si el pixel esta
+        // quemado (PixelWhite). El ultimo mip dividido por la cobertura es la fraccion de pixeles quemados.
+        Pass
+        {
+            ZWrite Off
+            ZTest Always
+            Cull Off
+
+            CGPROGRAM
+            #pragma vertex vert_img
+            #pragma fragment frag
+
+            float _CharaLimitCoverageGroup;
+            sampler2D _CharaLayerB;
+            float4 frag(v2f_img i) : SV_Target
+            {
+                return SingerChannel(i.uv, _CharaLimitCoverageGroup, PixelWhite(tex2D(_CharaLayerB, i.uv).rgb));
             }
             ENDCG
         }

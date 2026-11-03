@@ -73,7 +73,7 @@ namespace Gallop.RenderPipeline
             PostEffectId.LightShafts,
             PostEffectId.LensFlare,
             PostEffectId.CharaLimit,
-            PostEffectId.DiffusionLimit,
+            // TEMPORAL: DiffusionLimit fundido en CharaLimit (ver CharaPostEffectLimiter.DiffusionActive).
             PostEffectId.TransmittedLight,
             PostEffectId.DofLimit
         };

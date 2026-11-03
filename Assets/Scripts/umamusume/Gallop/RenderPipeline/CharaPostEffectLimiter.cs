@@ -7,6 +7,8 @@
 //       maxReduction; nunca se apaga).
 //       La pasada DOF/Bloom/PostFilm se repite con la imagen sin shafts y con Bloom/PostFilm apagados
 //       para obtener cada capa por separado. El escenario no cambia.
+//   (TEMPORAL: el "Diffusion Limit" ya no tiene tick propio; va con el Saturation Limit y bajo su misma
+//       puerta de blancura: solo se quita el Diffusion donde el cantante esta lavado a blanco.)
 //   "Diffusion Limit" (PostEffectId.DiffusionLimit): los cantantes no reciben Diffusion (la pasada
 //       DOF/Bloom/PostFilm se ejecuta otra vez sin Diffusion y se usa esa version en sus pixeles).
 //
@@ -54,6 +56,24 @@ namespace Gallop.RenderPipeline
         public float maxReduction = 0.6f;  // reduccion maxima por capa (0.6 = se conserva un 40 %)
         public float whiteWeight = 2.5f;   // peso extra de la "blancura" en la medida
 
+        // TEMPORAL (puerta de blancura): el limitador solo actua donde el RESULTADO final esta lavado a blanco.
+        //   - Por pixel: blancura = min(r,g,b) de la imagen final; 0 hasta pixelWhiteStart, 1 desde pixelWhiteEnd.
+        //   - Por cantante: fraccion de sus pixeles quemados; la puerta se abre de gateStart a gateEnd.
+        // Si se decide quedarse con el metodo anterior (solo luz añadida por capa): poner useWhitenessGate =
+        // false, o borrar esta puerta (estos campos, ShaderWhite, el pass 4 del shader, la medida W en
+        // ApplyPass y los marcados TEMPORAL del shader).
+        public bool useWhitenessGate = true;
+        public float pixelWhiteStart = 0.7f;
+        public float pixelWhiteEnd = 0.95f;
+        public float gateStart = 0.05f;
+        public float gateEnd = 0.25f;
+
+        // TEMPORAL (restaurar color): tras limitar, el pelo/piel quedaban grisaceos porque reducir las capas
+        // quita tambien su color. 0..1: cuanto se devuelve la saturacion de la capa Base (0 = comportamiento
+        // anterior). Si no convence, poner 0 o borrar el bloque marcado en el shader.
+        // Apagado por defecto (no resolvio el tono grisaceo); se deja por si se quiere retomar.
+        public float chromaRestore = 0f;
+
         // 0 = sin efecto, 1 = limitador completo.
         public float strength = 1f;
         // Siluetas: max(_CharaColor.rgb) <= start -> peso 0 (no actua); >= end -> peso 1.
@@ -78,8 +98,10 @@ namespace Gallop.RenderPipeline
         // x = notable, y = excessive, z = maxReduction, w = cobertura de PostFilm uniforme (timeline)
         public Vector4 ShaderThresholds => new Vector4(notable, excessive, Mathf.Clamp01(maxReduction),
             Mathf.Clamp01(CharaPostEffectLimiter.PostFilmUniformCover));
-        // z = whiteWeight
-        public Vector4 ShaderReduce => new Vector4(0f, 0f, whiteWeight, 0f);
+        // z = whiteWeight, w = puerta de blancura activa (TEMPORAL)
+        public Vector4 ShaderReduce => new Vector4(chromaRestore, 0f, whiteWeight, useWhitenessGate ? 1f : 0f);
+        // TEMPORAL: x/y = blancura de pixel (inicio/fin), z/w = fraccion de quemados del cantante (inicio/fin)
+        public Vector4 ShaderWhite => new Vector4(pixelWhiteStart, pixelWhiteEnd, gateStart, gateEnd);
     }
 
     /// <summary>
@@ -191,7 +213,13 @@ namespace Gallop.RenderPipeline
             Shader.PropertyToID("_CharaLimitMeasurePF0"), Shader.PropertyToID("_CharaLimitMeasurePF1"),
             Shader.PropertyToID("_CharaLimitMeasureS0"), Shader.PropertyToID("_CharaLimitMeasureS1"),
         };
-        internal static readonly int LayerFlagsId = Shader.PropertyToID("_CharaLimitLayers");
+        // TEMPORAL (puerta de blancura): parametros y RT (grupo 0 / 1) de la fraccion de pixeles quemados.
+        internal static readonly int WhiteParamsId = Shader.PropertyToID("_CharaLimitWhite");
+        internal static readonly int[] MeasureWhiteIds =
+        {
+            Shader.PropertyToID("_CharaLimitMeasureW0"), Shader.PropertyToID("_CharaLimitMeasureW1"),
+        };
+        internal static readonly int LayerFlagsId =Shader.PropertyToID("_CharaLimitLayers");
 
         /// <summary>
         /// Cuanto cubre la pantalla, este frame, una PostFilm de color uniforme (fundido a un color: modo
@@ -269,7 +297,11 @@ namespace Gallop.RenderPipeline
             PostEffectSelection.IsEnabled(PostEffectId.CharaLimit);
 
         /// <summary>Tick "Diffusion Limit".</summary>
-        public static bool DiffusionActive => PostEffectSelection.IsEnabled(PostEffectId.DiffusionLimit);
+        // TEMPORAL (limitador unico): el Diffusion Limit ya no tiene tick propio; actua con el del Saturation
+        // Limit y bajo la misma puerta de blancura. Para volver a separarlos: devolver aqui
+        // PostEffectSelection.IsEnabled(PostEffectId.DiffusionLimit) y re-añadir DiffusionLimit a
+        // PostEffectSelection.All.
+        public static bool DiffusionActive => SaturationActive;
 
         /// <summary>
         /// Lo consulta DofDiffusionBloomOverlayPass.Execute: generar la version sin Diffusion si el tick
@@ -548,6 +580,7 @@ namespace Gallop.RenderPipeline
                         1f / Mathf.Max(1, desc.width), 1f / Mathf.Max(1, desc.height), 0f));
                     cmd.SetGlobalVector(CharaPostEffectLimiter.ThresholdsId, settings.ShaderThresholds);
                     cmd.SetGlobalVector(CharaPostEffectLimiter.ReduceId, settings.ShaderReduce);
+                    cmd.SetGlobalVector(CharaPostEffectLimiter.WhiteParamsId, settings.ShaderWhite);
                     cmd.SetGlobalTexture(CharaPostEffectLimiter.OrigId, CharaPostEffectLimiter.OrigId);
                     cmd.SetGlobalTexture(CharaPostEffectLimiter.MaskId, CharaPostEffectLimiter.MaskId);
 
@@ -625,6 +658,25 @@ namespace Gallop.RenderPipeline
                                 cmd.Blit(CharaPostEffectLimiter.MaskId, mid, material, 3);
                                 cmd.SetGlobalTexture(mid, mid);
                             }
+                        }
+
+                        // TEMPORAL (puerta de blancura): fraccion de pixeles quemados del RESULTADO final
+                        // por cantante (pass 4). Ver CharaPostEffectLimiterSettings.useWhitenessGate.
+                        for (int g = 0; g < 2; g++)
+                        {
+                            int wid = CharaPostEffectLimiter.MeasureWhiteIds[g];
+                            if (!settings.useWhitenessGate || (g == 1 && !twoGroups))
+                            {
+                                cmd.SetGlobalTexture(wid, Texture2D.blackTexture);
+                                continue;
+                            }
+                            cmd.GetTemporaryRT(wid, coverageDesc, FilterMode.Bilinear);
+                            _measured.Add(wid);
+                            // Etapa 2 sobre el resultado de la etapa 1 (Diffusion ya quitado): 'normal'.
+                            cmd.SetGlobalTexture(CharaPostEffectLimiter.LayerBId, normal);
+                            cmd.SetGlobalFloat(CharaPostEffectLimiter.CoverageGroupId, g);
+                            cmd.Blit(CharaPostEffectLimiter.MaskId, wid, material, 4);
+                            cmd.SetGlobalTexture(wid, wid);
                         }
                     }
                     cmd.SetGlobalVector(CharaPostEffectLimiter.LayerFlagsId, new Vector4(layers ? 1f : 0f, 0f, 0f, 0f));
