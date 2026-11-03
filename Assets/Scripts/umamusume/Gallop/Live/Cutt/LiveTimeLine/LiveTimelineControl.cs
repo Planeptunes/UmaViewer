@@ -2997,9 +2997,50 @@ namespace Gallop.Live.Cutt
 
                 BlinkLightUpdateInfo info = BuildOfficialBlinkLightUpdateInfo(curBlink, localTime);
 
+                // Native AlterUpdate_BlinkLight: when the next key interpolates, colours, powers
+                // and timings are lerped towards it (loop count, pattern and flags stay current).
+                var nextBlink = nextKey as LiveTimelineKeyBlinkLightData;
+                if (nextBlink != null && nextBlink != curBlink && nextBlink.IsInterpolateKey())
+                    InterpolateBlinkLightUpdateInfo(ref info, curBlink, nextBlink,
+                        CalculateInterpolationValue(curBlink, nextBlink, currentFrame));
+
                 OnUpdateBlinkLight(blinkData, ref info, currentLiveTime);
             }
         }
+        private static void InterpolateBlinkLightUpdateInfo(ref BlinkLightUpdateInfo info,
+            LiveTimelineKeyBlinkLightData cur, LiveTimelineKeyBlinkLightData next, float t)
+        {
+            info.color0Array = LerpColors(cur.color0Array, next.color0Array, t);
+            info.color1Array = LerpColors(cur.color1Array, next.color1Array, t);
+            info.powerArray = LerpFloats(cur.powerArray, next.powerArray, t);
+            info.powerMin = LerpWithoutClamp(cur.powerMin, next.powerMin, t);
+            info.powerMax = LerpWithoutClamp(cur.powerMax, next.powerMax, t);
+            info.waitTime = LerpWithoutClamp(cur.waitTime, next.waitTime, t);
+            info.turnOnTime = LerpWithoutClamp(cur.turnOnTime, next.turnOnTime, t);
+            info.turnOffTime = LerpWithoutClamp(cur.turnOffTime, next.turnOffTime, t);
+            info.keepTime = LerpWithoutClamp(cur.keepTime, next.keepTime, t);
+            info.intervalTime = LerpWithoutClamp(cur.intervalTime, next.intervalTime, t);
+        }
+
+        // New arrays: the key data is shared and must stay untouched.
+        private static Color[] LerpColors(Color[] a, Color[] b, float t)
+        {
+            if (a == null || b == null) return a;
+            var result = new Color[a.Length];
+            for (int i = 0; i < a.Length; i++)
+                result[i] = i < b.Length ? Color.LerpUnclamped(a[i], b[i], t) : a[i];
+            return result;
+        }
+
+        private static float[] LerpFloats(float[] a, float[] b, float t)
+        {
+            if (a == null || b == null) return a;
+            var result = new float[a.Length];
+            for (int i = 0; i < a.Length; i++)
+                result[i] = i < b.Length ? LerpWithoutClamp(a[i], b[i], t) : a[i];
+            return result;
+        }
+
         private static BlinkLightUpdateInfo BuildOfficialBlinkLightUpdateInfo( LiveTimelineKeyBlinkLightData key, float localTime)
         {
             BlinkLightUpdateInfo info = new BlinkLightUpdateInfo();
