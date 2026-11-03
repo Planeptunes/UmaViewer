@@ -39,9 +39,7 @@ namespace Gallop.RenderPipeline
         CharaLimit,
         DiffusionLimit,
         // Glow of the stage lights (TransmittedLight track).
-        TransmittedLight,
-        // Limita el aumento de desenfoque de la DOF por Render Scale (ver DofDiffusionBloomOverlayPass).
-        DofLimit
+        TransmittedLight
     }
 
     public static class PostEffectSelection
@@ -74,8 +72,7 @@ namespace Gallop.RenderPipeline
             PostEffectId.LensFlare,
             PostEffectId.TransmittedLight,
             // TEMPORAL: DiffusionLimit fundido en CharaLimit (ver CharaPostEffectLimiter.DiffusionActive).
-            PostEffectId.CharaLimit,
-            PostEffectId.DofLimit
+            PostEffectId.CharaLimit
         };
 
         public static string Label(PostEffectId id)
@@ -101,7 +98,6 @@ namespace Gallop.RenderPipeline
                 case PostEffectId.CharaLimit: return "Saturation Limit";
                 case PostEffectId.DiffusionLimit: return "Diffusion Limit";
                 case PostEffectId.TransmittedLight: return "Transmitted light";
-                case PostEffectId.DofLimit: return "DOF Limit";
                 default: return id.ToString();
             }
         }

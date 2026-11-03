@@ -6,8 +6,8 @@ namespace Gallop.RenderPipeline
 {
     /// <summary>
     /// Qué post efectos usa de verdad la canción cargada. Los que la canción nunca activa (p. ej.
-    /// Vortex, que solo usa una canción) se ocultan del listado de post efectos. Los limitadores
-    /// (Saturation Limit, DOF Limit) se muestran solo si la canción usa algún efecto que limitan.
+    /// Vortex, que solo usa una canción) se ocultan del listado de post efectos. El limitador
+    /// (Saturation Limit) se muestra solo si la canción usa algún efecto que limita.
     ///
     /// Una pista "se usa" si alguna key cambia algo: el criterio es el mismo con el que se hizo la
     /// auditoría de docs/POST_EFFECTS_POR_CANCION.md.
@@ -32,8 +32,6 @@ namespace Gallop.RenderPipeline
                 case PostEffectId.DiffusionLimit:
                     return _used.Contains(PostEffectId.Bloom) || _used.Contains(PostEffectId.PostFilm) ||
                            _used.Contains(PostEffectId.SunShafts) || _used.Contains(PostEffectId.Diffusion);
-                case PostEffectId.DofLimit:
-                    return _used.Contains(PostEffectId.Dof);
                 default:
                     return _used.Contains(id);
             }
