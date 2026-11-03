@@ -256,6 +256,10 @@ public class LiveViewerUI : MonoBehaviour
 
     private void HideSlider()
     {
+        // Con el panel de ajustes desplegado la barra no se oculta (sus botones siguen accesibles).
+        var settings = FindObjectOfType<LiveGraphicsSettingsUI>();
+        if (settings != null && settings.IsSettingsPanelOpen) return;
+
         targetHeight = -HideDistance();
     }
 

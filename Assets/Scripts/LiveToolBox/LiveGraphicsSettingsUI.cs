@@ -63,6 +63,7 @@ public class LiveGraphicsSettingsUI : MonoBehaviour
                 Config.Instance.UpdateConfig(false);
                 UISettingsGraphics.ApplyLivePostEffects();
                 SetPostEffectRowsInteractable(value);
+                UpdatePostEffectCaption();
             });
         }
 
@@ -81,6 +82,116 @@ public class LiveGraphicsSettingsUI : MonoBehaviour
         if (PostEffectsToggle != null) SetPostEffectRowsInteractable(Config.Instance.PostEffects);
 
         CreateVideoSpeedRow();
+        SetupSettingsToggleButtons();
+        RearrangePostEffectRow();
+    }
+
+    // =========================================================================================
+    // Fila "Post effects": el tick pasa a ir justo detras del texto y el desplegable "Post effects list"
+    // (que estaba en la fila de debajo, con su propia etiqueta) sube a esta misma fila y se alarga hacia
+    // la izquierda hasta casi tocar el tick. Se hace por codigo: el desplegable se cuelga de la fila del
+    // tick (asi el layout del panel ya no le reserva una fila) y se oculta la etiqueta de la fila vieja.
+    // =========================================================================================
+    private const float PostEffectsGap = 8f;
+    private const float PostEffectsDropdownHeight = 26f;
+
+    private void RearrangePostEffectRow()
+    {
+        if (PostEffectsToggle == null || PostEffectListButton == null) return;
+
+        var row = PostEffectsToggle.transform as RectTransform;
+        var check = PostEffectsToggle.targetGraphic != null
+            ? PostEffectsToggle.targetGraphic.rectTransform : null;
+        var dropdown = PostEffectListButton.transform as RectTransform;
+        if (row == null || check == null || dropdown == null) return;
+
+        // Ancho del texto "Post effects" (etiqueta de la fila, alineada a la izquierda).
+        var label = row.GetComponentInChildren<Text>(true);
+        float textWidth = label != null ? label.preferredWidth : 110f;
+        float labelLeft = label != null
+            ? label.rectTransform.anchoredPosition.x - label.rectTransform.sizeDelta.x * label.rectTransform.pivot.x
+            : 0f;
+
+        // Tick: anclado a la izquierda, justo despues de la "s".
+        check.anchorMin = check.anchorMax = new Vector2(0f, 0.5f);
+        check.pivot = new Vector2(0f, 0.5f);
+        float checkLeft = labelLeft + textWidth + PostEffectsGap;
+        check.anchoredPosition = new Vector2(checkLeft, 0f);
+        float dropdownLeft = checkLeft + check.sizeDelta.x + PostEffectsGap;
+
+        // Desplegable: hijo de la fila del tick, de casi tocar el tick hasta el borde derecho.
+        var oldRow = dropdown.parent;
+        dropdown.SetParent(row, false);
+        dropdown.anchorMin = new Vector2(0f, 0.5f);
+        dropdown.anchorMax = new Vector2(1f, 0.5f);
+        dropdown.pivot = new Vector2(0.5f, 0.5f);
+        dropdown.offsetMin = new Vector2(dropdownLeft, -PostEffectsDropdownHeight * 0.5f);
+        dropdown.offsetMax = new Vector2(0f, PostEffectsDropdownHeight * 0.5f);
+        dropdown.SetAsLastSibling();
+
+        // La fila vieja ya no pinta nada: se oculta (su etiqueta "Post effects list" sobra).
+        if (oldRow != null && oldRow != row) oldRow.gameObject.SetActive(false);
+    }
+
+    // =========================================================================================
+    // Botones Open / Close del panel de ajustes (Canvas/Trigger/Bottom/Setting_Btns). Open despliega el
+    // panel y se oculta; Close (en el mismo sitio) lo repliega y vuelve a mostrar Open. Al desplegar, el
+    // boton visible sube a Y 10 con alto 45; al plegar vuelve a Y 0 y alto 25. Se aplica a los dos, que
+    // ocupan el mismo hueco.
+    // =========================================================================================
+    private const float SettingsBtnClosedY = 0f, SettingsBtnClosedHeight = 25f;
+    private const float SettingsBtnOpenY = 10f, SettingsBtnOpenHeight = 45f;
+    private RectTransform _settingsOpenRect, _settingsCloseRect;
+
+    private void SetupSettingsToggleButtons()
+    {
+        var group = GameObject.Find("Canvas/Trigger/Bottom/Setting_Btns");
+        if (group == null) return;
+        var open = group.transform.Find("Open");
+        var close = group.transform.Find("Close");
+        _settingsOpenRect = open as RectTransform;
+        _settingsCloseRect = close as RectTransform;
+
+        var openButton = open != null ? open.GetComponent<Button>() : null;
+        if (openButton != null) openButton.onClick.AddListener(delegate { ApplySettingsToggleLayout(true); });
+        var closeButton = close != null ? close.GetComponent<Button>() : null;
+        if (closeButton != null) closeButton.onClick.AddListener(delegate { ApplySettingsToggleLayout(false); });
+
+        // El Close de dentro del panel tambien lo repliega y vuelve a mostrar Open.
+        // (El panel empieza inactivo: se busca con Transform.Find desde la raiz del canvas.)
+        var panelClose = group.transform.root.Find("Panel/Close");
+        var panelCloseButton = panelClose != null ? panelClose.GetComponent<Button>() : null;
+        if (panelCloseButton != null)
+            panelCloseButton.onClick.AddListener(delegate { ApplySettingsToggleLayout(false); });
+
+        ApplySettingsToggleLayout(false);
+    }
+
+    // true mientras el panel de ajustes (Canvas/Panel) esta desplegado. La barra inferior no se oculta mientras.
+    public bool IsSettingsPanelOpen
+    {
+        get
+        {
+            var panel = GameObject.Find("Canvas/Panel");
+            return panel != null && panel.activeSelf;
+        }
+    }
+
+    private void ApplySettingsToggleLayout(bool panelOpen)
+    {
+        ApplySettingsToggleRect(_settingsOpenRect, panelOpen);
+        ApplySettingsToggleRect(_settingsCloseRect, panelOpen);
+    }
+
+    private static void ApplySettingsToggleRect(RectTransform rect, bool panelOpen)
+    {
+        if (rect == null) return;
+        var position = rect.anchoredPosition;
+        position.y = panelOpen ? SettingsBtnOpenY : SettingsBtnClosedY;
+        rect.anchoredPosition = position;
+        var size = rect.sizeDelta;
+        size.y = panelOpen ? SettingsBtnOpenHeight : SettingsBtnClosedHeight;
+        rect.sizeDelta = size;
     }
 
     // =========================================================================================
@@ -194,12 +305,31 @@ public class LiveGraphicsSettingsUI : MonoBehaviour
     {
         if (PostEffectListPopup == null) return;
 
-        // The popup keeps the anchored placement authored in the scene (anchor top-left of the
-        // panel, pivot top-left); it is not repositioned at runtime so the panel layout stays as
-        // designed.
+        // El listado se despliega HACIA ARRIBA (debajo no hay sitio): mismo ancho que el boton del
+        // listado y su borde inferior pegado al borde superior del boton.
+        PlacePostEffectPopupAboveButton();
+
         if (PostEffectListBlocker != null) PostEffectListBlocker.SetActive(true);
         PostEffectListPopup.SetActive(true);
         PostEffectListPopup.transform.SetAsLastSibling();
+    }
+
+    private void PlacePostEffectPopupAboveButton()
+    {
+        var popup = PostEffectListPopup != null ? PostEffectListPopup.transform as RectTransform : null;
+        var button = PostEffectListButton != null ? PostEffectListButton.transform as RectTransform : null;
+        var parent = popup != null ? popup.parent as RectTransform : null;
+        if (popup == null || button == null || parent == null) return;
+
+        var corners = new Vector3[4];   // 0 = abajo-izq, 1 = arriba-izq, 2 = arriba-der, 3 = abajo-der
+        button.GetWorldCorners(corners);
+        Vector3 topLeft = parent.InverseTransformPoint(corners[1]);
+        Vector3 topRight = parent.InverseTransformPoint(corners[2]);
+
+        popup.anchorMin = popup.anchorMax = Vector2.zero;
+        popup.pivot = Vector2.zero;
+        popup.sizeDelta = new Vector2(topRight.x - topLeft.x, popup.sizeDelta.y);
+        popup.anchoredPosition = new Vector2(topLeft.x - parent.rect.xMin, topLeft.y - parent.rect.yMin);
     }
 
     private void ClosePostEffectList()
@@ -229,10 +359,16 @@ public class LiveGraphicsSettingsUI : MonoBehaviour
         UpdatePostEffectCaption();
     }
 
+    // Texto del boton del listado: "PostEffect List: [X/Y]" con X = efectos activos e Y = efectos que se
+    // listan para esta cancion (los ocultos no cuentan). Centrado en el boton.
+    private const string PostEffectListLabel = "PostEffect List";
+
     private void UpdatePostEffectCaption()
     {
         if (PostEffectListCaption == null) return;
         var ids = Gallop.RenderPipeline.PostEffectSelection.All;
+        // Con el interruptor general apagado no hay ningun efecto activo: X = 0.
+        bool master = PostEffectsToggle == null || PostEffectsToggle.isOn;
         int total = 0, on = 0;
         if (PostEffectToggles != null)
         {
@@ -241,14 +377,20 @@ public class LiveGraphicsSettingsUI : MonoBehaviour
                 if (PostEffectToggles[i] == null) continue;
                 if (i < ids.Length && !Gallop.RenderPipeline.LivePostEffectUsage.IsRelevant(ids[i])) continue;
                 total++;
-                if (PostEffectToggles[i].isOn) on++;
+                if (master && PostEffectToggles[i].isOn) on++;
             }
         }
-        PostEffectListCaption.text = on + "/" + total;
+        // La etiqueta ocupa todo el boton y no se recorta: con el overflow en Truncate, la linea de 14 pt
+        // no cabe en los 13 px que le deja el layout de la escena y el texto desaparece.
+        var captionRect = PostEffectListCaption.rectTransform;
+        captionRect.offsetMin = Vector2.zero;
+        captionRect.offsetMax = Vector2.zero;
+        PostEffectListCaption.horizontalOverflow = HorizontalWrapMode.Overflow;
+        PostEffectListCaption.verticalOverflow = VerticalWrapMode.Overflow;
+        PostEffectListCaption.alignment = TextAnchor.MiddleCenter;
+        PostEffectListCaption.text = PostEffectListLabel + ": [" + on + "/" + total + "]";
     }
 
-    // Con el interruptor global apagado ningun efecto se dibuja: se dejan visibles pero no
-    // editables, para que quede claro que el apagado manda.
     private void SetPostEffectRowsInteractable(bool interactable)
     {
         if (PostEffectListButton != null) PostEffectListButton.interactable = true;
