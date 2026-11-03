@@ -350,21 +350,27 @@ namespace Gallop.RenderPipeline
                 CharaPostEffectLimiter.IsActive;
             if (charaLimiter)
             {
-                CharaPostEffectLimiter.ShaftsQueued = lightReady;
+                // Con el limitador activo los shafts (Sun / Light / Transmitted) se aplican DESPUES de el:
+                // DOF/Bloom/PostFilm -> limitador -> shafts. Asi los rayos pueden tapar al cantante a
+                // proposito (como en el original) sin que el limitador lo deshaga, y las capas del limitador
+                // ya no incluyen los shafts.
+                CharaPostEffectLimiter.ShaftsQueued = false;
                 _charaLimiterCapturePass.Setup(this, (RenderPassEvent)schedule.FirstEvent);
                 _registerPass.Add(_charaLimiterCapturePass);
-            }
-            if (sunReady) _registerPass.Add(_sunShaftsPass);
-            if (shaftsReady) _registerPass.Add(_indirectLightShaftsPass);
-            if (transmittedReady) _registerPass.Add(_transmittedLightPass);
-            if (dofReady) _registerPass.Add(_dofDiffusionBloomOverlayPass);
-            // ... y aplicacion justo despues de Bloom/PostFilm.
-            if (charaLimiter)
-            {
-                int applyEvent = System.Math.Max(dofReady ? (int)effectEvent : 0,
-                    lightReady ? (int)RenderPassEvent.BeforeRenderingPostProcessing : 0);
+                if (dofReady) _registerPass.Add(_dofDiffusionBloomOverlayPass);
+                int applyEvent = dofReady ? (int)effectEvent : (int)RenderPassEvent.BeforeRenderingPostProcessing;
                 _charaLimiterApplyPass.Setup(this, (RenderPassEvent)applyEvent);
                 _registerPass.Add(_charaLimiterApplyPass);
+                if (sunReady) _registerPass.Add(_sunShaftsPass);
+                if (shaftsReady) _registerPass.Add(_indirectLightShaftsPass);
+                if (transmittedReady) _registerPass.Add(_transmittedLightPass);
+            }
+            else
+            {
+                if (sunReady) _registerPass.Add(_sunShaftsPass);
+                if (shaftsReady) _registerPass.Add(_indirectLightShaftsPass);
+                if (transmittedReady) _registerPass.Add(_transmittedLightPass);
+                if (dofReady) _registerPass.Add(_dofDiffusionBloomOverlayPass);
             }
             // Native GallopImageEffect chain order: DOF/Diffusion/Bloom -> TiltShift -> RadialBlur.
             if (tiltReady)
