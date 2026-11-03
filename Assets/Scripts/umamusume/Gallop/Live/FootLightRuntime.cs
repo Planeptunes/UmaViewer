@@ -174,6 +174,13 @@ namespace Gallop.Live
                 case "FollowSpotLeft": group = LiveCharaPositionFlag.Left; break;
                 case "FollowSpotRight": group = LiveCharaPositionFlag.Right; break;
                 case "FollowSpotBack": group = LiveCharaPositionFlag.Back; break;
+                // StageController.UpdateCharaFollowSpotColor1: "Other" is every character but
+                // the centre; the colour track takes the key's flags, or every character.
+                case "FollowSpotOther": group = (LiveCharaPositionFlag)0xFFFFE; break;
+                case "FollowSpotColor":
+                    if (info.flags < 0) return;
+                    group = (LiveCharaPositionFlag)0xFFFFF;
+                    break;
                 default: return;
             }
             foreach (var binding in _bindings)

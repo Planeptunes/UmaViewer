@@ -1099,7 +1099,40 @@ namespace Gallop
             if (_springArray == null || !_isPlaying || !_initialized)
                 return;
 
+            if (_ownerTransform == null)
+                _ownerTransform = transform;
+
+            if (_ownerTransform == null)
+                return;
+
+            // FinalRotation is solved with the owner moved to the origin (UpdatePrevousPosture) and
+            // PostSpring writes it as a world rotation, so the same posture must be in place while it
+            // is applied. Otherwise every chain is rotated by the owner's rotation for this frame
+            // (a character turned 180 degrees flipped its skirt for one frame).
+            Vector3 position = _ownerTransform.position;
+            Quaternion rotation = _ownerTransform.rotation;
+            Vector3 localScale = _ownerTransform.localScale;
+
+            if (!IsAffectOwnerPotision)
+                _ownerTransform.position = Gallop.Math.VECTOR3_ZERO;
+
+            if (!IsAffectOwnerRotation)
+                _ownerTransform.rotation = Gallop.Math.QUATERNION_IDENTITY;
+
+            if (!IsAffectOwnerScale)
+            {
+                float scale = _ownerTransform.lossyScale.x;
+                if (Gallop.Math.IsFloatEqualLight(scale, 0.0f))
+                    scale = 0.000001f;
+
+                _ownerTransform.localScale = localScale / scale;
+            }
+
             PostSpringAll();
+
+            _ownerTransform.position = position;
+            _ownerTransform.rotation = rotation;
+            _ownerTransform.localScale = localScale;
         }
 
         // Puts the local position and scale of every simulated spring bone back to its bind pose

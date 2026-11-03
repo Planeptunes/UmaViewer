@@ -676,7 +676,24 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
 
     }
 
-    private void LoadMiniUma(UmaContainerCharacter umaContainer, CharaEntry chara, string costumeId)
+    // Mini model driven by a live timeline (MiniChara tracks). It does not touch the viewer UI
+    // (facial panels, colour sets) nor start the idle motion: the live director animates it.
+    public UmaContainerCharacter LoadLiveMiniUma(CharaEntry chara, string costumeId, Transform parent)
+    {
+        if (chara == null) return null;
+        var umaContainer = new GameObject($"MiniChara_{chara.Id}_{costumeId}").AddComponent<UmaContainerCharacter>();
+        umaContainer.transform.SetParent(parent, false);
+        umaContainer.CharaData = UmaDatabaseController.ReadCharaData(chara);
+        LoadMiniUma(umaContainer, chara, costumeId, true);
+        if (umaContainer.Body == null)
+        {
+            Destroy(umaContainer.gameObject);
+            return null;
+        }
+        return umaContainer;
+    }
+
+    private void LoadMiniUma(UmaContainerCharacter umaContainer, CharaEntry chara, string costumeId, bool forLive = false)
     {
         int id = chara.Id;
         umaContainer.CharaEntry = chara;
@@ -800,9 +817,11 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
         var mouthmat = matList.FirstOrDefault(a => a.gameObject.name.Equals("M_Mouth"));
         var eyebrowLmat = matList.FirstOrDefault(a => a.gameObject.name.Equals("M_Mayu_L"));
         var eyebrowRmat = matList.FirstOrDefault(a => a.gameObject.name.Equals("M_Mayu_R"));
-        UI.LoadFacialPanelsMini(eyemat.material, eyebrowLmat.material, eyebrowRmat.material, mouthmat.material);
+        if (!forLive && eyemat != null && eyebrowLmat != null && eyebrowRmat != null && mouthmat != null)
+            UI.LoadFacialPanelsMini(eyemat.material, eyebrowLmat.material, eyebrowRmat.material, mouthmat.material);
 
         umaContainer.Position = umaContainer.transform.Find("Position");
+        if (forLive) return;
         umaContainer.SetupBoneHandles();
 
         if (Main.AbList.TryGetValue($"3d/motion/mini/event/body/chara/chr{id}_00/anm_min_eve_chr{id}_00_idle01_loop",out asset))
@@ -982,6 +1001,8 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
                         liveAssetPaths.Add(MirrorScanLightRuntime.ControllerPath);
                         for (int i = 0; i < 5; i++)
                             liveAssetPaths.Add(MirrorScanLightRuntime.GetMaterialPath(i));
+                        foreach (int textureId in live.GetMirrorScanLightTextureIds())
+                            liveAssetPaths.Add(MirrorScanLightRuntime.GetTexturePath(textureId));
                         break;
                     }
                     var effectEntries = new List<UmaDatabaseEntry>();

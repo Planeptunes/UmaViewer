@@ -25,8 +25,16 @@ namespace Gallop.Live
         private const string MaterialPathFormat =
             "3d/env/live/common/mirrorscanlight/materials/mtl_env_live_cmn_mslight{0:000}";
 
-        // The track's materialID indexes the authored material array (1 = stars, 3 = soft glow).
+        private const string TexturePathFormat =
+            "3d/env/live/common/mirrorscanlight/textures/tex_env_live_cmn_mslight{0:000}";
+
+        // Native live path: one material (mtl_env_live_cmn_mslight000, material id 0) and the song's
+        // texture array (StageController.MirrorScanLightTextures, from `livesettings` row type 5);
+        // the track's materialID indexes that texture array. Songs without that table fall back to
+        // indexing the authored material array (1 = stars, 3 = soft glow).
         private const int MaterialCount = 5;
+        private static readonly int MainTexId = Shader.PropertyToID("_MainTex");
+        private IList<Texture> _textures;
 
         private sealed class Binding
         {
@@ -53,10 +61,15 @@ namespace Gallop.Live
         public static string GetMaterialPath(int materialId) => string.Format(
             System.Globalization.CultureInfo.InvariantCulture, MaterialPathFormat, materialId);
 
+        public static string GetTexturePath(int textureId) => string.Format(
+            System.Globalization.CultureInfo.InvariantCulture, TexturePathFormat, textureId);
+
         public void Initialize(Transform stageRoot, IList<LiveTimelineProjectorData> groups,
-            Func<string, GameObject> prefabResolver, Func<int, Material> materialResolver)
+            Func<string, GameObject> prefabResolver, Func<int, Material> materialResolver,
+            IList<Texture> textures = null)
         {
             Dispose();
+            _textures = textures != null && textures.Count > 0 ? textures : null;
             if (stageRoot == null) throw new ArgumentNullException(nameof(stageRoot));
             GameObject controller = prefabResolver != null ? prefabResolver(ControllerPath) : null;
             if (controller == null)
@@ -144,15 +157,32 @@ namespace Gallop.Live
         private void ApplyMaterial(Binding binding, ref LiveProjectorTimeline.UpdateInfo info)
         {
             int index = info.materialID;
-            Material material = index >= 0 && index < _materials.Length ? _materials[index] : null;
-            if (material == null)
+            Texture texture = null;
+            Material material;
+            if (_textures != null)
             {
-                if (binding.errors.Add(index))
-                    Debug.LogError("[MirrorScanLight] Authored material " + index +
-                        " is unavailable: " + GetMaterialPath(index));
-                return;
+                texture = index >= 0 && index < _textures.Count ? _textures[index] : null;
+                material = _materials[0];
+                if (texture == null || material == null)
+                {
+                    if (binding.errors.Add(index))
+                        Debug.LogError("[MirrorScanLight] Texture slot " + index + " or material 0 is unavailable.");
+                    return;
+                }
+            }
+            else
+            {
+                material = index >= 0 && index < _materials.Length ? _materials[index] : null;
+                if (material == null)
+                {
+                    if (binding.errors.Add(index))
+                        Debug.LogError("[MirrorScanLight] Authored material " + index +
+                            " is unavailable: " + GetMaterialPath(index));
+                    return;
+                }
             }
             binding.block.Clear();
+            if (texture != null) binding.block.SetTexture(MainTexId, texture);
             if (material.HasProperty(MulColor0Id)) binding.block.SetColor(MulColor0Id, info.color);
             if (material.HasProperty(ColorPowerId)) binding.block.SetFloat(ColorPowerId, info.power);
             binding.block.SetFloat("_ColorPowerMultiply", 1f);
@@ -202,6 +232,7 @@ namespace Gallop.Live
             _bindings.Clear();
             _byHash.Clear();
             _missingGroups.Clear();
+            _textures = null;
             Array.Clear(_materials, 0, _materials.Length);
             if (_root == null) return;
             _root.SetActive(false);

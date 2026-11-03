@@ -234,6 +234,12 @@ namespace Gallop.Live.Cutt
             _postFilmBlinkAttempts = _postFilmBlinkSuccesses = 0;
             LivePostFilmTimeline.Evaluate(sheet != null ? sheet.postFilm3Keys : null, frame, _playMode, _postFilmSamples.Overlay3, _postFilmBlinkResolver);
             PostFilmBlinkLookupStatus = layer1 + "|" + layer2 + "|" + PostFilmBlinkStatus();
+            // Scene-wide colour fades in the three PostFilm layers, combined (1 - prod(1 - c)): the
+            // singer saturation limiter leaves that part of the PostFilm layer untouched.
+            Gallop.RenderPipeline.CharaPostEffectLimiter.PostFilmUniformCover = 1f
+                - (1f - LivePostFilmTimeline.UniformCover(_postFilmSamples.Overlay1))
+                * (1f - LivePostFilmTimeline.UniformCover(_postFilmSamples.Overlay2))
+                * (1f - LivePostFilmTimeline.UniformCover(_postFilmSamples.Overlay3));
             OnUpdatePostFilm?.Invoke(0, _postFilmSamples.Overlay1);
             OnUpdatePostFilm?.Invoke(1, _postFilmSamples.Overlay2);
             OnUpdatePostFilm?.Invoke(2, _postFilmSamples.Overlay3);
@@ -410,6 +416,10 @@ namespace Gallop.Live.Cutt
         private float _baseCameraAspectRatio = 1.77777779f;
 
         public bool _limitFovForWidth = false;
+
+        // Extra zoom applied to the timeline FOV (1 = none): fov' = 2*atan(tan(fov/2) / CameraZoom).
+        // Set per song by the Director where the framing is known to be wider than the game's.
+        public float CameraZoom = 1f;
 
         private float _currentFrame;
 
@@ -708,6 +718,8 @@ namespace Gallop.Live.Cutt
             AlterUpdate_PostEffect_BloomDiffusion(camSheet, Mathf.RoundToInt(_currentFrame));
             AlterUpdate_PostEffect_Dof(camSheet, Mathf.RoundToInt(_currentFrame));
             AlterUpdate_PostFilm(camSheet, _currentFrame);
+            LiveTransmittedLightTimeline.Current = LiveTransmittedLightTimeline.Evaluate(
+                camSheet != null ? camSheet.TransmittedLightKeys : null, _currentFrame, _playMode);
             LiveMultiCameraTimeline.EvaluatePostEffects(camSheet.postFilm1MultiCameraKeys,
                 camSheet.postFilm2MultiCameraKeys, camSheet.postFilm3MultiCameraKeys,
                 camSheet.postEffectBloomDiffusionMultiCameraKeys, _multiCamera,
@@ -2197,6 +2209,8 @@ namespace Gallop.Live.Cutt
                     num /= num3;
                 }
             }
+            if (CameraZoom > 0f && !Mathf.Approximately(CameraZoom, 1f))
+                num = 2f * Mathf.Atan(Mathf.Tan(num * 0.5f * Mathf.Deg2Rad) / CameraZoom) * Mathf.Rad2Deg;
             camera.camera.fieldOfView = num;
         }
 
@@ -3648,10 +3662,42 @@ namespace Gallop.Live.Cutt
                 if (fogData == null) continue;
                 var keys = fogData.keys;
                 if (keys == null || keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable) || !keys.EnablePlayModeTimeline(_playMode)) continue;
-                FindTimelineKey(out var curKey, out var _, keys, currentFrame);
-                if (curKey == null) continue;
-                OnUpdateGlobalFog.Invoke(fogData, curKey as LiveTimelineKeyGlobalFogData);
+                FindTimelineKey(out var curKey, out var nextKey, keys, currentFrame);
+                var cur = curKey as LiveTimelineKeyGlobalFogData;
+                if (cur == null) continue;
+                // AlterUpdate_GlobalFog: when the next key interpolates, every float (distances,
+                // densities, colour) is lerped and the flags / fog mode come from the next key.
+                var next = nextKey as LiveTimelineKeyGlobalFogData;
+                if (next != null && next.IsInterpolateKey())
+                    cur = InterpolateGlobalFog(cur, next, CalculateInterpolationValue(cur, next, currentFrame));
+                OnUpdateGlobalFog.Invoke(fogData, cur);
             }
+        }
+
+        private readonly LiveTimelineKeyGlobalFogData _globalFogScratch = new LiveTimelineKeyGlobalFogData();
+
+        private LiveTimelineKeyGlobalFogData InterpolateGlobalFog(LiveTimelineKeyGlobalFogData cur,
+            LiveTimelineKeyGlobalFogData next, float t)
+        {
+            var key = _globalFogScratch;
+            key.frame = cur.frame;
+            key.isDistance = next.isDistance;
+            key.isHeight = next.isHeight;
+            key.fogMode = next.fogMode;
+            key.useRadialDistance = next.useRadialDistance;
+            key.startDistance = LerpWithoutClamp(cur.startDistance, next.startDistance, t);
+            key.height = LerpWithoutClamp(cur.height, next.height, t);
+            key.heightDensity = LerpWithoutClamp(cur.heightDensity, next.heightDensity, t);
+            key.color = Color.LerpUnclamped(cur.color, next.color, t);
+            key.expDensity = LerpWithoutClamp(cur.expDensity, next.expDensity, t);
+            key.start = LerpWithoutClamp(cur.start, next.start, t);
+            key.end = LerpWithoutClamp(cur.end, next.end, t);
+            key.BlinkLightName = cur.BlinkLightName;
+            key.BlinkLightNameHash = cur.BlinkLightNameHash;
+            key.BlinkLightContainerIndex = cur.BlinkLightContainerIndex;
+            key.BlinkLightBrightnessPower = cur.BlinkLightBrightnessPower;
+            key.IsAdjustedBlinkLightColor = cur.IsAdjustedBlinkLightColor;
+            return key;
         }
 
         private Vector3? ResolveDofWorldFocus(LiveTimelineKeyPostEffectDOFData key)

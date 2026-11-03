@@ -37,7 +37,11 @@ namespace Gallop.RenderPipeline
         // Limitadores sobre los cantantes (ver CharaPostEffectLimiter): luz añadida por
         // Bloom/PostFilm/SunShafts ("Saturation Limit") y Diffusion ("Diffusion Limit").
         CharaLimit,
-        DiffusionLimit
+        DiffusionLimit,
+        // Glow of the stage lights (TransmittedLight track).
+        TransmittedLight,
+        // Limita el aumento de desenfoque de la DOF por Render Scale (ver DofDiffusionBloomOverlayPass).
+        DofLimit
     }
 
     public static class PostEffectSelection
@@ -69,7 +73,9 @@ namespace Gallop.RenderPipeline
             PostEffectId.LightShafts,
             PostEffectId.LensFlare,
             PostEffectId.CharaLimit,
-            PostEffectId.DiffusionLimit
+            PostEffectId.DiffusionLimit,
+            PostEffectId.TransmittedLight,
+            PostEffectId.DofLimit
         };
 
         public static string Label(PostEffectId id)
@@ -94,6 +100,8 @@ namespace Gallop.RenderPipeline
                 case PostEffectId.LensFlare: return "Lens flare";
                 case PostEffectId.CharaLimit: return "Saturation Limit";
                 case PostEffectId.DiffusionLimit: return "Diffusion Limit";
+                case PostEffectId.TransmittedLight: return "Transmitted light";
+                case PostEffectId.DofLimit: return "DOF Limit";
                 default: return id.ToString();
             }
         }

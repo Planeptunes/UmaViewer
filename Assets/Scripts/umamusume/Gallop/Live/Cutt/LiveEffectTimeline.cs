@@ -9,6 +9,8 @@ namespace Gallop.Live.Cutt
         public struct EffectUpdateInfo
         {
             public float ProgressTime;
+            // Timeline time (seconds) of this update; lets the viewer rebuild an effect after a seek.
+            public float CurrentTime;
             public bool isEnable, isPlay, isLoop, isClear, IsUpdateClear;
             public int owner, occurrenceSpot, ParentStageObjectNameHash;
             public string ParentStageObjectName;
@@ -51,6 +53,7 @@ namespace Gallop.Live.Cutt
             info = new EffectUpdateInfo
             {
                 ProgressTime = a.IsSimulate ? Mathf.Max(0f, (time - a.frame / 60f) * speed) : 0f,
+                CurrentTime = time,
                 isEnable = ownerEnabled(a.owner), isPlay = a.IsPlay, isLoop = a.IsLoop,
                 isClear = a.IsClear, IsUpdateClear = group.updatedKeyFrame != a.frame,
                 owner = a.owner, occurrenceSpot = a.occurrenceSpot,

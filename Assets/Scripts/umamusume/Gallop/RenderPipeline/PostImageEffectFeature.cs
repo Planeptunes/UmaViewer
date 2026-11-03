@@ -42,6 +42,7 @@ namespace Gallop.RenderPipeline
         private ExposureToneCurvePass _exposurePass, _toneCurvePass;
         private SunShaftsPass _sunShaftsPass;
         private IndirectLightShaftsPass _indirectLightShaftsPass;
+        private TransmittedLightPass _transmittedLightPass;
         private MultiCameraCompositePass _multiCameraCompositePass;
         private MultiCameraFinalCompositePass _multiCameraFinalCompositePass;
         private ProjectorRenderPass _projectorPass;
@@ -145,6 +146,7 @@ namespace Gallop.RenderPipeline
             _toneCurvePass = new ExposureToneCurvePass(true);
             _sunShaftsPass = new SunShaftsPass(passEvent);
             _indirectLightShaftsPass = new IndirectLightShaftsPass(passEvent);
+            _transmittedLightPass = new TransmittedLightPass(passEvent);
             _multiCameraCompositePass = new MultiCameraCompositePass();
             _multiCameraFinalCompositePass = new MultiCameraFinalCompositePass();
             _projectorPass = new ProjectorRenderPass();
@@ -300,8 +302,14 @@ namespace Gallop.RenderPipeline
                 _sunShaftsPass != null && _sunShaftsPass.Setup(parameter.SunShafts, this);
             bool shaftsReady = Gallop.RenderPipeline.PostEffectSelection.IsEnabled(PostEffectId.LightShafts) &&
                 _indirectLightShaftsPass != null && _indirectLightShaftsPass.Setup(parameter.LightShafts, this);
+            // Glow of the stage lights (TransmittedLight track); scheduled like the shafts.
+            bool transmittedReady = Gallop.RenderPipeline.PostEffectSelection.IsEnabled(PostEffectId.TransmittedLight) &&
+                _transmittedLightPass != null &&
+                _transmittedLightPass.Setup(Gallop.Live.Cutt.LiveTransmittedLightTimeline.Current, this);
             bool correctionReady = colorReady || exposureReady || toneReady;
-            if (!dofReady && !radialReady && !chromaticReady && !tiltReady && !fogReady && !vortexReady && !fluctuationReady && !correctionReady && !sunReady && !shaftsReady)
+            // TransmittedLight composes like the shafts: same scheduling and limiter layer.
+            bool lightReady = sunReady || shaftsReady || transmittedReady;
+            if (!dofReady && !radialReady && !chromaticReady && !tiltReady && !fogReady && !vortexReady && !fluctuationReady && !correctionReady && !lightReady)
             {
                 if (!_loggedSetupFailed)
                 {
@@ -321,7 +329,7 @@ namespace Gallop.RenderPipeline
 
             // Color keeps its native default event550, independent of DOF's event.
             var schedule = GetColorChainSchedule(dofReady, radialReady,
-                correctionReady || sunReady || shaftsReady, effectEvent);
+                correctionReady || lightReady, effectEvent);
             _sourceSetupPass.renderPassEvent = (RenderPassEvent)schedule.FirstEvent;
             _finalBlitPass.renderPassEvent = (RenderPassEvent)schedule.LastEvent;
 
@@ -338,22 +346,23 @@ namespace Gallop.RenderPipeline
             // SunShafts/LightShafts/Bloom/PostFilm. Solo cuando la cadena DOF/Bloom entrega su RT al
             // feature (evento <= 550).
             bool charaLimiter = _charaLimiterCapturePass != null && _charaLimiterApplyPass != null &&
-                (dofReady || sunReady || shaftsReady) && (!dofReady || (int)effectEvent <= 550) &&
+                (dofReady || lightReady) && (!dofReady || (int)effectEvent <= 550) &&
                 CharaPostEffectLimiter.IsActive;
             if (charaLimiter)
             {
-                CharaPostEffectLimiter.ShaftsQueued = sunReady || shaftsReady;
+                CharaPostEffectLimiter.ShaftsQueued = lightReady;
                 _charaLimiterCapturePass.Setup(this, (RenderPassEvent)schedule.FirstEvent);
                 _registerPass.Add(_charaLimiterCapturePass);
             }
             if (sunReady) _registerPass.Add(_sunShaftsPass);
             if (shaftsReady) _registerPass.Add(_indirectLightShaftsPass);
+            if (transmittedReady) _registerPass.Add(_transmittedLightPass);
             if (dofReady) _registerPass.Add(_dofDiffusionBloomOverlayPass);
             // ... y aplicacion justo despues de Bloom/PostFilm.
             if (charaLimiter)
             {
                 int applyEvent = System.Math.Max(dofReady ? (int)effectEvent : 0,
-                    (sunReady || shaftsReady) ? (int)RenderPassEvent.BeforeRenderingPostProcessing : 0);
+                    lightReady ? (int)RenderPassEvent.BeforeRenderingPostProcessing : 0);
                 _charaLimiterApplyPass.Setup(this, (RenderPassEvent)applyEvent);
                 _registerPass.Add(_charaLimiterApplyPass);
             }
@@ -501,8 +510,10 @@ namespace Gallop.RenderPipeline
 
             _sunShaftsPass?.Dispose();
             _indirectLightShaftsPass?.Dispose();
+            _transmittedLightPass?.Dispose();
             _sunShaftsPass = null;
             _indirectLightShaftsPass = null;
+            _transmittedLightPass = null;
             _multiCameraCompositePass = null;
             _multiCameraFinalCompositePass = null;
             if (_dofDiffusionBloomOverlayPass != null)

@@ -153,6 +153,7 @@ namespace Gallop.Live
             public bool dirty = true;
 
             public readonly List<RendererEntry> renderers = new List<RendererEntry>(64);
+            public readonly List<MaskEntry> masks = new List<MaskEntry>(16);
             public int slotCount;
             public int lastRendererCount;
             public bool washBlendModeInited;
@@ -211,6 +212,8 @@ namespace Gallop.Live
 
             public bool isWashLight;
             public bool isWashLightProjection;
+            // StageBeamLight: authored _ColorPower of the material, or -1 for any other shader.
+            public float beamColorPower;
 
             public bool useLightBlendMode;
             public int rendererLightBlendMode;
@@ -226,6 +229,15 @@ namespace Gallop.Live
             public bool renderOnState;
         }
 
+        // TransmittedLight mask mesh (StageTransmittedLightMask) and the light slot it belongs to.
+        private struct MaskEntry
+        {
+            public Renderer r;
+            public int slot;
+        }
+
+        private static readonly int TransmittedLightMaskScaleId = Shader.PropertyToID("_TransmittedLightMaskScale");
+        private static readonly Regex ReAlphaPrefix = new Regex(@"^alpha(\d+)(?:_|$)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex ReLightPrefix = new Regex(@"^light(\d+)(?:_|$)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex ReSuffixNumber = new Regex(@"_(\d+)$", RegexOptions.Compiled);
         private static readonly Regex ReLastDigits = new Regex(@"(\d+)(?!.*\d)", RegexOptions.Compiled);
@@ -674,6 +686,7 @@ namespace Gallop.Live
         private void BuildRootCache(RootCache rc)
         {
             rc.renderers.Clear();
+            rc.masks.Clear();
             rc.slotCount = 0;
 
             if (rc.rootGo == null || !IsBlinkRootName(rc.rootName))
@@ -699,6 +712,10 @@ namespace Gallop.Live
 
                 string directName = go.name ?? "";
                 if (IsProtectedLedName(directName)) continue;
+
+                var maskRenderer = t.GetComponent<Renderer>();
+                if (IsTransmittedLightMaskRenderer(maskRenderer))
+                    rc.masks.Add(new MaskEntry { r = maskRenderer, slot = ResolveMaskSlot(t, rc.rootGo.transform) });
 
                 string childName = ResolveIndexedOwnerName(t, rc.rootGo.transform);
                 if (string.IsNullOrEmpty(childName)) continue;
@@ -744,6 +761,7 @@ namespace Gallop.Live
                         isLightBlinkBlend = isLightBlinkBlend,
                         hasColorPowerMultiply = hasColorPowerMultiply,
                         wantsMpb = (isBlinkSimple || isUvAlphaMask || isLightAdd1),
+                        beamColorPower = GetBeamColorPower(r),
 
                         washLightController = wash,
                         unityLensFlareController = flare,
@@ -1033,6 +1051,7 @@ namespace Gallop.Live
                     e.isLightBlinkBlend = isLightBlinkBlend;
                     e.hasColorPowerMultiply = hasColorPowerMultiply;
                     e.wantsMpb = (isBlinkSimple || isUvAlphaMask || isLightAdd1);
+                    e.beamColorPower = GetBeamColorPower(r);
                     e.blendConfigured = false;
                     e.blendConfiguredMode = int.MinValue;
 
@@ -1091,7 +1110,8 @@ namespace Gallop.Live
 
                     ApplyMpbToRenderer(
                         r, currentColor, p, rt.liveTime,
-                        e.isBlinkSimple, e.isUvAlphaMask, e.isLightAdd1, e.hasColorPowerMultiply);
+                        e.isBlinkSimple, e.isUvAlphaMask, e.isLightAdd1, e.hasColorPowerMultiply,
+                        e.beamColorPower);
                 }
                 else
                 {
@@ -1100,6 +1120,56 @@ namespace Gallop.Live
 
                 rc.renderers[i] = e;
             }
+
+            ApplyMaskScales(rc, rt);
+        }
+
+        // The TransmittedLight mask of a stage light only counts while that light is lit: an
+        // unlit light must not make the FastBloom glow over whatever lies behind its mask mesh.
+        // Not recovered from game code (the datamined build predates TransmittedLight); matches
+        // the live footage, where only the lit lights glow.
+        private void ApplyMaskScales(RootCache rc, BlinkRootRuntime rt)
+        {
+            for (int i = 0; i < rc.masks.Count; i++)
+            {
+                var mask = rc.masks[i];
+                if (mask.slot < 0 || mask.slot >= kMaxBlinkSlots) continue;
+                Vector4 c = rt.currentColors[mask.slot];
+                float brightness = Mathf.Max(0f, c.w) * Mathf.Max(c.x, Mathf.Max(c.y, c.z));
+                SetMaskScale(mask.r, Mathf.Clamp01(brightness));
+            }
+        }
+
+        private void SetMaskScale(Renderer r, float scale)
+        {
+            if (r == null) return;
+            r.GetPropertyBlock(_mpb);
+            _mpb.SetFloat(TransmittedLightMaskScaleId, scale);
+            r.SetPropertyBlock(_mpb);
+        }
+
+        private static bool IsTransmittedLightMaskRenderer(Renderer r)
+        {
+            if (r == null) return false;
+            var m = r.sharedMaterial;
+            return m != null && m.shader != null &&
+                   m.shader.name.IndexOf("StageTransmittedLightMask", StringComparison.Ordinal) >= 0;
+        }
+
+        // Light slot of a mask mesh: the lightNNN it is nested in (ground objects), a lightNNN
+        // sibling (wash lights), or its own alphaNNN index when it hangs from the root.
+        private int ResolveMaskSlot(Transform t, Transform root)
+        {
+            string owner = ResolveIndexedOwnerName(t, root);
+            if (owner != null && TryParseLightOwnerIndex(owner, out int index)) return index;
+
+            var parent = t.parent;
+            if (parent != null && parent != root)
+                for (int i = 0; i < parent.childCount; i++)
+                    if (TryParseLightOwnerIndex(parent.GetChild(i).name, out index)) return index;
+
+            var m = ReAlphaPrefix.Match(t.name);
+            return m.Success && int.TryParse(m.Groups[1].Value, out index) ? index : -1;
         }
 
         private void ApplyUpdateInfoToRuntime(
@@ -1428,6 +1498,9 @@ namespace Gallop.Live
 
                 rc.renderers[i] = e;
             }
+
+            for (int i = 0; i < rc.masks.Count; i++)
+                SetMaskScale(rc.masks[i].r, 0f);
         }
 
         private bool IsTargetBlinkBlendMaterial(Material m)
@@ -1605,11 +1678,23 @@ namespace Gallop.Live
             bool isBlinkSimple,
             bool isUvAlphaMask,
             bool isLightAdd1,
-            bool hasColorPowerMultiply)
+            bool hasColorPowerMultiply,
+            float beamColorPower)
         {
             r.GetPropertyBlock(_mpb);
 
-            if (isUvAlphaMask)
+            if (beamColorPower >= 0f)
+            {
+                // BlinkLightController.Update weights the colour by the power (rgb * power) and
+                // never rewrites the material's _ColorPower, so the beam keeps its authored 0.25.
+                Color weighted = new Color(currentColor.r * p, currentColor.g * p, currentColor.b * p, currentColor.a);
+                _mpb.SetColor("_MulColor0", weighted);
+                _mpb.SetColor("_MulColor1", weighted);
+                _mpb.SetFloat("_ColorPower", beamColorPower);
+                if (hasColorPowerMultiply) _mpb.SetFloat("_ColorPowerMultiply", 1f);
+                _mpb.SetFloat("_AppTime", liveNow);
+            }
+            else if (isUvAlphaMask)
             {
                 _mpb.SetColor("_MulColor0", currentColor);
                 _mpb.SetColor("_MulColor1", currentColor);
@@ -1632,6 +1717,14 @@ namespace Gallop.Live
             }
 
             r.SetPropertyBlock(_mpb);
+        }
+
+        private static float GetBeamColorPower(Renderer r)
+        {
+            Material m = r != null ? r.sharedMaterial : null;
+            if (m == null || m.shader == null) return -1f;
+            if (!m.shader.name.StartsWith("Gallop/3D/Live/Stage/StageBeamLight", StringComparison.Ordinal)) return -1f;
+            return m.HasProperty("_ColorPower") ? m.GetFloat("_ColorPower") : 1f;
         }
 
         private void DetectType(

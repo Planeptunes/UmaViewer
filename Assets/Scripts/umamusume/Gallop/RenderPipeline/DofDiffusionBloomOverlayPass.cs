@@ -633,7 +633,8 @@ namespace Gallop.RenderPipeline
                 mediumRezWork,
                 mediumRezWork,
                 4,
-                param.DofMaxBlurSpread);
+                param.DofMaxBlurSpread,
+                smoothness);
 
             OldDofDownsample(ref context, cmd, mediumRezWork, lowRezWork);
             OldDofBlurFg(
@@ -642,7 +643,8 @@ namespace Gallop.RenderPipeline
                 lowRezWork,
                 lowRezWork,
                 0,
-                param.DofMaxBlurSpread);
+                param.DofMaxBlurSpread,
+                smoothness);
 
             cmd.SetGlobalTexture(
                 ShaderManager.GetPropertyId(ShaderManager.PropertyId._TapLow),
@@ -679,7 +681,8 @@ namespace Gallop.RenderPipeline
                     mediumRezWork,
                     mediumRezWork,
                     2,
-                    param.DofMaxBlurSpread);
+                    param.DofMaxBlurSpread,
+                    smoothness);
 
                 OldDofBlurFg(
                     ref context,
@@ -687,7 +690,8 @@ namespace Gallop.RenderPipeline
                     mediumRezWork,
                     lowRezWork,
                     1,
-                    param.DofMaxBlurSpread);
+                    param.DofMaxBlurSpread,
+                    smoothness);
 
                 Blit(cmd, lowRezWork, finalDefocus, null, -1);
                 context.ExecuteCommandBuffer(cmd);
@@ -739,8 +743,11 @@ namespace Gallop.RenderPipeline
             RenderTextureHandle from,
             RenderTextureHandle to,
             int blurPass,
-            float spread)
+            float spread,
+            float smoothness)
         {
+            spread = ScaleBlurSpread(spread, smoothness);
+
             cmd.SetGlobalTexture(
                 ShaderManager.GetPropertyId(ShaderManager.PropertyId._TapHigh),
                 GetHandleIdentifier(from));
@@ -1272,6 +1279,8 @@ namespace Gallop.RenderPipeline
             RenderTextureHandle to,
             float spread)
         {
+            spread = ScaleBlurSpread(spread, param.DofSmoothness);
+
             switch ((int)param.DofBlurType)
             {
                 case 0:
@@ -1316,6 +1325,47 @@ namespace Gallop.RenderPipeline
             // Official BlurBlt performs one final unconditional submission.
             context.ExecuteCommandBuffer(cmd);
             cmd.Clear();
+        }
+
+        // Ajuste propio del visor (no está en el juego): el juego renderiza el 3D a la resolución de
+        // pantalla o menos, y el visor puede supermuestrear con "Render Scale (%)", que deja la imagen
+        // mucho más nítida. Para compensarlo, el radio de desenfoque de la DOF crece con la escala:
+        // lineal, 100 % -> x1, 150 % -> x2, 200 % -> x3 (2·escala - 1). Por debajo de 100 % no se toca.
+        private static float RenderScaleBlurFactor()
+        {
+            var pipeline = GraphicsSettings.currentRenderPipeline as UniversalRenderPipelineAsset;
+            float scale = pipeline != null ? pipeline.renderScale : 1f;
+            return Mathf.Max(1f, 2f * scale - 1f);
+        }
+
+        // "DOF Limit" (PostEffectId.DofLimit): el radio reescalado no pasa de un tope; si la clave ya lo
+        // supera, se queda como está. El tope depende de la suavidad de la clave (dofSmoothness, la
+        // rampa del desenfoque tras el foco). Medido en 61 canciones: casi todas las claves usan
+        // suavidad 0,5-1 (rampa casi inmediata) con blurSpread 1-1,75, es decir, un desenfoque ya
+        // fuerte (p. ej. 1001): ahí el tope es 1,0. Las de rampa suave (1156: 0,5 con suavidad 15,3;
+        // 1174 ~7,8) se ven nítidas y suben hasta 1,5 (el x3 completo de 1156). Entre suavidad 1 y 5
+        // el tope pasa de uno a otro.
+        private const float DOF_LIMIT_MAX_SPREAD = 1f;
+        private const float DOF_LIMIT_MAX_SPREAD_SOFT = 1.5f;
+        private const float DOF_LIMIT_SOFT_SMOOTHNESS_START = 1f;
+        private const float DOF_LIMIT_SOFT_SMOOTHNESS_END = 5f;
+
+        private static float ScaleBlurSpread(float spread, float smoothness)
+        {
+            float factor = RenderScaleBlurFactor();
+            if (factor <= 1f)
+                return spread;
+
+            float scaled = spread * factor;
+            if (!PostEffectSelection.IsEnabled(PostEffectId.DofLimit))
+                return scaled;
+
+            float soft = Mathf.InverseLerp(DOF_LIMIT_SOFT_SMOOTHNESS_START, DOF_LIMIT_SOFT_SMOOTHNESS_END, smoothness);
+            float maxSpread = Mathf.Lerp(DOF_LIMIT_MAX_SPREAD, DOF_LIMIT_MAX_SPREAD_SOFT, soft);
+
+            // blurSpread puede venir negativo (las muestras son simétricas): se limita el módulo.
+            float limit = Mathf.Max(Mathf.Abs(spread), maxSpread);
+            return Mathf.Sign(spread) * Mathf.Min(Mathf.Abs(scaled), limit);
         }
 
         private void SetBlurParameter(CommandBuffer cmd, float spread, float axisX, float axisY)

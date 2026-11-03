@@ -16,6 +16,7 @@ namespace Gallop.Live
     {
         private const int CharacterMaskWidth = 20;
         private readonly Transform owner;
+        private readonly LiveTimelinePropsSettings settings;
         private readonly IList<UmaContainerCharacter> characters;
         private readonly IList<LiveTimelineCharaLocator> locators;
         private readonly Dictionary<string, Transform>[] characterBones;
@@ -68,7 +69,7 @@ namespace Gallop.Live
 
         private sealed class RuntimeProp
         {
-            public int CharacterIndex, PropsId;
+            public int CharacterIndex, PropsId, SettingIndex;
             public LiveTimelinePropsSettings.PropsDataGroup Setting;
             public GameObject Instance;
             public Transform Anchor, DefaultTarget;
@@ -93,6 +94,7 @@ namespace Gallop.Live
             IList<UmaContainerCharacter> characters, IList<LiveTimelineCharaLocator> locators)
         {
             this.owner = owner;
+            this.settings = settings;
             this.characters = characters;
             this.locators = locators;
             int characterCount = System.Math.Min(characters?.Count ?? 0, CharacterMaskWidth);
@@ -146,6 +148,7 @@ namespace Gallop.Live
                     {
                         CharacterIndex = c,
                         PropsId = id,
+                        SettingIndex = p,
                         Setting = setting,
                         Instance = instance,
                         Anchor = anchor,
@@ -483,21 +486,27 @@ namespace Gallop.Live
                             }
                         }
                     if (sheet.propsAttachList != null)
-                        foreach (var group in sheet.propsAttachList)
+                    {
+                        var attachSettings = AttachSettingIndices(sheet.propsAttachList);
+                        for (int g = 0; g < sheet.propsAttachList.Count; g++)
                         {
+                            var group = sheet.propsAttachList[g];
                             if (group == null || !Active(group.keys, group._applyVariation, group._variationId, frame, mode)) continue;
                             LiveTimelineControl.FindTimelineKey(out var current, out var next, group.keys, frame);
+                            int settingIndex = attachSettings != null ? attachSettings[g] : -1;
                             foreach (var prop in instances)
                             {
-                                var a = LatestAttachment(group.keys, current as LiveTimelineKeyPropsAttachData, prop, frame);
+                                if (settingIndex >= 0 && prop.SettingIndex != settingIndex) continue;
+                                var a = LatestAttachment(group.keys, current as LiveTimelineKeyPropsAttachData, prop, frame, settingIndex >= 0);
                                 if (a == null || (prop.Attachment != null && a.frame < prop.Attachment.frame)) continue;
                                 var b = next as LiveTimelineKeyPropsAttachData;
-                                if (b == null || !Selected(b._settingFlags, b._propsId, prop)) b = a;
+                                if (b == null || !SelectedAttach(b, prop, settingIndex >= 0)) b = a;
                                 prop.Attachment = a;
                                 prop.NextAttachment = b;
                                 prop.AttachmentRatio = b != a && b.IsInterpolateKey() ? LiveTimelineControl.CalculateInterpolationValue(a, b, frame) : 0f;
                             }
                         }
+                    }
                 }
             foreach (var prop in instances)
             {
@@ -505,7 +514,31 @@ namespace Gallop.Live
                 ApplyAppearance(prop);
                 ApplyAttachment(prop);
             }
+            ApplyParentConstraints(sheets, frame, mode);
             registeredBlinkDriver?.UpdateRegisteredRoots();
+        }
+
+        // ParentConstraint tracks on props (_objectType 0): _charaIndex/_propsIndex address the
+        // same per-character props ids as the props tracks. Runs after the attach so the
+        // attach offset is kept relative to the source node (hand-overs between characters).
+        private void ApplyParentConstraints(IList<LiveTimelineWorkSheet> sheets, float frame, TimelinePlayerMode mode)
+        {
+            foreach (var group in LiveParentConstraint.Groups(sheets, LiveTimelineParentConstraintData.ObjectTypeProps, frame, mode))
+            {
+                if (group._charaIndex < 0 || group._charaIndex >= props.GetLength(0)
+                    || group._propsIndex < 0 || group._propsIndex >= props.GetLength(1)) continue;
+                var prop = props[group._charaIndex, group._propsIndex];
+                if (prop?.Anchor == null) continue;
+                var result = LiveParentConstraint.Evaluate(group, frame, prop.Anchor.localPosition,
+                    prop.Anchor.localRotation, FindCharacterNode, Warn);
+                LiveParentConstraint.Apply(prop.Anchor, result);
+            }
+        }
+
+        public Transform FindCharacterNode(int characterIndex, string name)
+        {
+            if (characterIndex < 0 || characterIndex >= characterBones.Length) return null;
+            return CharacterJoint(characterIndex, name, string.IsNullOrEmpty(name) ? 0 : FNVHash.Generate(name));
         }
 
         private void DiagnoseRequestedResource(LiveTimelineKeyPropsData key)
@@ -548,12 +581,58 @@ namespace Gallop.Live
         }
 
         private static LiveTimelineKeyPropsAttachData LatestAttachment(ILiveTimelineKeyDataList keys,
-            LiveTimelineKeyPropsAttachData current, RuntimeProp prop, float frame)
+            LiveTimelineKeyPropsAttachData current, RuntimeProp prop, float frame, bool bySetting)
         {
-            if (current != null && Selected(current._settingFlags, current._propsId, prop)) return current;
+            if (current != null && SelectedAttach(current, prop, bySetting)) return current;
             for (int i = keys.Count - 1; i >= 0; i--)
-                if (keys[i] is LiveTimelineKeyPropsAttachData key && key.frame <= frame && Selected(key._settingFlags, key._propsId, prop)) return key;
+                if (keys[i] is LiveTimelineKeyPropsAttachData key && key.frame <= frame && SelectedAttach(key, prop, bySetting)) return key;
             return null;
+        }
+
+        // When the track is bound to one props setting, _propsId is not used: the track
+        // only names which characters it moves.
+        private static bool SelectedAttach(LiveTimelineKeyPropsAttachData key, RuntimeProp prop, bool bySetting)
+        {
+            return bySetting ? (key._settingFlags & (1 << prop.CharacterIndex)) != 0
+                : Selected(key._settingFlags, key._propsId, prop);
+        }
+
+        // Newer cutts author one attach track per propsDataGroup, in the same order, and leave
+        // _propsId at 0 in all of them (e.g. son1156: left/right hand tracks of the same
+        // character both say id 0). Reading _propsId there moves both props to the last hand.
+        // The binding is taken by order only when the layout clearly matches: same count, the
+        // ids never vary, and each track's characters are eligible for its setting.
+        private readonly Dictionary<object, int[]> attachBindings = new Dictionary<object, int[]>();
+
+        private int[] AttachSettingIndices(List<LiveTimelinePropsAttachData> groups)
+        {
+            if (attachBindings.TryGetValue(groups, out var cached)) return cached;
+            int[] result = null;
+            var dataGroups = settings?.propsDataGroup;
+            if (dataGroups != null && groups.Count == dataGroups.Length && groups.Count > 0)
+            {
+                result = new int[groups.Count];
+                for (int g = 0; g < groups.Count && result != null; g++)
+                {
+                    result[g] = g;
+                    var keys = groups[g]?.keys;
+                    if (keys == null || keys.Count == 0 || dataGroups[g] == null) { result = null; break; }
+                    int flags = 0;
+                    for (int k = 0; k < keys.Count; k++)
+                    {
+                        if (!(keys[k] is LiveTimelineKeyPropsAttachData key) || key._propsId != 0) { result = null; break; }
+                        flags |= key._settingFlags;
+                    }
+                    if (result == null) break;
+                    bool eligible = false;
+                    for (int c = 0; c < props.GetLength(0) && !eligible; c++)
+                        if ((flags & (1 << c)) != 0 && characters[c] != null && SatisfiesConditions(dataGroups[g], characters[c], c))
+                            eligible = true;
+                    if (!eligible) result = null;
+                }
+            }
+            attachBindings[groups] = result;
+            return result;
         }
 
         private void ApplyAttachment(RuntimeProp prop)
@@ -756,6 +835,7 @@ namespace Gallop.Live
             Array.Clear(unresolved, 0, unresolved.Length);
             Array.Clear(characterBones, 0, characterBones.Length);
             Array.Clear(characterBoneHashes, 0, characterBoneHashes.Length);
+            attachBindings.Clear();
             warnings.Clear();
         }
     }

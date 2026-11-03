@@ -423,6 +423,12 @@ namespace Gallop.Live.Cutt
         [SerializeField] public List<LiveTimelineParticleGroupData> particleGroupList;
         [SerializeField] public List<LiveTimelinePropsData> propsList;
         [SerializeField] public List<LiveTimelinePropsAttachData> propsAttachList;
+        // Weighted re-parenting of props / mini characters onto character nodes (hand-overs).
+        [SerializeField] public List<LiveTimelineParentConstraintData> ParentConstraintDataList;
+        // Mini characters (chibi copies of a live character).
+        [SerializeField] public List<LiveTimelineMiniCharaTransformData> MiniCharaTransformDataList;
+        [SerializeField] public List<LiveTimelineMiniCharaMotionData> MiniCharaMotionDataList;
+        [SerializeField] public List<LiveTimelineMiniCharaColorData> MiniCharaColorDataList;
         [SerializeField] public List<LiveTimelineSpotlight3dData> spotlight3dList;
         [SerializeField] public List<LiveTimelineVolumeLightData> volumeLightKeys;
         [SerializeField] public List<LiveTimelineLightShaftsData> lightShaftsKeysLine;
@@ -458,6 +464,8 @@ namespace Gallop.Live.Cutt
         [SerializeField]public List<LiveTimelineLaserData> laserList;
         [SerializeField] public List<LiveTimelineUVScrollLightData> uvScrollLightList;
         [SerializeField] public List<LiveTimelineLensFlareData> lensFlareList;
+        // Glow of the stage lights (FastBloom over the TransmittedLightMask pass of the lights).
+        [SerializeField] public LiveTimelineKeyTransmittedLightDataList TransmittedLightKeys;
         [SerializeField] public List<LiveTimelineLightProjectionData> lightProjectionList;
         [SerializeField] public List<LiveTimelineProjectorData> projecterList;
 

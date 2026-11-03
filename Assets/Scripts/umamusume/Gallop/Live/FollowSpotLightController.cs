@@ -12,8 +12,14 @@ namespace Gallop.Live
         private static readonly int ColorId = Shader.PropertyToID("_MulColor0");
         private static readonly int PowerId = Shader.PropertyToID("_ColorPower");
         private Renderer[] _renderers;
+        // Native _additionMaterial / _multiplyMaterial: the authored LightAdd1 material and a copy
+        // on LightBlend set to the Multiply light blend (DstColor / One).
+        private Material[] _additionMaterials;
+        private Material[] _multiplyMaterials;
         private MaterialPropertyBlock _block;
-        private Vector3 _authoredScale;
+        // StaticVariableDefine.Live.FollowSpotLightScale: Initialize puts it on the renderer's
+        // transform; the authored disc (radius 1) becomes a pool 1.7 times wider.
+        private static readonly Vector3 FollowSpotLightScale = new Vector3(1.7f, 1f, 1.7f);
         private bool _illuminated;
         private float _power;
         private Cutt.LiveTimelineDefine.LightBlendMode _blendMode = Cutt.LiveTimelineDefine.LightBlendMode.Addition;
@@ -28,22 +34,52 @@ namespace Gallop.Live
             _locationTransform = location;
             _renderers = GetComponentsInChildren<Renderer>(true);
             _block = new MaterialPropertyBlock();
-            _authoredScale = transform.localScale;
+            Renderer pool = GetComponentInChildren<Renderer>();
+            if (pool != null) pool.transform.localScale = FollowSpotLightScale;
+            CreateMaterials();
             ApplyLight(Color.white, 0f, 1f);
         }
 
-        // La pista BgColor1 marca con LightBlendMode.Multiply las ventanas en las que el juego no
-        // dibuja el charco de luz sino la sombra del personaje (sistema nativo aparte).
-        // Mientras esa sombra no esté portada, el quad no se pinta en ese modo: si se pintara
-        // saldría el charco blanco, que no existe en el original.
-        // Ver PENDIENTE_SOMBRA_PERSONAJE.md.
-        public void SetBlendMode(Cutt.LiveTimelineDefine.LightBlendMode mode)
+        private void CreateMaterials()
         {
-            _blendMode = mode;
+            _additionMaterials = new Material[_renderers.Length];
+            _multiplyMaterials = new Material[_renderers.Length];
+            Shader blendShader = ShaderManager.GetShader(ShaderManager.ShaderKinds.StageLightBlend);
+            for (int i = 0; i < _renderers.Length; i++)
+            {
+                Material addition = _renderers[i].sharedMaterial;
+                _additionMaterials[i] = addition;
+                if (addition == null || blendShader == null) continue;
+                var multiply = new Material(addition) { shader = blendShader, renderQueue = addition.renderQueue };
+                LiveDefine.TrySetLightBlendModeMaterialProperty(LiveDefine.LightBlendMode.Multiply, multiply);
+                _multiplyMaterials[i] = multiply;
+            }
         }
 
-        private bool DrawsLight =>
-            _illuminated && _blendMode != Cutt.LiveTimelineDefine.LightBlendMode.Multiply;
+        // The BgColor1 key picks the material: Multiply brightens the floor under the character
+        // with its own colour (DstColor / One), every other mode keeps the additive pool.
+        public void SetBlendMode(Cutt.LiveTimelineDefine.LightBlendMode mode)
+        {
+            if (_blendMode == mode && _renderers != null) return;
+            _blendMode = mode;
+            if (_renderers == null || _additionMaterials == null) return;
+            bool multiply = mode == Cutt.LiveTimelineDefine.LightBlendMode.Multiply;
+            for (int i = 0; i < _renderers.Length; i++)
+            {
+                Material material = multiply && _multiplyMaterials[i] != null ? _multiplyMaterials[i] : _additionMaterials[i];
+                if (_renderers[i] != null && _renderers[i].sharedMaterial != material)
+                    _renderers[i].sharedMaterial = material;
+            }
+        }
+
+        private bool DrawsLight => _illuminated;
+
+        private void OnDestroy()
+        {
+            if (_multiplyMaterials == null) return;
+            foreach (var material in _multiplyMaterials)
+                if (material != null) Destroy(material);
+        }
 
         // Verdadero cuando el foco esta encendido de verdad (no en la rampa de subida) y la pista
         // pide LightBlendMode.Multiply: es cuando el juego muestra la sombra del personaje.
@@ -54,7 +90,8 @@ namespace Gallop.Live
         {
             _illuminated = power != 0f;
             _power = power;
-            transform.localScale = _authoredScale * scale;
+            // SetScale: the key scale is absolute on X/Z, Y is kept.
+            transform.localScale = new Vector3(scale, transform.localScale.y, scale);
             foreach (var target in _renderers)
             {
                 target.enabled = DrawsLight;

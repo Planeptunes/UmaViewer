@@ -23,6 +23,8 @@
 //
 // Criterios:
 //   - Solo cantantes: slot < Director.partInfo.SingerCount (mobs intactos, ver mobStrength).
+//   - Fundidos del timeline: la parte de la capa PostFilm que es un color uniforme de pantalla completa
+//     (PostFilmUniformCover) no se limita.
 //   - Siluetas: peso por personaje segun max(_CharaColor.rgb) (pista BgColor1); oscuro -> no actua.
 //   - Planos abiertos: cada cantante se gradua con SU fraccion de pantalla visible (coverageStart/End).
 //   - La capa Base ya lleva DOF/Diffusion: el desenfoque no cuenta como luz añadida.
@@ -54,7 +56,6 @@ namespace Gallop.RenderPipeline
 
         // 0 = sin efecto, 1 = limitador completo.
         public float strength = 1f;
-
         // Siluetas: max(_CharaColor.rgb) <= start -> peso 0 (no actua); >= end -> peso 1.
         // Personaje iluminado normal: ~0.56-1.0; silueta: ~0.07-0.22.
         public float charaColorFadeStart = 0.25f;
@@ -74,8 +75,9 @@ namespace Gallop.RenderPipeline
 
         public Vector4 ShaderParams => new Vector4(0f, 0f, strength, 0f);
         public Vector4 ShaderCurveParams => new Vector4(0f, 0f, coverageStart, coverageEnd);
-        // x = notable, y = excessive, z = maxReduction
-        public Vector4 ShaderThresholds => new Vector4(notable, excessive, Mathf.Clamp01(maxReduction), 0f);
+        // x = notable, y = excessive, z = maxReduction, w = cobertura de PostFilm uniforme (timeline)
+        public Vector4 ShaderThresholds => new Vector4(notable, excessive, Mathf.Clamp01(maxReduction),
+            Mathf.Clamp01(CharaPostEffectLimiter.PostFilmUniformCover));
         // z = whiteWeight
         public Vector4 ShaderReduce => new Vector4(0f, 0f, whiteWeight, 0f);
     }
@@ -190,6 +192,14 @@ namespace Gallop.RenderPipeline
             Shader.PropertyToID("_CharaLimitMeasureS0"), Shader.PropertyToID("_CharaLimitMeasureS1"),
         };
         internal static readonly int LayerFlagsId = Shader.PropertyToID("_CharaLimitLayers");
+
+        /// <summary>
+        /// Cuanto cubre la pantalla, este frame, una PostFilm de color uniforme (fundido a un color: modo
+        /// Lerp/Add/Screen sin viñeta ni profundidad y las 4 esquinas iguales), 0..1. Lo publica
+        /// LiveTimelineControl al evaluar las PostFilm. Esa parte de la capa PostFilm no se limita: es un
+        /// fundido de toda la escena, no luz que lave al cantante.
+        /// </summary>
+        public static float PostFilmUniformCover;
         internal static readonly int WeightId = Shader.PropertyToID("_CharaLimitWeight");
         internal static readonly int SingerId = Shader.PropertyToID("_CharaLimitSinger");
         // Cobertura POR CANTANTE: RT0 = cantantes 1-4 (RGBA), RT1 = cantantes 5-8.
@@ -622,8 +632,7 @@ namespace Gallop.RenderPipeline
                     cmd.Blit(source.RtId, CharaPostEffectLimiter.OutId, material, 1);
                     cmd.ReleaseTemporaryRT(CharaPostEffectLimiter.Coverage0Id);
                     if (twoGroups) cmd.ReleaseTemporaryRT(CharaPostEffectLimiter.Coverage1Id);
-                    for (int i = 0; i < _measured.Count; i++) cmd.ReleaseTemporaryRT(_measured[i]);
-                    _feature.SetSourceRT(RenderTextureHandle.Make(CharaPostEffectLimiter.OutId,
+                    for (int i = 0; i < _measured.Count; i++) cmd.ReleaseTemporaryRT(_measured[i]);                    _feature.SetSourceRT(RenderTextureHandle.Make(CharaPostEffectLimiter.OutId,
                         desc.width, desc.height), cmd, ref renderingData);
                 }
                 if (CharaPostEffectLimiter.Captured)
@@ -646,8 +655,7 @@ namespace Gallop.RenderPipeline
             }
         }
 
-        private readonly List<int> _measured = new List<int>(6);
-        private readonly int[] _from = new int[3];
+        private readonly List<int> _measured = new List<int>(6);        private readonly int[] _from = new int[3];
         private readonly int[] _to = new int[3];
 
         private static RenderTargetIdentifier Resolve(int layer, RenderTargetIdentifier normal) =>

@@ -149,6 +149,27 @@ public class LiveEntry
         name = _singleProjectorName;
         return !string.IsNullOrEmpty(name);
     }
+
+    private List<int> _mirrorScanLightTextureIds;
+
+    // `livesettings` row type 5 lists, in order, the mirror-scan light textures of the song
+    // (tex_env_live_cmn_mslightNNN): the projecterList key's materialID indexes this list
+    // (song 1156: 1, 2, 3, 0, so materialID 0 is the star texture 001).
+    // Row layout: [index, 5, texture id, ...].
+    public List<int> GetMirrorScanLightTextureIds()
+    {
+        if (_mirrorScanLightTextureIds != null) return _mirrorScanLightTextureIds;
+        _mirrorScanLightTextureIds = new List<int>();
+        if (LiveSettings == null) return _mirrorScanLightTextureIds;
+        foreach (var row in LiveSettings)
+        {
+            if (row == null || row.Length <= 2 || row[1].Trim() != "5") continue;
+            if (int.TryParse(row[2].Trim(), System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture, out int id))
+                _mirrorScanLightTextureIds.Add(id);
+        }
+        return _mirrorScanLightTextureIds;
+    }
 }
 
 public class PartEntry

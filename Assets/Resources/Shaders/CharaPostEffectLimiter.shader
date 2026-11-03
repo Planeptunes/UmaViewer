@@ -19,6 +19,8 @@
 // Pass 3 (medida de capa): como el pass 2, pero en el canal del cantante va el CAMBIO del pixel entre
 //                   _CharaLayerA y _CharaLayerB (luz añadida: luminancia + whiteWeight * gris). El ultimo
 //                   mip dividido por la cobertura es el cambio medio sobre ese cantante.
+// La capa PostFilm ademas se deja sin limitar en la proporcion en que es un fundido de color uniforme
+// de toda la pantalla (dato del timeline, _CharaLimitThresholds.w).
 // =====================================================================================================
 Shader "Hidden/UmaViewer/CharaPostEffectLimiter"
 {
@@ -205,8 +207,11 @@ Shader "Hidden/UmaViewer/CharaPostEffectLimiter"
 
                 float kB = LayerKeep(mB);
                 float acc = kB * mB;
-                float kPF = LayerKeep(acc + mPF);
-                acc += kPF * mPF;
+                // PostFilm de color uniforme (fundido de toda la escena, dato del timeline en w): esa
+                // parte de la capa no se limita ni cuenta como luz acumulada para la siguiente capa.
+                float uniformFilm = saturate(_CharaLimitThresholds.w);
+                float kPF = lerp(LayerKeep(acc + mPF), 1.0, uniformFilm);
+                acc += kPF * mPF * (1.0 - uniformFilm);
                 float kS = LayerKeep(acc + mS);
                 return float3(kB, kPF, kS);
             }
@@ -293,7 +298,6 @@ Shader "Hidden/UmaViewer/CharaPostEffectLimiter"
             float _CharaLimitCoverageGroup;
             sampler2D _CharaLayerA;
             sampler2D _CharaLayerB;
-
             float4 frag(v2f_img i) : SV_Target
             {
                 // Solo luz AÑADIDA; el gris comun a R,G,B (lo que lava el color) pesa whiteWeight extra.

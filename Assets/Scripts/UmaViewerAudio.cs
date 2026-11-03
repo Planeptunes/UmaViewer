@@ -229,10 +229,12 @@ public class UmaViewerAudio
         {
             var vocal = FindVocal(liveVocal, part);
             if (vocal == null) continue;
-            int index = (int)PartValue(partInfo, part, targetIndex, 0f);
-            if (SilencedSlots[PartSlot[part]]) index = 0;   //(Live) tope de la misma voz: pista muda
+            bool silenced = SilencedSlots[PartSlot[part]];   //(Live) tope de la misma voz: pista muda
+            bool active = !silenced && PartValue(partInfo, part, targetIndex, 0f) > 0f;
+            //Con valor 0 la posición sigue con su onda anterior (ver SelectorLabel); el volumen decide
+            //si suena.
+            int index = silenced ? 0 : SelectorLabel(partInfo, part, targetIndex);
             vocal.SwitchActiveSource(index, forceUpdate);
-            bool active = index > 0;
             int row = activeCount < DefaultVolumeIndices.Length ? activeCount : 0;
             int column = active && row > 0 ? rank++ : 0;
             if (!active) row = 0;
@@ -270,10 +272,31 @@ public class UmaViewerAudio
         {
             string partName = ((PartForm)slot).ToString();
             if (FindVocal(liveVocal, partName) == null) continue;
-            if (PartValue(partInfo, partName, targetIndex, 0f) <= 0f) continue;   // no canta ahora
+            if (!IsSinging(partInfo, partName, targetIndex)) continue;   // no canta ahora
             if (allowed >= maxVoices) silenced[slot] = true;
             else allowed++;
         }
+    }
+
+    // Original AudioManager.UpdateSong 0x7ffffc32bb30: SetSelectorLabel only runs for positions whose
+    // value is > 0. A zero keeps the previous label, and UpdatePartParamer still applies the volume
+    // (authored `_vol`, or the default table, which gives 0 to a zero position). The last non-zero row
+    // is used so that a seek ends in the same state as playing straight through.
+    internal static int SelectorLabel(PartEntry data, string part, int row)
+    {
+        if (data == null || !data.PartSettings.TryGetValue(part, out var values)) return 0;
+        for (int r = Math.Min(row, values.Count - 1); r >= 0; r--)
+            if (values[r] > 0f) return (int)values[r];
+        return 0;
+    }
+
+    //(Live) La posición suena en esa fila: valor > 0, o valor 0 con onda anterior y un `_vol` escrito
+    //mayor que 0 (el volumen por defecto de una posición a 0 es 0).
+    internal static bool IsSinging(PartEntry data, string part, int row)
+    {
+        if (PartValue(data, part, row, 0f) > 0f) return true;
+        float volume = PartValue(data, part + "_vol", row, 901f);
+        return volume > 0f && volume < 900f && SelectorLabel(data, part, row) > 0;
     }
 
     internal static float PartValue(PartEntry data, string column, int row, float fallback)

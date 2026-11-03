@@ -17,7 +17,7 @@ namespace Gallop.RenderPipeline
     ///
     /// Shader properties (native ids): _FrustumCornersWS 227, _CameraWS 228, _HeightParams 229,
     /// _DistanceParams 230, _FogColor 231, _SceneFogParams 232, _SceneFogMode 233.
-    /// Pass: 0 = height + distance, 1 = height only, 2 = distance only.
+    /// Pass: 0 = height + distance, 1 = distance only, 2 = height only.
     /// Native chain position: first image effect (before SunShafts).
     /// </summary>
     public sealed class GlobalFogPass : ScriptableRenderPass, IDisposable
@@ -98,9 +98,12 @@ namespace Gallop.RenderPipeline
 
         public static int ShaderPass(Parameter p)
         {
-            // Native: 2 - (distance ? 1 : 0) when either type is off, otherwise 0.
+            // Native: 2 - (distance ? 1 : 0) when either type is off, otherwise 0. Checked against
+            // the shipped shader: pass 1 reads no _HeightParams/_CameraWS (distance only) and
+            // pass 2 does (height only). The two single-type passes were swapped here, so a
+            // height-only fog ran the distance pass and barely showed.
             if (p.DistanceFog && p.HeightFog) return 0;
-            return p.HeightFog ? 1 : 2;
+            return p.DistanceFog ? 1 : 2;
         }
 
         public static void ApplyMaterial(Material material, Parameter p, Camera camera)
@@ -127,11 +130,16 @@ namespace Gallop.RenderPipeline
             Vector3 bottomLeft = forward - toRight - toTop;
             bottomLeft.Normalize(); bottomLeft *= camScale;
 
+            // Native row order (GlobalFog.OnRenderImage writes the matrix columns as
+            // TL,TR,BR,BL): row 0 top-left, 1 top-right, 2 bottom-right, 3 bottom-left, matching
+            // the quad's vertex Z (bottom-left vertex = 3). The rows were stored bottom-to-top
+            // before, which gave each pixel the ray of the vertically opposite corner: the sky
+            // and the far buildings took downward rays into the ground fog and were fully covered.
             var corners = Matrix4x4.identity;
-            corners.SetRow(0, bottomLeft);
-            corners.SetRow(1, bottomRight);
-            corners.SetRow(2, topRight);
-            corners.SetRow(3, topLeft);
+            corners.SetRow(0, topLeft);
+            corners.SetRow(1, topRight);
+            corners.SetRow(2, bottomRight);
+            corners.SetRow(3, bottomLeft);
 
             material.SetMatrix(ShaderManager.GetPropertyId(ShaderManager.PropertyId._FrustumCornersWS), corners);
             material.SetVector(ShaderManager.GetPropertyId(ShaderManager.PropertyId._CameraWS), tr.position);

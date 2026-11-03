@@ -49,6 +49,7 @@ namespace Gallop.Live
         private MirrorScanLightRuntime _mirrorScanLightRuntime;
         private FootLightRuntime _footLightRuntime;
         private LivePropsController _livePropsController;
+        private LiveMiniCharaController _liveMiniCharaController;
         private readonly Dictionary<int, Texture> _lightProjectionTextures = new Dictionary<int, Texture>();
         private readonly Dictionary<int, Texture> _mirrorBallProjectionTextures = new Dictionary<int, Texture>();
         public IReadOnlyList<Gallop.RenderPipeline.CustomProjector> LightProjectors => _lightProjectionController?.Projectors;
@@ -677,6 +678,10 @@ namespace Gallop.Live
             _livePropsController = new LivePropsController(transform,
                 _liveTimelineControl.data.propsSettings, CharaContainerScript, propsLocators);
             _livePropsController.VariationEnabled = variation => variation == 0;
+            _liveMiniCharaController?.Dispose();
+            _liveMiniCharaController = new LiveMiniCharaController(transform,
+                _liveTimelineControl.data.worksheetList, CharaContainerScript,
+                _livePropsController.FindCharacterNode, live != null ? live.MusicId : 0);
             _stageParticleController = new LiveStageParticleController(
                 _stageController != null ? _stageController.transform : null);
             _liveTimelineControl.OnUpdateParticle += _stageParticleController.Update;
@@ -728,10 +733,16 @@ namespace Gallop.Live
             if (_stageController != null)
             {
                 _mirrorScanLightRuntime = new MirrorScanLightRuntime();
+                var mirrorScanTextures = new List<Texture>();
+                if (live != null)
+                    foreach (int textureId in live.GetMirrorScanLightTextureIds())
+                        mirrorScanTextures.Add(LiveFlashResourceUtility.LoadOnView<Texture>(
+                            MirrorScanLightRuntime.GetTexturePath(textureId)));
                 _mirrorScanLightRuntime.Initialize(_stageController.transform,
                     _liveTimelineControl.GetWorkSheetBySheetIndex(LiveTimelineDefine.SheetIndex.MainLive)?.projecterList,
                     path => LiveFlashResourceUtility.LoadOnView<GameObject>(path),
-                    id => LiveFlashResourceUtility.LoadOnView<Material>(MirrorScanLightRuntime.GetMaterialPath(id)));
+                    id => LiveFlashResourceUtility.LoadOnView<Material>(MirrorScanLightRuntime.GetMaterialPath(id)),
+                    mirrorScanTextures);
                 _liveTimelineControl.OnUpdateProjector += _mirrorScanLightRuntime.Apply;
             }
 
@@ -799,6 +810,9 @@ namespace Gallop.Live
             }
             _liveTimelineControl.OnUpdatePostEffect_BloomDiffusion += OnUpdatePostEffect_BloomDiffusion;
             _liveTimelineControl.OnUpdatePostEffect_Dof += OnUpdatePostEffect_Dof;
+            // Song 1156 frames ~1.39x wider than the game (measured against footage of the same
+            // shot; cause not found), so its timeline FOV is narrowed by that factor.
+            _liveTimelineControl.CameraZoom = live != null && live.MusicId == 1156 ? 1.39f : 1f;
             _liveTimelineControl.OnUpdatePostFilm += OnUpdatePostFilm;
             _liveTimelineControl.OnUpdateRadialBlur += OnUpdateRadialBlur;
             _liveTimelineControl.OnUpdateColorCorrection += OnUpdateColorCorrection;
@@ -1275,6 +1289,8 @@ namespace Gallop.Live
 
             _liveTimelineControl.AlterLateUpdate();
             _livePropsController?.Evaluate(_liveTimelineControl.data.worksheetList,
+                _liveTimelineControl.currentLiveTime * 60f, _liveTimelineControl.PlayMode);
+            _liveMiniCharaController?.Evaluate(_liveTimelineControl.data.worksheetList,
                 _liveTimelineControl.currentLiveTime * 60f, _liveTimelineControl.PlayMode);
             _footLightRuntime?.AlterLateUpdate();
             _effectController?.Pause(!IsRecordVMD && (!_syncTime || sliderControl.is_Touched));
@@ -2100,6 +2116,8 @@ namespace Gallop.Live
             _footLightRuntime = null;
             _livePropsController?.Dispose();
             _livePropsController = null;
+            _liveMiniCharaController?.Dispose();
+            _liveMiniCharaController = null;
             _stageParticleController?.Dispose();
             _effectController?.Dispose();
             _spotlightRuntime?.Dispose();

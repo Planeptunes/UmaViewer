@@ -330,7 +330,8 @@ public class LiveVocalDebugOverlay : MonoBehaviour
         {
             UmaViewerAudio.CuteAudioSource vocal = vocals[k];
             string part = vocal != null ? vocal.tag : null;
-            int index = SlotIndex(partInfo, part, rowIndex);   // onda que pide la tabla (0 = silencio)
+            //Onda del selector: con valor 0 la posición conserva la anterior y suena si su `_vol` > 0.
+            int index = SlotIndex(partInfo, part, rowIndex);
             bool tableActive = solo || index > 0;
             AudioSource source = AudibleSource(vocal, solo);
 
@@ -460,13 +461,12 @@ public class LiveVocalDebugOverlay : MonoBehaviour
         return row;
     }
 
-    // Onda (wave) que la tabla pide para esa columna en esa fila. 0 = silencio.
+    // Onda (wave) que suena en esa columna y fila (mismo criterio que AlterUpdate). 0 = silencio.
     private static int SlotIndex(PartEntry partInfo, string part, int row)
     {
         if (partInfo == null || string.IsNullOrEmpty(part) || row < 0) return 0;
-        List<float> values;
-        if (!partInfo.PartSettings.TryGetValue(part, out values) || values == null || row >= values.Count) return 0;
-        return (int)values[row];
+        if (!UmaViewerAudio.IsSinging(partInfo, part, row)) return 0;
+        return UmaViewerAudio.SelectorLabel(partInfo, part, row);
     }
 
     private static string SlotName(Director director, int slot)

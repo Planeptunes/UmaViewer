@@ -330,14 +330,18 @@ public static class LiveAudioMixdown
             if (!active) volumeRow = 0;
 
             if (name != part) continue;
-            if (!active || silenced[slot] || index - 1 < 0 || index - 1 >= target.sourceList.Count) return result;
+            //Con valor 0 la posición sigue con su onda anterior; el volumen decide si suena.
+            int label = silenced[slot] ? 0 : UmaViewerAudio.SelectorLabel(data, name, row);
+            if (label - 1 < 0 || label - 1 >= target.sourceList.Count) return result;
 
             float volume = UmaViewerAudio.PartValue(data, name + "_vol", row, 901f);
             float pan = UmaViewerAudio.PartValue(data, name + "_pan", row, 901f);
             if (volume >= 900f) volume = UmaViewerAudio.DefaultVolumes[UmaViewerAudio.DefaultVolumeIndices[volumeRow][column]];
             if (pan >= 900f) pan = UmaViewerAudio.DefaultPans[volumeRow][column];
 
-            result.Add(new VocalSegment { Waves = new List<int> { index - 1 }, Volume = volume * rate, Pan = pan });
+            if (volume * rate <= 0f) return result;
+
+            result.Add(new VocalSegment { Waves = new List<int> { label - 1 }, Volume = volume * rate, Pan = pan });
             return result;
         }
 
