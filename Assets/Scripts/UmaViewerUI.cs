@@ -1337,6 +1337,9 @@ public class UmaViewerUI : MonoBehaviour
             return;
         }
 
+        //La lista de post efectos del menú solo muestra los que usa esta canción.
+        Gallop.RenderPipeline.LivePostEffectUsage.RefreshFromSong(currentLive.MusicId.ToString());
+
         LiveRecordPanel.Open($"{currentLive.MusicId} {currentLive.SongName}", null, settings =>
         {
             var selectlist = LiveSelectList.content.GetComponentsInChildren<LiveCharacterSelect>();

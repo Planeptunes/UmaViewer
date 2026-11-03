@@ -52,6 +52,13 @@ public class LiveRecordPanel : MonoBehaviour
     private GameObject _postEffectsPopup;
     private GameObject _postEffectsBlocker;
     private readonly List<ToggleSwitch> _postEffectRows = new List<ToggleSwitch>();
+    //Etiqueta, cabecera y medidas de la lista, para recolocar las filas cuando se ocultan las que la
+    //canción no usa (ver LayoutPostEffectRows).
+    private readonly List<Text> _postEffectLabels = new List<Text>();
+    private Text _postEffectsTitle;
+    private const float PostPopupWidth = 420f;
+    private const float PostHeaderHeight = 42f;
+    private const float PostRowStep = 36f;
     //Ids apagados en ESTA grabación (índices en el mismo orden que PostEffectSelection.All).
     private readonly HashSet<string> _postEffectsOff = new HashSet<string>(StringComparer.Ordinal);
     private Text _status;
@@ -496,6 +503,7 @@ public class LiveRecordPanel : MonoBehaviour
             masterButton.onClick.AddListener(delegate { ApplyPostEffectRowsInteractable(); });
 
         LoadPostEffects();
+        LayoutPostEffectRows();
         ClosePostEffectsPopup();
     }
 
@@ -536,9 +544,9 @@ public class LiveRecordPanel : MonoBehaviour
             20, Color.white, TextAnchor.MiddleCenter);
         _postEffectsButton.onClick.AddListener(TogglePostEffectsPopup);
         //Medidas: una fila por efecto, más una cabecera.
-        const float popupWidth = 420f;
-        const float headerHeight = 42f;
-        const float rowStep = 36f;
+        const float popupWidth = PostPopupWidth;
+        const float headerHeight = PostHeaderHeight;
+        const float rowStep = PostRowStep;
         float popupHeight = headerHeight + rowStep * ids.Length + 12f;
 
         //A la derecha de la ventana; si no cupiera en pantalla, a la izquierda.
@@ -574,6 +582,7 @@ public class LiveRecordPanel : MonoBehaviour
         var title = AddText(popup, "Title", new Vector2(0f, popupHeight * 0.5f - headerHeight * 0.5f),
             new Vector2(popupWidth - 28f, 30f), 20, new Color(1f, 0.87f, 0.35f, 1f), TextAnchor.MiddleCenter);
         title.text = "Post effects in the recording";
+        _postEffectsTitle = title;
 
         float top = popupHeight * 0.5f - headerHeight;
         for (int i = 0; i < ids.Length; i++)
@@ -583,6 +592,7 @@ public class LiveRecordPanel : MonoBehaviour
             var label = AddText(popup, "Effect " + ids[i], new Vector2(-popupWidth * 0.5f + 16f + 125f, y),
                 new Vector2(250f, 30f), 20, new Color(0.85f, 0.88f, 0.92f, 1f), TextAnchor.MiddleLeft);
             label.text = Gallop.RenderPipeline.PostEffectSelection.Label(ids[i]);
+            _postEffectLabels.Add(label);
 
             var toggle = AddToggle(popup, "Toggle " + ids[i],
                 new Vector2(popupWidth * 0.5f - 16f - 52f, y), true);
@@ -663,11 +673,57 @@ public class LiveRecordPanel : MonoBehaviour
     private void UpdatePostEffectsCaption()
     {
         if (_postEffectsCaption == null) return;
-        int total = _postEffectRows.Count;
-        int on = 0;
+        var ids = Gallop.RenderPipeline.PostEffectSelection.All;
+        int total = 0, on = 0;
         for (int i = 0; i < _postEffectRows.Count; i++)
-            if (_postEffectRows[i] != null && _postEffectRows[i].IsOn) on++;
+        {
+            if (_postEffectRows[i] == null) continue;
+            if (i < ids.Length && !Gallop.RenderPipeline.LivePostEffectUsage.IsRelevant(ids[i])) continue;
+            total++;
+            if (_postEffectRows[i].IsOn) on++;
+        }
         _postEffectsCaption.text = on + "/" + total;
+    }
+
+    //Solo se listan los post efectos que la canción usa de verdad (ver LivePostEffectUsage): las filas
+    //de los demás se ocultan, las visibles se recolocan sin huecos y la ventana se ajusta. La selección
+    //guardada de los efectos ocultos no se toca.
+    private void LayoutPostEffectRows()
+    {
+        var ids = Gallop.RenderPipeline.PostEffectSelection.All;
+        int visible = 0;
+        for (int i = 0; i < _postEffectRows.Count && i < ids.Length; i++)
+            if (Gallop.RenderPipeline.LivePostEffectUsage.IsRelevant(ids[i])) visible++;
+
+        float popupHeight = PostHeaderHeight + PostRowStep * visible + 12f;
+        if (_postEffectsPopup != null)
+        {
+            var popupRect = _postEffectsPopup.transform as RectTransform;
+            if (popupRect != null) popupRect.sizeDelta = new Vector2(PostPopupWidth, popupHeight);
+        }
+        if (_postEffectsTitle != null)
+            _postEffectsTitle.rectTransform.anchoredPosition =
+                new Vector2(0f, popupHeight * 0.5f - PostHeaderHeight * 0.5f);
+
+        float top = popupHeight * 0.5f - PostHeaderHeight;
+        int slot = 0;
+        for (int i = 0; i < _postEffectRows.Count && i < ids.Length; i++)
+        {
+            bool show = Gallop.RenderPipeline.LivePostEffectUsage.IsRelevant(ids[i]);
+            var row = _postEffectRows[i];
+            var label = i < _postEffectLabels.Count ? _postEffectLabels[i] : null;
+            if (label != null) label.gameObject.SetActive(show);
+            if (row != null && row.Background != null) row.Background.gameObject.SetActive(show);
+            if (!show) continue;
+
+            float y = top - PostRowStep * 0.5f - slot * PostRowStep;
+            if (label != null)
+                label.rectTransform.anchoredPosition = new Vector2(-PostPopupWidth * 0.5f + 16f + 125f, y);
+            if (row != null && row.Background != null)
+                row.Background.rectTransform.anchoredPosition = new Vector2(PostPopupWidth * 0.5f - 16f - 52f, y);
+            slot++;
+        }
+        UpdatePostEffectsCaption();
     }
 
     private void TogglePostEffectsPopup()

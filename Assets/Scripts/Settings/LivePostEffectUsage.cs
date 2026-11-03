@@ -52,6 +52,31 @@ namespace Gallop.RenderPipeline
             Changed?.Invoke();
         }
 
+        /// <summary>
+        /// Igual que Refresh, pero leyendo los datos del cutt de la canción SIN cargar el live (para el
+        /// menú de grabación, que se abre antes). Si no se puede leer, se muestran todos.
+        /// </summary>
+        public static void RefreshFromSong(string musicId)
+        {
+            LiveTimelineData data = null;
+            try
+            {
+                string path = "cutt/cutt_son" + musicId + "/cutt_son" + musicId;
+                var main = UmaViewerMain.Instance;
+                if (main != null && main.AbList != null && main.AbList.TryGetValue(path, out var entry) && entry != null)
+                {
+                    var prefab = entry.Get<GameObject>();
+                    var control = prefab != null ? prefab.GetComponentInChildren<LiveTimelineControl>(true) : null;
+                    data = control != null ? control.data : null;
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogWarning("[LivePostEffectUsage] no se pudo leer el cutt de " + musicId + ": " + ex.Message);
+            }
+            Refresh(data);
+        }
+
         private static HashSet<PostEffectId> Analyze(LiveTimelineData data)
         {
             var used = new HashSet<PostEffectId>();
