@@ -72,6 +72,10 @@ public class LiveGraphicsSettingsUI : MonoBehaviour
 
         WirePostEffectRows();
 
+        // Solo se listan los post efectos que la canción cargada usa de verdad (ver LivePostEffectUsage).
+        Gallop.RenderPipeline.LivePostEffectUsage.Changed += ApplyPostEffectRelevance;
+        ApplyPostEffectRelevance();
+
         //Aplica el estado guardado nada mas entrar al live (el interruptor puede venir apagado).
         UISettingsGraphics.ApplyLivePostEffects();
         if (PostEffectsToggle != null) SetPostEffectRowsInteractable(Config.Instance.PostEffects);
@@ -204,15 +208,41 @@ public class LiveGraphicsSettingsUI : MonoBehaviour
         if (PostEffectListBlocker != null) PostEffectListBlocker.SetActive(false);
     }
 
+    private void OnDestroy()
+    {
+        Gallop.RenderPipeline.LivePostEffectUsage.Changed -= ApplyPostEffectRelevance;
+    }
+
+    // Oculta las filas de los efectos con pista propia que esta canción no usa. El tick de un efecto
+    // oculto no se toca: sigue valiendo lo que tuviera guardado.
+    private void ApplyPostEffectRelevance()
+    {
+        if (PostEffectToggles == null) return;
+        var ids = Gallop.RenderPipeline.PostEffectSelection.All;
+        int count = Mathf.Min(PostEffectToggles.Length, ids.Length);
+        for (int i = 0; i < count; i++)
+        {
+            Toggle toggle = PostEffectToggles[i];
+            if (toggle == null) continue;
+            toggle.gameObject.SetActive(Gallop.RenderPipeline.LivePostEffectUsage.IsRelevant(ids[i]));
+        }
+        UpdatePostEffectCaption();
+    }
+
     private void UpdatePostEffectCaption()
     {
         if (PostEffectListCaption == null) return;
-        int total = PostEffectToggles != null ? PostEffectToggles.Length : 0;
-        int on = 0;
+        var ids = Gallop.RenderPipeline.PostEffectSelection.All;
+        int total = 0, on = 0;
         if (PostEffectToggles != null)
         {
             for (int i = 0; i < PostEffectToggles.Length; i++)
-                if (PostEffectToggles[i] != null && PostEffectToggles[i].isOn) on++;
+            {
+                if (PostEffectToggles[i] == null) continue;
+                if (i < ids.Length && !Gallop.RenderPipeline.LivePostEffectUsage.IsRelevant(ids[i])) continue;
+                total++;
+                if (PostEffectToggles[i].isOn) on++;
+            }
         }
         PostEffectListCaption.text = on + "/" + total;
     }
@@ -283,6 +313,12 @@ public class LiveGraphicsSettingsUI : MonoBehaviour
 
         if (_frameRate != null) _frameRate.Update();
         if (_renderScale != null) _renderScale.Update();
+
+        // Analiza la canción en cuanto hay timeline cargado (compara solo la referencia, es barato).
+        var director = Gallop.Live.Director.instance;
+        var control = director != null ? director._liveTimelineControl : null;
+        if (control != null && control.data != null)
+            Gallop.RenderPipeline.LivePostEffectUsage.Refresh(control.data);
     }
 
     // Vuelve a pintar el desplegable de FPS con el valor actual de Config.
