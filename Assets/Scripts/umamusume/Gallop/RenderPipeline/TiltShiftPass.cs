@@ -61,13 +61,28 @@ namespace Gallop.RenderPipeline
         private PostImageEffectFeature _feature;
         private static readonly int Full = Shader.PropertyToID("_RecoveredTiltShiftFull");
 
+        // Textura de baja resolucion (_Blurred) del frame anterior. Los comandos se ejecutan al hacer
+        // Submit, DESPUES de Execute: liberarla o poner _Blurred a null dentro de Execute dejaba el
+        // composite leyendo una textura nula (pantalla gris solida con Downsample > 0). Se libera al
+        // empezar el siguiente uso, cuando esos comandos ya se ejecutaron.
+        private RenderTexture _low;
+
+        private void ReleaseLow()
+        {
+            if (_low == null) return;
+            if (_material != null)
+                _material.SetTexture(ShaderManager.GetPropertyId(ShaderManager.PropertyId._Blurred), null);
+            RenderTexture.ReleaseTemporary(_low);
+            _low = null;
+        }
+
         public TiltShiftPass(RenderPassEvent evt) { renderPassEvent = evt; }
 
         public bool Setup(Parameter parameter, PostImageEffectFeature feature)
         {
             _parameter = parameter;
             _feature = feature;
-            if (!parameter.IsValid) return false;
+            if (!parameter.IsValid) { ReleaseLow(); return false; }
             Shader shader = ShaderManager.GetShader(ShaderManager.ShaderKinds.TiltShiftHdrLensBlur);
             if (shader == null || !shader.isSupported) return false;
             if (_material == null) _material = CoreUtils.CreateEngineMaterial(shader);
@@ -98,6 +113,7 @@ namespace Gallop.RenderPipeline
             var cmd = CommandBufferPool.Get("Recovered.TiltShift");
             bool downsample = _parameter.Downsample > 0;
             RenderTexture low = null;
+            ReleaseLow();
             try
             {
                 if ((int)renderPassEvent > (int)RenderPassEvent.BeforeRenderingPostProcessing)
@@ -125,6 +141,8 @@ namespace Gallop.RenderPipeline
                     low.filterMode = FilterMode.Bilinear;
                     cmd.Blit(inputHandle.RtId, low, _material, pass);
                     _material.SetTexture(ShaderManager.GetPropertyId(ShaderManager.PropertyId._Blurred), low);
+                    _low = low;
+                    low = null;
                     cmd.Blit(inputHandle.RtId, Full, _material, kCompositePass);
                 }
                 else
@@ -142,15 +160,11 @@ namespace Gallop.RenderPipeline
             finally
             {
                 CommandBufferPool.Release(cmd);
-                // The material must not keep pointing at a released buffer on the next frame.
-                if (low != null)
-                {
-                    _material.SetTexture(ShaderManager.GetPropertyId(ShaderManager.PropertyId._Blurred), null);
-                    RenderTexture.ReleaseTemporary(low);
-                }
+                // Si algo fallo antes de guardarla en _low, no se pierde.
+                if (low != null) RenderTexture.ReleaseTemporary(low);
             }
         }
 
-        public void Dispose() { CoreUtils.Destroy(_material); _material = null; }
+        public void Dispose() { ReleaseLow(); CoreUtils.Destroy(_material); _material = null; }
     }
 }
