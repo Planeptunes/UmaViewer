@@ -2446,12 +2446,7 @@ namespace Gallop.Live.Cutt
                 info.EnableCharacterMirrorExpandFaceBounds = cur.EnableCharacterMirrorExpandFaceBounds;
                 info.CharacterMirrorExpandFaceBounds = cur.CharacterMirrorExpandFaceBounds;
 
-                if (next != null && next.interpolateType != 0)
-                {
-                    float t = CalculateInterpolationValue(cur, next, currentFrame);
-                    info.mirrorReflectionRate = LerpWithoutClamp(cur.GetMirrorReflectionRate(), next.GetMirrorReflectionRate(), t);
-                }
-
+                // Native AlterUpdate_Environment reads FindTimelineKeyCurrent only: no interpolation.
                 OnEnvironmentMirror.Invoke(ref info);
             }
         }

@@ -1537,13 +1537,20 @@ namespace Gallop.Live
 
             _currentMirrorReflectionRate = updateInfo.mirrorReflectionRate;
 
+            // Native UpdateEnvironemntMirror: only `mirror` toggles the receiver; bgMirror and
+            // IsMirrorBg3d just strip the BG / 3D layers from the mirror camera's culling mask.
+            int bgLayers = GraphicSettings.GetCullingLayer(GraphicSettings.LayerIndex.LayerBG);
+            int layers3d = GraphicSettings.GetCullingLayer(GraphicSettings.LayerIndex.Layer3D);
             for (int i = 0; i < _environmentMirrorTargets.Count; i++)
             {
                 var mirror = _environmentMirrorTargets[i];
                 if (mirror == null)
                     continue;
 
-                mirror.SetActive(updateInfo.mirror || updateInfo.bgMirror || updateInfo.IsMirrorBg3d);
+                mirror.SetActive(updateInfo.mirror);
+                mirror.ResetCullingMask();
+                if (!updateInfo.bgMirror) mirror.RemoveCullingMask(bgLayers);
+                if (!updateInfo.IsMirrorBg3d) mirror.RemoveCullingMask(layers3d);
                 mirror.SetLightMirrorShader(!updateInfo.IsToonMirror);
                 mirror.MirrorReflectionRate = updateInfo.mirrorReflectionRate;
             }

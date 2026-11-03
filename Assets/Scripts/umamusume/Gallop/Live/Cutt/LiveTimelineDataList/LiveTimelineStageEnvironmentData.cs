@@ -39,54 +39,50 @@ namespace Gallop.Live.Cutt
         public LiveCharaPositionFlag _characterMirror;
         public float _mirrorReflectionRate = -1f;
 
+        // Native LiveTimelineKeyStageEnvironmentData.OnLoad: a non-negative `_mirrorReflectionRate`
+        // marks legacy data, whose `_` fields replace isValidMirror/isMirror/isBgMirror/
+        // characterMirror/mirrorReflectionRate. Otherwise the authored fields are used as they are.
+        private bool UsesLegacyMirrorFields => _mirrorReflectionRate >= 0f;
+
         public bool GetIsValidMirror()
         {
-            return isValidMirror || _isValidMirror || EnableKey;
+            return UsesLegacyMirrorFields ? _isValidMirror : isValidMirror;
         }
 
         public bool GetMirrorEnabled()
         {
-            return isMirror || EnableMirror;
+            return UsesLegacyMirrorFields ? _mirror != 0 : isMirror;
         }
 
         public bool GetBgMirrorEnabled()
         {
-            return isBgMirror || EnableBgLayer;
+            return UsesLegacyMirrorFields ? _bgMirror != 0 : isBgMirror;
         }
 
         public bool GetBg3dMirrorEnabled()
         {
-            return IsMirrorBg3d || Enable3dLayer;
+            return IsMirrorBg3d;
         }
 
         public float GetMirrorReflectionRate()
         {
-            if (_mirrorReflectionRate >= 0f)
-                return _mirrorReflectionRate;
-            if (Mathf.Abs(mirrorReflectionRate) > 0f || Mathf.Approximately(MirrorReflectionRate, 0f))
-                return mirrorReflectionRate;
-            return MirrorReflectionRate;
+            return UsesLegacyMirrorFields ? _mirrorReflectionRate : mirrorReflectionRate;
         }
 
         public LiveCharaPositionFlag GetCharacterMirrorFlag()
         {
-            if (characterMirror != 0)
-                return characterMirror;
-            if (_characterMirror != 0)
-                return _characterMirror;
-            return TargetChara;
+            return UsesLegacyMirrorFields ? _characterMirror : characterMirror;
         }
 
         public LiveCharaPositionFlag GetCharacterMirrorHeadFlag()
         {
-            if (CharacterMirrorHead != 0)
-                return CharacterMirrorHead;
-            return TargetCharaHead;
+            return CharacterMirrorHead;
         }
 
+        // Native IsEnabledMirrorCharacterHead: attribute bit 0x10000.
         public bool GetEnableCharacterMirrorHead()
         {
-            return EnableCharaHead || CharacterMirrorHead != 0 || TargetCharaHead != 0;
+            return ((int)attribute & 0x10000) != 0;
         }
     }
 
