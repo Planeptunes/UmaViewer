@@ -245,6 +245,9 @@ public class UmaViewerUI : MonoBehaviour
     private bool searchLiveValueHandled = false;
     private bool searchLiveNeedsRefresh = false;
     private int searchLiveSelectedItemIndex = -1;
+    //Último show elegido en la lista de Shows (sin usar el buscador). Sirve para que el desplegable
+    //"SearchLive" se sincronice con la selección real de la lista, como "SearchSounds".
+    private LiveEntry selectedShowLive;
 
     //==========================================================================
     // (Buscador de canciones/sonidos de "Canvas/UI/Panels/Sounds/SearchSounds")
@@ -978,7 +981,7 @@ public class UmaViewerUI : MonoBehaviour
 
         foreach (var live in Main.Lives.OrderBy(c => c.MusicId))
         {
-            createContainer(live, UmaContainerLivePrefab, LiveList, () => { selectedLiveSound = live; ShowLiveSelectPanel(live); });
+            createContainer(live, UmaContainerLivePrefab, LiveList, () => { selectedLiveSound = live; selectedShowLive = live; ShowLiveSelectPanel(live); });
             createContainer(live, UmaContainerLivePrefab, LiveSoundList, () => { selectedLiveSound = live; ListLiveSounds(live.MusicId); });
         }
     }
@@ -4572,8 +4575,40 @@ public class UmaViewerUI : MonoBehaviour
             searchLiveSignature = firma;
             RebuildSearchLiveOptions(true);
         }
+        //Se sincroniza con el show elegido en la lista (si se eligió sin el buscador).
+        SyncSearchLiveSelectionFromCurrent();
         //Reafirma el rótulo: vacío hasta que el usuario elija algo.
         RefreshSearchLiveComboText();
+    }
+
+    //Si hay un show elegido en la lista (sin el buscador) y sigue en el listado actual, el
+    //desplegable "SearchLive" lo adopta como selección (igual que SearchSounds y SearchCharacter).
+    void SyncSearchLiveSelectionFromCurrent()
+    {
+        if (SearchLiveDropdown == null) return;
+        if (searchLiveActive) return;                          //no pisar mientras se busca
+        if (selectedShowLive == null) return;
+        if (LiveList == null || !LiveList.gameObject.activeInHierarchy) return;
+
+        string prefix = " " + selectedShowLive.MusicId + " ";
+        int idx = -1;
+        for (int i = 0; i < searchLiveNames.Count; i++)
+        {
+            if (searchLiveNames[i] != null && searchLiveNames[i].StartsWith(prefix)) { idx = i; break; }
+        }
+        if (idx < 0) return;
+        if (searchLiveFilter == "" && searchLiveSelectedItemIndex == idx) return;
+
+        searchLiveSelectedItemIndex = idx;
+        searchLiveFilter = "";
+        RebuildSearchLiveOptions(false);
+        int pos = searchLiveVisible.IndexOf(idx);
+        if (pos >= 0)
+        {
+            SearchLiveDropdown.SetValueWithoutNotify(pos);
+            SearchLiveDropdown.RefreshShownValue();
+            RefreshSearchLiveComboText();
+        }
     }
 
     void RebuildSearchLiveOptions(bool rebuildItems)
