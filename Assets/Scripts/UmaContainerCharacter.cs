@@ -1673,7 +1673,10 @@ public class UmaContainerCharacter : UmaContainer
             string matName = mat.name.ToLower();
             string shaderName = mat.shader.name;
 
-            if (!shaderName.Contains("ToonFace") && !matName.Contains("face"))
+            // El ojo (ToonEye) tambien usa la normal cilindrica de la cara (_CylinderBlend, que le
+            // pone FacialToon): sin estos vectores se queda en cero y, segun la direccion de la luz
+            // de la clave, el iris se oscurece y los brillos cambian.
+            if (!shaderName.Contains("ToonFace") && !shaderName.Contains("ToonEye") && !matName.Contains("face"))
                 continue;
 
             mat.SetVector(ID_FaceCenterPos, faceCenter);
