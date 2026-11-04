@@ -1540,7 +1540,8 @@ public class UmaViewerUI : MonoBehaviour
                 {
                     if (LiveSelectPannel.activeInHierarchy && CurrentSeletChara)
                     {
-                        CurrentSeletChara.SetValue(listChara, costumeId, container.Image.sprite, CurrentHeadCostumeId);
+                        //(Other Characters: el slot es el PJ actual —cara/pelo/cola— con el cuerpo del otro.)
+                        CurrentSeletChara.SetValue(headChara, costumeId, container.Image.sprite, CurrentHeadCostumeId, 0, otherMode ? listChara : null);
                     }
                     else
                     {
@@ -1584,7 +1585,7 @@ public class UmaViewerUI : MonoBehaviour
                 if (LiveSelectPannel.activeInHierarchy && CurrentSeletChara)
                 {
                     //(En el Live el color SÍ se aplica: el slot guarda el indice junto al traje.)
-                    CurrentSeletChara.SetValue(listChara, id, container.Image.sprite, CurrentHeadCostumeId, colorIndex);
+                    CurrentSeletChara.SetValue(headChara, id, container.Image.sprite, CurrentHeadCostumeId, colorIndex, otherMode ? listChara : null);
                 }
                 else
                 {
@@ -2984,7 +2985,7 @@ public class UmaViewerUI : MonoBehaviour
         for (int i = 1; i < slots.Length; i++)
         {
             slots[i].SetValue(src.CharaEntry, src.CostumeId,
-                              src.CostumeImage.sprite, src.HeadCostumeId, src.CostumeColorIndex);
+                              src.CostumeImage.sprite, src.HeadCostumeId, src.CostumeColorIndex, src.BodyCharaEntry);
         }
         //Sin mensaje de éxito a propósito: ShowMessage activa el panel de mensajes y se abriría encima
         //del propio panel de selección. Sólo se avisa de los fallos.
@@ -3026,7 +3027,8 @@ public class UmaViewerUI : MonoBehaviour
         if (src == null) return;   //EnsureSlot1Filled ya ha avisado por consola
 
         var pool = new List<CostumeOption>();
-        foreach (var c in EnumerateCostumes(src.CharaEntry, false))
+        //Los trajes son los del CUERPO (BodyChara): con "Other Characters" el slot 1 lleva el de otro PJ.
+        foreach (var c in EnumerateCostumes(src.BodyChara, false))
         {
             if (!EsTrajeExtra(c.Id, c.Dress)) pool.Add(c);
         }
@@ -3040,7 +3042,7 @@ public class UmaViewerUI : MonoBehaviour
         for (int i = 1; i < slots.Length; i++)
         {
             var pick = pool[UnityEngine.Random.Range(0, pool.Count)];
-            slots[i].SetValue(src.CharaEntry, pick.Id, pick.Icon, src.HeadCostumeId);
+            slots[i].SetValue(src.CharaEntry, pick.Id, pick.Icon, src.HeadCostumeId, 0, src.BodyCharaEntry);
         }
         //Sin mensaje de éxito a propósito (ver CopySlot1ToRest).
     }
@@ -3695,6 +3697,52 @@ public class UmaViewerUI : MonoBehaviour
             OtherCharactersDropdown.gameObject.SetActive(costumeListMode == CostumeListMode.OtherCharacters);
 
         if (currentCostumeChara != null) ListCostumes(currentCostumeChara, currentCostumeMini);
+    }
+
+    //(Live) Al pulsar un slot, el panel de trajes se pone en el PJ de ese slot, para que la lista de
+    //cabezas (CurrentHeadCostumeId) sea la suya. El modo vuelve a "Uniques" (el de por defecto) salvo
+    //que el slot lleve el cuerpo de otro PJ: entonces queda "Other Characters" con ese PJ elegido, de
+    //forma que el panel enseña lo que tiene el slot.
+    public void ShowLiveSlotInCostumePanel(LiveCharacterSelect slot)
+    {
+        bool bodyOverride = slot != null && slot.BodyCharaEntry != null;
+        costumeListMode = bodyOverride ? CostumeListMode.OtherCharacters : CostumeListMode.Uniques;
+        if (ModelDropdown != null)
+        {
+            ModelDropdown.SetValueWithoutNotify((int)costumeListMode);
+            ModelDropdown.RefreshShownValue();
+        }
+        if (OtherCharactersDropdown != null)
+            OtherCharactersDropdown.gameObject.SetActive(bodyOverride);
+
+        if (slot == null || slot.CharaEntry == null || slot.CharaEntry.IsMob)
+        {
+            //Sin PJ que enseñar: sólo se repinta lo que ya hubiera con el modo por defecto.
+            if (currentCostumeChara != null) ListCostumes(currentCostumeChara, currentCostumeMini);
+            return;
+        }
+        var chara = slot.CharaEntry;
+
+        if (bodyOverride)
+        {
+            //Sin pasar por ApplyOtherCharaSelection: ésta repintaría los trajes del PJ anterior.
+            selectedOtherChara = slot.BodyCharaEntry;
+            otherSearchFilter = "";
+            otherSearchActive = false;
+            RebuildOtherCharactersOptions();
+        }
+
+        ListCostumes(chara, false);
+        //ListCostumes vacía la variante de cabeza; se recupera la del slot.
+        CurrentHeadCostumeId = slot.HeadCostumeId ?? string.Empty;
+
+        //El nombre del GameObject es "id nombre" (el texto visible puede ir traducido).
+        string prefix = chara.Id + " ";
+        var item = CharactersList.content.GetComponentsInChildren<UmaUIContainer>(true)
+            .FirstOrDefault(c => c.transform.parent == CharactersList.content && c.gameObject.name.StartsWith(prefix));
+        if (item != null) MarkSearchSelection(CharactersList.content, item);
+        //El buscador de personajes se sincronizó al abrir el panel, todavía con el PJ anterior.
+        SyncSearchCharacterSelectionFromCurrent();
     }
 
     void OnOtherCharactersChanged(int value)

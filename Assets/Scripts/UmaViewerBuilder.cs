@@ -110,20 +110,29 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
         {
             if (characters[i].CharaEntry.Name != "")
             {
-                var umaContainer = new GameObject($"Chara_{characters[i].CharaEntry.Id}_{characters[i].CostumeId}").AddComponent<UmaContainerCharacter>();
+                //(Other Characters) El cuerpo/traje es de BodyChara; cara, pelo y cola del PJ del slot.
+                //El contenedor queda con el PJ del cuerpo, que es el que fija altura, falda, props y monitores.
+                var body = characters[i].BodyChara;
+                var headOverride = characters[i].BodyCharaEntry != null ? characters[i].CharaEntry : null;
+
+                var umaContainer = new GameObject($"Chara_{body.Id}_{characters[i].CostumeId}").AddComponent<UmaContainerCharacter>();
                 umaContainer.IsLive = true;
-                umaContainer.CharaData = UmaDatabaseController.ReadCharaData(characters[i].CharaEntry);
+                umaContainer.CharaData = UmaDatabaseController.ReadCharaData(body);
                 var charObjs = Gallop.Live.Director.instance.charaObjs;
                 umaContainer.transform.parent = charObjs[i];
                 umaContainer.transform.localPosition = new Vector3();
 
-                if (characters[i].CharaEntry.IsMob)
+                if (body.IsMob)
                 {
-                    LoadMobUma(umaContainer, characters[i].CharaEntry, characters[i].CostumeId);
+                    LoadMobUma(umaContainer, body, characters[i].CostumeId);
                 }
                 else
                 {
-                    LoadNormalUma(umaContainer, characters[i].CharaEntry, characters[i].CostumeId, false, characters[i].HeadCostumeId, null, characters[i].CostumeColorIndex);
+                    //La rama de headOverride de LoadNormalUma reescribe CurrentHead; con "lock character"
+                    //(IsHeadFix) los slots siguientes heredarían esta cabeza, así que se restaura.
+                    var lockedHead = CurrentHead;
+                    LoadNormalUma(umaContainer, body, characters[i].CostumeId, false, characters[i].HeadCostumeId, headOverride, characters[i].CostumeColorIndex);
+                    if (headOverride != null) CurrentHead = lockedHead;
                 }
 
                 if (umaContainer.UmaAnimator != null)

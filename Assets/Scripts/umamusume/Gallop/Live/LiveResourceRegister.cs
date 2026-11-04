@@ -68,7 +68,9 @@ namespace Gallop.Live
             {
                 foreach (var selection in characters)
                 {
-                    var chara = selection?.CharaEntry;
+                    // Body/costume come from BodyChara; with a body override the head and
+                    // tail come from the slot's own character (CharaEntry).
+                    var chara = selection?.BodyChara;
                     string costume = selection?.CostumeId;
                     if (chara == null || string.IsNullOrEmpty(costume))
                     {
@@ -102,12 +104,16 @@ namespace Gallop.Live
 
                     // RegisterNormal RVA 0x1ab2130: explicit head prefab if present,
                     // otherwise the default chr{id}_00 folder. Match Live's head override.
-                    int headId = chara.Id;
+                    var headChara = selection.BodyCharaEntry != null ? selection.CharaEntry : null;
+                    DataRow headData = headChara != null ? UmaDatabaseController.ReadCharaData(headChara) : null;
+                    int headId = headChara != null ? headChara.Id : chara.Id;
+                    // Same fallback as LoadNormalUma: an override head without variant uses "00".
                     string headCostume = string.IsNullOrEmpty(selection.HeadCostumeId)
-                        ? costume : selection.HeadCostumeId;
-                    int tailId = Convert.ToInt32(data["tail_model_id"], CultureInfo.InvariantCulture);
+                        ? (headChara != null ? "00" : costume) : selection.HeadCostumeId;
+                    int tailId = Convert.ToInt32((headData ?? data)["tail_model_id"], CultureInfo.InvariantCulture);
                     var builder = UmaViewerBuilder.Instance;
-                    if (UmaViewerUI.Instance != null &&
+                    // The per-slot override wins over "lock character", as in LoadNormalUma.
+                    if (headChara == null && UmaViewerUI.Instance != null &&
                         UmaViewerUI.Instance.ModelSettings.IsHeadFix &&
                         builder != null && builder.CurrentHead != null)
                     {
