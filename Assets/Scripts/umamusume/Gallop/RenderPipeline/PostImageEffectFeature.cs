@@ -46,8 +46,6 @@ namespace Gallop.RenderPipeline
         private MultiCameraCompositePass _multiCameraCompositePass;
         private MultiCameraFinalCompositePass _multiCameraFinalCompositePass;
         private ProjectorRenderPass _projectorPass;
-        private CharaPostEffectLimiterCapturePass _charaLimiterCapturePass;
-        private CharaPostEffectLimiterApplyPass _charaLimiterApplyPass;
 
         private RenderTextureHandle _sourceRT;
         private List<ScriptableRenderPass> _registerPass;
@@ -150,8 +148,6 @@ namespace Gallop.RenderPipeline
             _multiCameraCompositePass = new MultiCameraCompositePass();
             _multiCameraFinalCompositePass = new MultiCameraFinalCompositePass();
             _projectorPass = new ProjectorRenderPass();
-            _charaLimiterCapturePass = new CharaPostEffectLimiterCapturePass();
-            _charaLimiterApplyPass = new CharaPostEffectLimiterApplyPass();
 
             _registerPass = new List<ScriptableRenderPass>(REGISTER_PASS_SIZE);
 
@@ -342,36 +338,10 @@ namespace Gallop.RenderPipeline
                 _globalFogPass.ConfigureInput(ScriptableRenderPassInput.Depth);
                 _registerPass.Add(_globalFogPass);
             }
-            // Limitadores sobre los cantantes ("Saturation Limit" / "Diffusion Limit"): captura antes de
-            // SunShafts/LightShafts/Bloom/PostFilm. Solo cuando la cadena DOF/Bloom entrega su RT al
-            // feature (evento <= 550).
-            bool charaLimiter = _charaLimiterCapturePass != null && _charaLimiterApplyPass != null &&
-                (dofReady || lightReady) && (!dofReady || (int)effectEvent <= 550) &&
-                CharaPostEffectLimiter.IsActive;
-            if (charaLimiter)
-            {
-                // Con el limitador activo los shafts (Sun / Light / Transmitted) se aplican DESPUES de el:
-                // DOF/Bloom/PostFilm -> limitador -> shafts. Asi los rayos pueden tapar al cantante a
-                // proposito (como en el original) sin que el limitador lo deshaga, y las capas del limitador
-                // ya no incluyen los shafts.
-                CharaPostEffectLimiter.ShaftsQueued = false;
-                _charaLimiterCapturePass.Setup(this, (RenderPassEvent)schedule.FirstEvent);
-                _registerPass.Add(_charaLimiterCapturePass);
-                if (dofReady) _registerPass.Add(_dofDiffusionBloomOverlayPass);
-                int applyEvent = dofReady ? (int)effectEvent : (int)RenderPassEvent.BeforeRenderingPostProcessing;
-                _charaLimiterApplyPass.Setup(this, (RenderPassEvent)applyEvent);
-                _registerPass.Add(_charaLimiterApplyPass);
-                if (sunReady) _registerPass.Add(_sunShaftsPass);
-                if (shaftsReady) _registerPass.Add(_indirectLightShaftsPass);
-                if (transmittedReady) _registerPass.Add(_transmittedLightPass);
-            }
-            else
-            {
-                if (sunReady) _registerPass.Add(_sunShaftsPass);
-                if (shaftsReady) _registerPass.Add(_indirectLightShaftsPass);
-                if (transmittedReady) _registerPass.Add(_transmittedLightPass);
-                if (dofReady) _registerPass.Add(_dofDiffusionBloomOverlayPass);
-            }
+            if (sunReady) _registerPass.Add(_sunShaftsPass);
+            if (shaftsReady) _registerPass.Add(_indirectLightShaftsPass);
+            if (transmittedReady) _registerPass.Add(_transmittedLightPass);
+            if (dofReady) _registerPass.Add(_dofDiffusionBloomOverlayPass);
             // Native GallopImageEffect chain order: DOF/Diffusion/Bloom -> TiltShift -> RadialBlur.
             if (tiltReady)
             {

@@ -69,34 +69,6 @@ namespace Gallop.Live.Cutt
             destination.SetScale(new Vector2(SafeScale(scale.x), SafeScale(scale.y)));
         }
 
-        /// <summary>
-        /// 0..1: how much this PostFilm covers the whole screen with ONE colour (a scene fade/flash):
-        /// Lerp / Add / ScreenBlend (no vignette, no monochrome), solid colour layer, no depth
-        /// fade, four equal corners. Otherwise 0. Used by the singer saturation limiter so that a
-        /// fade of the whole scene is not held back on the characters.
-        /// </summary>
-        public static float UniformCover(Overlay value)
-        {
-            if (value == null || value.layerMode != Overlay.LayerMode.Color || value.inverseVignette) return 0f;
-            switch (value.postFilmMode)
-            {
-                case Overlay.PostFilmMode.Lerp:
-                case Overlay.PostFilmMode.Add:
-                case Overlay.PostFilmMode.ScreenBlend:
-                    break;
-                default:
-                    return 0f;
-            }
-            if (value.depthPower > 0.001f) return 0f;
-            var c = value.postFilmColor0;
-            if (!SameColor(c, value.postFilmColor1) || !SameColor(c, value.postFilmColor2) || !SameColor(c, value.postFilmColor3))
-                return 0f;
-            return Mathf.Clamp01(value.postFilmPower * Mathf.Clamp01(c.a));
-        }
-
-        private static bool SameColor(Color a, Color b) =>
-            Mathf.Abs(a.r - b.r) < 0.01f && Mathf.Abs(a.g - b.g) < 0.01f && Mathf.Abs(a.b - b.b) < 0.01f && Mathf.Abs(a.a - b.a) < 0.01f;
-
         private static Color WithRgb(Color authored, Color raw) => new Color(raw.r, raw.g, raw.b, authored.a);
 
         internal static Color AdjustBlinkRgb(Color raw, float brightness, bool adjusted)

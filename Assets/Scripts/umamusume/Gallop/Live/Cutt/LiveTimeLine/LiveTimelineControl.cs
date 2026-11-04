@@ -234,12 +234,6 @@ namespace Gallop.Live.Cutt
             _postFilmBlinkAttempts = _postFilmBlinkSuccesses = 0;
             LivePostFilmTimeline.Evaluate(sheet != null ? sheet.postFilm3Keys : null, frame, _playMode, _postFilmSamples.Overlay3, _postFilmBlinkResolver);
             PostFilmBlinkLookupStatus = layer1 + "|" + layer2 + "|" + PostFilmBlinkStatus();
-            // Scene-wide colour fades in the three PostFilm layers, combined (1 - prod(1 - c)): the
-            // singer saturation limiter leaves that part of the PostFilm layer untouched.
-            Gallop.RenderPipeline.CharaPostEffectLimiter.PostFilmUniformCover = 1f
-                - (1f - LivePostFilmTimeline.UniformCover(_postFilmSamples.Overlay1))
-                * (1f - LivePostFilmTimeline.UniformCover(_postFilmSamples.Overlay2))
-                * (1f - LivePostFilmTimeline.UniformCover(_postFilmSamples.Overlay3));
             OnUpdatePostFilm?.Invoke(0, _postFilmSamples.Overlay1);
             OnUpdatePostFilm?.Invoke(1, _postFilmSamples.Overlay2);
             OnUpdatePostFilm?.Invoke(2, _postFilmSamples.Overlay3);
@@ -2554,7 +2548,7 @@ namespace Gallop.Live.Cutt
                         updateInfo.rimStep = LerpWithoutClamp(lightData.rimStep, lightData2.rimStep, ratio);
                         updateInfo.rimFeather = LerpWithoutClamp(lightData.rimFeather, lightData2.rimFeather, ratio);
                         updateInfo.rimSpecRate = LerpWithoutClamp(lightData.rimSpecRate, lightData2.rimSpecRate, ratio);
-                        updateInfo.flags = lightData2.flags;
+                        // The game keeps the current key's flags while interpolating.
                         updateInfo.RimHorizonOffset = LerpWithoutClamp(lightData.RimHorizonOffset, lightData2.RimHorizonOffset, ratio);
                         updateInfo.RimVerticalOffset = LerpWithoutClamp(lightData.RimVerticalOffset, lightData2.RimVerticalOffset, ratio);
                         updateInfo.RimHorizonOffset2 = LerpWithoutClamp(lightData.RimHorizonOffset2, lightData2.RimHorizonOffset2, ratio);

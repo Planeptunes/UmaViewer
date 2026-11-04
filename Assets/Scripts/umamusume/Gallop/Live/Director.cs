@@ -129,7 +129,9 @@ namespace Gallop.Live
                 {
                     if (target == null) continue;
                     target.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On;
-                    target.receiveShadows = true;
+                    // Cabeza y cola no reciben sombras en el juego (ModelLoader.CompositeHead/Tail).
+                    var chara = target.GetComponentInParent<UmaContainerCharacter>();
+                    target.receiveShadows = chara == null || !chara.IsHeadOrTailRenderer(target);
                 }
             }
             if (_stageController != null)
@@ -549,12 +551,12 @@ namespace Gallop.Live
 
             _liveTimelineControl.OnUpdateGlobalLight += delegate (ref GlobalLightUpdateInfo updateInfo)
             {
-                // (LUZ) La direccion que recibe el material del personaje se deriva de la CAMARA
-                // (foco pegado a la camara), no del `lightRotation` del timeline. Motivo medido con
-                // el Frame Debugger: el shader del ojo (ToonEye/T) usa esta direccion cuando
-                // `_UseOriginalDirectionalLight` = 1, y con la del timeline (Y positiva) el iris cae
-                // al escalon de sombra y se pinta NEGRO. Con la de la camara (Y negativa) se ve bien.
-                var tmpPos = GetCameraFacingLightDir();
+                // (LUZ) Como el juego (Director.OnUpdateGlobalLight + ModelController): cada modelo
+                // recibe `_UseOriginalDirectionalLight` = 1 y `_OriginalDirectionalLightDir` =
+                // lightRotation * Vector3.back (w = 0). Con cameraFollow, lightRotation ya incluye la
+                // rotacion de la camara, asi que la luz puede venir de detras del personaje.
+                Vector3 lightDir = updateInfo.lightRotation * Vector3.back;
+                var tmpPos = new Vector4(lightDir.x, lightDir.y, lightDir.z, 0f);
                 foreach (var locator in _liveTimelineControl.liveCharactorLocators)
                 {
                     if (locator != null && updateInfo.flags.hasFlag(locator.liveCharaStandingPosition) && locator is LiveTimelineCharaLocator charaLocator)
@@ -562,9 +564,12 @@ namespace Gallop.Live
                         var container = charaLocator.UmaContainer;
                         if (container)
                         {
+                            container.SetGlobalLightRotation(updateInfo.lightRotation);
                             var propertyBlock = _characterLightingBlock ?? (_characterLightingBlock = new MaterialPropertyBlock());
                             foreach (var renderer in container.Renderers)
                             {
+                                // La cabeza la resuelve el contenedor (luz de cara de FacialToon).
+                                bool faceLight = container.IsFaceLightRenderer(renderer);
                                 renderer.GetPropertyBlock(propertyBlock);
                                 propertyBlock.SetFloat("_RimShadowRate", updateInfo.globalRimShadowRate);
                                 propertyBlock.SetColor("_RimColor", updateInfo.rimColor);
@@ -580,8 +585,11 @@ namespace Gallop.Live
                                 propertyBlock.SetFloat("_RimFeather2", updateInfo.rimFeather2);
                                 propertyBlock.SetFloat("_RimSpecRate2", updateInfo.rimSpecRate2);
                                 propertyBlock.SetFloat("_RimShadowRate2", updateInfo.globalRimShadowRate2);
-                                propertyBlock.SetFloat("_UseOriginalDirectionalLight", 1f);
-                                propertyBlock.SetVector("_OriginalDirectionalLightDir", tmpPos);
+                                if (!faceLight)
+                                {
+                                    propertyBlock.SetFloat("_UseOriginalDirectionalLight", 1f);
+                                    propertyBlock.SetVector("_OriginalDirectionalLightDir", tmpPos);
+                                }
                                 renderer.SetPropertyBlock(propertyBlock);
                             }
                         }
@@ -1026,23 +1034,6 @@ namespace Gallop.Live
                 MainRenderCamera.depth = (_multiCameras != null ? _multiCameras.Length : 0) + 1;
                 MultiCameraFinalComposite.SetRenderCamera(MainRenderCamera);
             }
-        }
-
-        // (LUZ) Direccion de luz ESTABLE respecto a la CAMARA para los shaders del personaje
-        // (`Gallop/3D/Chara/Toon*`). Se devuelve la direccion DESDE la que llega la luz
-        // (camara + un poco de arriba), en el mismo espacio que espera el shader.
-        private Vector3 GetCameraFacingLightDir()
-        {
-            var cam = MainRenderCamera;
-            if (cam == null && _cameraObjects != null && _activeCameraIndex >= 0 && _activeCameraIndex < _cameraObjects.Length)
-                cam = _cameraObjects[_activeCameraIndex];
-            if (cam == null)
-                cam = Camera.main;
-            if (cam == null)
-                return new Vector3(0f, -0.3f, -1f).normalized;
-
-            var dirFromCamera = (cam.transform.forward + cam.transform.up * 0.35f).normalized;
-            return -dirFromCamera;
         }
 
         // Luz direccional del escenario: la unica Light real del live y la que proyecta la sombra

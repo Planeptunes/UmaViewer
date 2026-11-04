@@ -120,11 +120,6 @@ public class UmaContainerCharacter : UmaContainer
     [Header("ModelController FaceLighté¼»éƒ¨é˜´å½±")]
     public Transform HeadToonBaseTransform;
     public Renderer FaceRenderer;
-    // è¿™ä¸¤ä¸ªå…ˆä¿ç•™ä½ æµ‹è¯•æ—¶æ•ˆæžœå¥½çš„å€¼ã€‚
-    // åŽé¢å¦‚æžœç»§ç»­é€† asset holderï¼Œå†æ¢æˆå®˜æ–¹ asset é‡Œçš„å€¼ã€‚
-    public float FaceCenterUpOffset = 0.03f;
-    public float FaceCenterForwardOffset = 0.03f;
-    public bool FlipFaceForward = false;
 
     private Material[] _faceMaterials;
     private bool _faceLightInitialized;
@@ -242,6 +237,18 @@ public class UmaContainerCharacter : UmaContainer
     private static readonly int ID_NoseVisibility = Shader.PropertyToID("_NoseVisibility");
     private static readonly int ID_CylinderBlend = Shader.PropertyToID("_CylinderBlend");
     private static readonly int ID_HairNormalBlend = Shader.PropertyToID("_HairNormalBlend");
+    private static readonly int ID_ToonStep = Shader.PropertyToID("_ToonStep");
+    private static readonly int ID_ToonFeather = Shader.PropertyToID("_ToonFeather");
+    private static readonly int ID_UseOriginalDirectionalLight = Shader.PropertyToID("_UseOriginalDirectionalLight");
+    private static readonly int ID_OriginalDirectionalLightDir = Shader.PropertyToID("_OriginalDirectionalLightDir");
+
+    // (LUZ) Estado de luz del modelo, como ModelController del juego:
+    // _useOriginalDirectionalLightAll / _originalDirectionalLightRotationAll (pista GlobalLight) y
+    // _useOriginalDirectionalLightFace / _faceDirectionalLightDirection (pista FacialToon).
+    private bool _useGlobalLight;
+    private Quaternion _globalLightRotation = Quaternion.identity;
+    private LiveTimelineDefine.FacialToonLightType _faceLightType;
+    private Vector3 _faceLightDirection = Vector3.forward;
 
     [Header("Physics")]
     public bool EnablePhysics = true;
@@ -1642,17 +1649,19 @@ public class UmaContainerCharacter : UmaContainer
         if (_faceMaterials == null || _faceMaterials.Length == 0)
             _faceMaterials = FaceRenderer.materials;
 
+        // ModelController.UpdateFaceLight (offsets de InitFaceLight, AssetHolder de la cabeza):
+        // - cara: posicion de la cabeza + forward * _headTubeCenterOffsetZ. Medido en el juego con la
+        //   sonda Frida: el _FaceCenterPos del material de la cara es la posicion de Head + un
+        //   desplazamiento minimo hacia delante (head_tube_center_offset_z), sin head_center_offset_y/z.
+        // - mallas de pelo: posicion + up * _headCenterOffsetY + forward * _headCenterOffsetZ.
         Vector3 pos = HeadToonBaseTransform.position;
-        Vector3 up = HeadToonBaseTransform.up.normalized;
-        Vector3 forward = HeadToonBaseTransform.forward.normalized;
-
-        if (FlipFaceForward)
-            forward = -forward;
-
-        Vector3 faceCenter =
-            pos +
-            up * FaceCenterUpOffset +
-            forward * FaceCenterForwardOffset;
+        Vector3 up = HeadToonBaseTransform.up;
+        Vector3 forward = HeadToonBaseTransform.forward;
+        ReadHeadCenterOffsets();
+        Vector4 faceCenter = pos + forward * _headTubeCenterOffsetZ;
+        Vector4 hairCenter = pos + up * _headCenterOffsetY + forward * _headCenterOffsetZ;
+        Vector4 faceUp = up;
+        Vector4 faceForward = forward;
 
         Matrix4x4 headMat = HeadToonBaseTransform.worldToLocalMatrix;
 
@@ -1668,15 +1677,127 @@ public class UmaContainerCharacter : UmaContainer
                 continue;
 
             mat.SetVector(ID_FaceCenterPos, faceCenter);
-            mat.SetVector(ID_FaceUp, up);
-            mat.SetVector(ID_FaceForward, forward);
+            mat.SetVector(ID_FaceUp, faceUp);
+            mat.SetVector(ID_FaceForward, faceForward);
             mat.SetMatrix(ID_FaceShadowHeadMat, headMat);
+        }
+
+        foreach (var mat in GetFacialToonHairMaterials())
+        {
+            mat.SetVector(ID_FaceCenterPos, hairCenter);
+            mat.SetVector(ID_FaceUp, faceUp);
+            mat.SetVector(ID_FaceForward, faceForward);
+        }
+
+        ApplyFaceLightDirection();
+    }
+
+    // Offsets del centro de la cara (head_center_offset_y / head_center_offset_z /
+    // head_tube_center_offset_z del AssetHolder de la cabeza), leidos una vez como InitFaceLight.
+    // Si la cabeza no los trae, quedan en 0.
+    private bool _headCenterOffsetsRead;
+    private float _headCenterOffsetY;
+    private float _headCenterOffsetZ;
+    private float _headTubeCenterOffsetZ;
+
+    private void ReadHeadCenterOffsets()
+    {
+        if (_headCenterOffsetsRead || Head == null)
+            return;
+        _headCenterOffsetsRead = true;
+
+        var holder = Head.GetComponent<AssetHolder>();
+        if (holder == null || holder._assetTableValue == null || holder._assetTableValue.list == null)
+            return;
+
+        float y = holder._assetTableValue["head_center_offset_y"];
+        float z = holder._assetTableValue["head_center_offset_z"];
+        float tube = holder._assetTableValue["head_tube_center_offset_z"];
+        _headCenterOffsetY = y == -1 ? 0f : y;
+        _headCenterOffsetZ = z == -1 ? 0f : z;
+        _headTubeCenterOffsetZ = tube == -1 ? 0f : tube;
+    }
+
+    // (LUZ) La pista GlobalLight llega del Director: rotacion de la luz de todo el modelo.
+    public void SetGlobalLightRotation(Quaternion rotation)
+    {
+        _useGlobalLight = true;
+        _globalLightRotation = rotation;
+    }
+
+    // Renderers de la cabeza que reciben la luz de cara (ModelController.UpdateFaceLight: piel de la
+    // cara, ojos, pelo, mallas alfa del pelo y props de cara/pelo). Cejas, boca y mejillas siguen
+    // con la luz global.
+    public bool IsFaceLightRenderer(Renderer renderer)
+    {
+        if (renderer == null || !_mirrorHeadRenderers.Contains(renderer))
+            return false;
+        string name = renderer.name;
+        return !name.StartsWith("M_Mayu") && !name.StartsWith("M_Mouth") && !name.StartsWith("M_Cheek");
+    }
+
+    // ModelController.UpdateFaceLight: Original = direccion fija de la clave; FaceTrace = la misma
+    // direccion girada con la cabeza; Off = la luz global (lightRotation * back).
+    // _UseOriginalDirectionalLight = 1 si la cara o el modelo usan luz propia.
+    private void ApplyFaceLightDirection()
+    {
+        if (_faceLightType == LiveTimelineDefine.FacialToonLightType.Off && !_useGlobalLight)
+            return;
+
+        Vector3 dir;
+        switch (_faceLightType)
+        {
+            case LiveTimelineDefine.FacialToonLightType.Original:
+                dir = _faceLightDirection;
+                break;
+            case LiveTimelineDefine.FacialToonLightType.FaceTrace:
+                // GetHeadTransform = FindTransform("Head") (ModelController.NODE_HEAD): el hueso Head.
+                // Comparado con el video original (1034, frames 90 y 130) coincide con el hueso
+                // animado.
+                dir = HeadToonBaseTransform.rotation * _faceLightDirection;
+                break;
+            default:
+                dir = _globalLightRotation * Vector3.back;
+                break;
+        }
+
+        // Como el juego (Material.SetVector / SetInt en UpdateFaceLight): se escribe en los
+        // materiales, no en un MaterialPropertyBlock, asi que el Inspector del material lo muestra.
+        var dirVector = new Vector4(dir.x, dir.y, dir.z, 0f);
+        foreach (var mat in GetFaceLightMaterials())
+        {
+            mat.SetFloat(ID_UseOriginalDirectionalLight, 1f);
+            mat.SetVector(ID_OriginalDirectionalLightDir, dirVector);
         }
     }
 
-    // (DATAMINE) Aplica la pista FacialToon del live al material de la cara. El cliente deriva
-    // _NoseVisibility del umbral: con NosePretenseThreshold = 0 la sombra falsa de la nariz se
-    // apaga (asi no aparece a saltos cuando el angulo cruza el umbral del shader).
+    // Materiales de los renderers de luz de cara (IsFaceLightRenderer), resueltos una vez. Al cargar
+    // la cabeza ya se instanciaron (r.materials), asi que sharedMaterials son los de este PJ.
+    private List<Material> _faceLightMaterials;
+
+    private List<Material> GetFaceLightMaterials()
+    {
+        if (_faceLightMaterials != null)
+            return _faceLightMaterials;
+
+        _faceLightMaterials = new List<Material>();
+        foreach (var renderer in _mirrorHeadRenderers)
+        {
+            if (!IsFaceLightRenderer(renderer))
+                continue;
+            foreach (var mat in renderer.sharedMaterials)
+            {
+                if (mat != null && !_faceLightMaterials.Contains(mat))
+                    _faceLightMaterials.Add(mat);
+            }
+        }
+        return _faceLightMaterials;
+    }
+
+    // (DATAMINE) Aplica la pista FacialToon del live a los materiales de la cabeza, como
+    // ModelController.UpdateFaceLight: cara (umbrales, _NoseVisibility, blends), pelo (umbrales y
+    // blends, sin _NoseVisibility) y ojo (_ToonStep/_ToonFeather de la clave + _CylinderBlend).
+    // _NoseVisibility = 0 si NosePretenseThreshold <= 1e-6 (constante del binario), si no 1.
     public void ApplyFacialToon(ref FacialToonDataUpdateInfo info)
     {
         if (IsMini)
@@ -1689,7 +1810,16 @@ public class UmaContainerCharacter : UmaContainer
             _faceMaterials = FaceRenderer.materials;
         }
 
-        float noseVisibility = info.NosePretenseThreshold > 0.0001f ? 1f : 0f;
+        // Director.OnUpdateFacialToon / SetFaceDirectionalLightAngle: la direccion es
+        // Euler(angulo de la clave) * forward. En el Live el angulo va tal cual (los +180 en X de
+        // ModelController.SetFacialToonUpdateInfo son de otra ruta, no del Live).
+        _faceLightType = info.UseOriginalDirectionalLight;
+        _faceLightDirection = Quaternion.Euler(info.OriginalDirectionalLightDir) * Vector3.forward;
+
+        float noseVisibility = info.NosePretenseThreshold > 1e-6f ? 1f : 0f;
+        // Ojo: _ToonStep limitado a [0, 1] y _ToonFeather a [1e-4, 1] (constantes del binario).
+        float eyeToonStep = Mathf.Clamp01(info.EyeToonStep);
+        float eyeToonFeather = Mathf.Clamp(info.EyeToonFeather, 1e-4f, 1f);
 
         for (int i = 0; i < _faceMaterials.Length; i++)
         {
@@ -1698,6 +1828,15 @@ public class UmaContainerCharacter : UmaContainer
                 continue;
 
             string shaderName = mat.shader.name;
+
+            if (shaderName.Contains("ToonEye"))
+            {
+                mat.SetFloat(ID_ToonStep, eyeToonStep);
+                mat.SetFloat(ID_ToonFeather, eyeToonFeather);
+                mat.SetFloat(ID_CylinderBlend, info.CylinderBlend);
+                continue;
+            }
+
             string matName = mat.name.ToLower();
 
             if (!shaderName.Contains("ToonFace") && !matName.Contains("face"))
@@ -1709,6 +1848,37 @@ public class UmaContainerCharacter : UmaContainer
             mat.SetFloat(ID_CylinderBlend, info.CylinderBlend);
             mat.SetFloat(ID_HairNormalBlend, info.HairNormalBlend);
         }
+
+        foreach (var mat in GetFacialToonHairMaterials())
+        {
+            mat.SetFloat(ID_CheekPretenseThreshold, info.CheekPretenseThreshold);
+            mat.SetFloat(ID_NosePretenseThreshold, info.NosePretenseThreshold);
+            mat.SetFloat(ID_CylinderBlend, info.CylinderBlend);
+            mat.SetFloat(ID_HairNormalBlend, info.HairNormalBlend);
+        }
+    }
+
+    // Materiales de pelo de la cabeza (ToonHair), resueltos una vez. Al cargar la cabeza ya se
+    // instanciaron (LoadHead/LoadHair usan r.materials), así que sharedMaterials son los de este PJ.
+    private List<Material> _facialToonHairMaterials;
+
+    private List<Material> GetFacialToonHairMaterials()
+    {
+        if (_facialToonHairMaterials != null)
+            return _facialToonHairMaterials;
+
+        _facialToonHairMaterials = new List<Material>();
+        foreach (var renderer in _mirrorHeadRenderers)
+        {
+            if (renderer == null || renderer == FaceRenderer)
+                continue;
+            foreach (var mat in renderer.sharedMaterials)
+            {
+                if (mat != null && mat.shader != null && mat.shader.name.Contains("ToonHair"))
+                    _facialToonHairMaterials.Add(mat);
+            }
+        }
+        return _facialToonHairMaterials;
     }
 
     private static Transform FindTransformByName(Transform root, string name)
@@ -2090,6 +2260,7 @@ public class UmaContainerCharacter : UmaContainer
         GameObject head = InstantiateEntry(entry, transform);
         Head = head;
         RegisterMirrorHeadRenderers(head);
+        DisableShadowReceive(head);
 
         AssetTable table = null;
         if (!IsMini)
@@ -2264,6 +2435,7 @@ public class UmaContainerCharacter : UmaContainer
         GameObject hair = InstantiateEntry(entry, transform);
         Hair = hair;
         RegisterMirrorHeadRenderers(hair);
+        DisableShadowReceive(hair);
         var textures = MobHeadTextures;
         foreach (Renderer r in hair.GetComponentsInChildren<Renderer>())
         {
@@ -2316,14 +2488,36 @@ public class UmaContainerCharacter : UmaContainer
     {
         GameObject go = entry.Get<GameObject>();
         Tail = Instantiate(go, transform);
+        DisableShadowReceive(Tail);
         InvalidateMirrorLayerCache();
     }
 
 
 
+    // ModelLoader.CompositeHead / CompositeTail: los renderers de cabeza y cola no reciben sombras
+    // (receiveShadows = false). En el live, IsCastShadow solo vuelve a activar que las proyecten.
+    private static void DisableShadowReceive(GameObject root)
+    {
+        if (root == null)
+            return;
+        foreach (var r in root.GetComponentsInChildren<Renderer>(true))
+            r.receiveShadows = false;
+    }
+
+    // Renderers de la cabeza (cara, pelo) o de la cola: no deben recibir sombras.
+    public bool IsHeadOrTailRenderer(Renderer renderer)
+    {
+        if (renderer == null)
+            return false;
+        if (_mirrorHeadRenderers.Contains(renderer))
+            return true;
+        return Tail != null && renderer.transform.IsChildOf(Tail.transform);
+    }
+
     public void LoadTail(UmaDatabaseEntry entry)
     {
         Tail = InstantiateEntry(entry, transform);
+        DisableShadowReceive(Tail);
         var textures = TailTextures;
         foreach (Renderer r in Tail.GetComponentsInChildren<Renderer>())
         {
