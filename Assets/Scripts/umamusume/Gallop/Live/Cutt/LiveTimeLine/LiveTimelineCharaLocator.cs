@@ -295,18 +295,49 @@ namespace Gallop.Live.Cutt
             set => _cySpringRate = value;
         }
 
+        // Capas de personaje que puede elegir el LayerIndex de la FormationOffset (0..2). Las
+        // MultiCameras separan a los personajes con ellas mediante su máscara de culling.
+        private static readonly GraphicSettings.LayerIndex[] LayerIndexArray =
+        {
+            GraphicSettings.LayerIndex.LayerCHAR,
+            GraphicSettings.LayerIndex.LayerCharacter3D_0,
+            GraphicSettings.LayerIndex.LayerCharacter3D_1,
+        };
+
+        private int _layerIndex = 0;
+
         public int LayerIndex
         {
             set
             {
-                if (UmaContainer == null)
+                if (UmaContainer == null || value == _layerIndex)
+                {
+                    return;
+                }
+                _layerIndex = value;
+
+                // Fuera de rango se queda en la capa normal de personaje.
+                var index = value >= 0 && value < LayerIndexArray.Length ? LayerIndexArray[value] : GraphicSettings.LayerIndex.LayerCHAR;
+                int layer = GraphicSettings.GetLayer(index);
+                if (layer < 0)
                 {
                     return;
                 }
 
-                foreach (Transform t in UmaContainer.GetComponentsInChildren<Transform>(true))
+                // Sólo se mueven los renderers que están en una capa de personaje: el resto
+                // (efectos, atrezzo adjunto...) conserva la suya.
+                int charaLayers = 0;
+                for (int i = 0; i < LayerIndexArray.Length; i++)
                 {
-                    t.gameObject.layer = value;
+                    charaLayers |= GraphicSettings.GetCullingLayer(LayerIndexArray[i]);
+                }
+                foreach (Renderer r in UmaContainer.GetComponentsInChildren<Renderer>(true))
+                {
+                    var go = r.gameObject;
+                    if ((charaLayers & (1 << go.layer)) != 0)
+                    {
+                        go.layer = layer;
+                    }
                 }
             }
         }

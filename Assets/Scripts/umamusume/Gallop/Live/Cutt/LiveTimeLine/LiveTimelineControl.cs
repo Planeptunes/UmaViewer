@@ -1366,6 +1366,15 @@ namespace Gallop.Live.Cutt
                 if (curKey != null && curKey.index != -1)
                 {
                     LateUpdateFormationOffset_Transform(i, curKey, liveTime);
+
+                    // Capa del personaje (CHAR / Character3D_0 / Character3D_1) de la key actual,
+                    // sin interpolar: las MultiCameras la usan para ver sólo a su personaje.
+                    var layerKey = curKey.key as LiveTimelineKeyFormationOffsetData;
+                    if (layerKey != null && layerKey.IsLayerIndex && liveCharactorLocators != null &&
+                        i < liveCharactorLocators.Length && liveCharactorLocators[i] != null)
+                    {
+                        liveCharactorLocators[i].LayerIndex = layerKey.LayerIndex;
+                    }
                 }
             }
         }
@@ -1579,6 +1588,12 @@ namespace Gallop.Live.Cutt
             {
                 retPos = liveStageCenterPos;
                 tmpPos = liveStageCenterPos;
+                // Las alturas Const* anclan el punto al charaPos del key aunque no haya personajes
+                // seleccionados (centro del escenario + charaPos + position), como hace el juego.
+                if (parts >= LiveCameraCharaParts.ConstFaceHeight && parts <= LiveCameraCharaParts.ConstFootHeight)
+                {
+                    retPos += charaPos;
+                }
             }
             else
             {
