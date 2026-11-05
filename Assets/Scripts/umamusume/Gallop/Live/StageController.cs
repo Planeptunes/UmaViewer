@@ -217,8 +217,15 @@ namespace Gallop.Live
         // `animationList` -> `OnUpdateAnimation`: stage objects that carry the game's
         // AnimationObjectController (the `blinklight_wash_*` wash lights). Their legacy Animation
         // ships without a default clip, so nothing moves until the timeline picks a clip.
-        private readonly List<AnimationObjectController> _animationObjects = new List<AnimationObjectController>();
+        private readonly List<AnimationObjectController> _namedAnimationObjects = new List<AnimationObjectController>();
         private bool _animationObjectsBuilt;
+
+        // Serialized in the stage prefab: the stage objects the `AnimeObjA`..`AnimeObjZ` tracks
+        // drive, by index. StartStageObject swaps each prefab for its instance and keeps that
+        // instance's AnimationObjectController at the same index.
+        public GameObject[] _animationObjects;
+        private AnimationObjectController[] _animationObjectControllerArray;
+        private const string AnimationObjectLabelHeader = "AnimeObj";
         private int _animationObjectsScanAttempts;
         private const int AnimationObjectsScanAttemptLimit = 600;
 
@@ -1184,16 +1191,38 @@ namespace Gallop.Live
         // otra pista (offset 0 / speed 0), o sea congelados.
         private void UpdateAnimation(ref AnimationUpdateInfo updateInfo)
         {
-            EnsureAnimationObjects();
-
             string trackName = updateInfo.data != null ? updateInfo.data.name : null;
-            for (int i = 0; i < _animationObjects.Count; i++)
+
+            // UpdateAnimationObjectOld: LabelToIDDictionary("AnimeObj") maps AnimeObjA..Z to 0..25,
+            // the index into _animationObjectControllerArray.
+            int labelId = AnimationObjectLabelId(trackName);
+            if (labelId >= 0)
             {
-                var controller = _animationObjects[i];
+                if (_animationObjectControllerArray != null && labelId < _animationObjectControllerArray.Length)
+                {
+                    var labelled = _animationObjectControllerArray[labelId];
+                    if (labelled != null) labelled.UpdateStatus(ref updateInfo);
+                }
+                return;
+            }
+
+            EnsureAnimationObjects();
+            for (int i = 0; i < _namedAnimationObjects.Count; i++)
+            {
+                var controller = _namedAnimationObjects[i];
                 if (controller == null) continue;
                 if (!MatchesAnimationTrack(controller, trackName)) continue;
                 controller.UpdateStatus(ref updateInfo);
             }
+        }
+
+        private static int AnimationObjectLabelId(string trackName)
+        {
+            if (trackName == null || trackName.Length != AnimationObjectLabelHeader.Length + 1 ||
+                !trackName.StartsWith(AnimationObjectLabelHeader, StringComparison.Ordinal))
+                return -1;
+            char letter = trackName[AnimationObjectLabelHeader.Length];
+            return letter >= 'A' && letter <= 'Z' ? letter - 'A' : -1;
         }
 
         // Nombre de la pista (`pfb_env_live10135_blinkbeamlight_x`) contra el nombre del objeto
@@ -1248,8 +1277,8 @@ namespace Gallop.Live
                     continue;
 
                 controller.Initialize();
-                if (!_animationObjects.Contains(controller))
-                    _animationObjects.Add(controller);
+                if (!_namedAnimationObjects.Contains(controller))
+                    _namedAnimationObjects.Add(controller);
             }
         }
 
@@ -1609,6 +1638,8 @@ namespace Gallop.Live
 
         public void InitializeStage()
         {
+            if (_animationObjects != null)
+                _animationObjectControllerArray = new AnimationObjectController[_animationObjects.Length];
             foreach (GameObject stage_part in _stageObjects)
             {
                 if (stage_part == null)
@@ -1617,7 +1648,15 @@ namespace Gallop.Live
                     continue;
                 }
 
+                int animationIndex = _animationObjects != null ? Array.IndexOf(_animationObjects, stage_part) : -1;
                 var instance = Instantiate(stage_part, transform);
+                if (animationIndex >= 0)
+                {
+                    _animationObjects[animationIndex] = instance;
+                    var animationController = instance.GetComponent<AnimationObjectController>();
+                    _animationObjectControllerArray[animationIndex] = animationController;
+                    if (animationController != null) animationController.Initialize();
+                }
                 LiveRuntimeDiagnostics.RecordInstantiation(stage_part.name, instance);
                 int rootHash = FNVHash.Generate(stage_part.name);
                 if (!_stageObjectRenderers.TryGetValue(rootHash, out var rootRenderers))
