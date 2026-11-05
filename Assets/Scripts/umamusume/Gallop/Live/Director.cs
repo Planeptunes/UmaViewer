@@ -900,6 +900,82 @@ namespace Gallop.Live
                     _cameraImageEffects[i] = effect;
                 }
             }
+            InitializeTransparentCamera();
+        }
+
+        // Director.InitializeCamera / UpdateTransparentCamera: a second camera draws only the
+        // TransparentFX layer over the main camera's finished image, i.e. after its whole post-effect
+        // chain (no DOF, bloom or colour correction), without clearing colour or depth. Effects keyed
+        // IsTransparentFX live on that layer. In URP it is an Overlay camera stacked on the
+        // presentation camera; it copies the main camera's pose, field of view and clip planes.
+        private const string TransparentCameraName = "TransparentCamera";
+        private const int TransparentCameraDepth = 15;
+        private GameObject _transparentCameraObject;
+        private Camera _transparentCamera;
+        private Transform _transparentCameraTransform;
+        private Camera _transparentCameraBase;
+
+        private void InitializeTransparentCamera()
+        {
+            if (_transparentCameraObject != null) return;
+            _transparentCameraObject = new GameObject(TransparentCameraName);
+            _transparentCameraTransform = _transparentCameraObject.transform;
+            _transparentCameraTransform.SetParent(transform, false);
+            _transparentCamera = _transparentCameraObject.AddComponent<Camera>();
+            _transparentCamera.cullingMask = GraphicSettings.GetCullingLayer(GraphicSettings.LayerIndex.LayerTransparentFX);
+            _transparentCamera.allowMSAA = false;
+            _transparentCamera.allowHDR = false;
+            _transparentCamera.depth = TransparentCameraDepth;
+            _transparentCamera.clearFlags = CameraClearFlags.Nothing;
+            var cameraData = _transparentCameraObject.AddComponent<UnityEngine.Rendering.Universal.UniversalAdditionalCameraData>();
+            cameraData.renderType = UnityEngine.Rendering.Universal.CameraRenderType.Overlay;
+            // ClearFlags.Nothing: keep the main camera's depth so the effects stay behind whatever
+            // covers them. URP only exposes a getter for clearDepth (serialized m_ClearDepth).
+            typeof(UnityEngine.Rendering.Universal.UniversalAdditionalCameraData)
+                .GetField("m_ClearDepth", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                ?.SetValue(cameraData, false);
+            cameraData.renderPostProcessing = false;
+            cameraData.renderShadows = false;
+            UnityEngine.Rendering.RenderPipelineManager.beginCameraRendering += OnBeginCameraRenderingTransparent;
+        }
+
+        // Keeps the overlay in the stack of whichever timeline camera is presenting.
+        private void UpdateTransparentCameraStack()
+        {
+            if (_transparentCamera == null) return;
+            Camera baseCamera = MainRenderCamera;
+            if (baseCamera == _transparentCameraBase) return;
+            RemoveTransparentCameraFromStack();
+            if (baseCamera == null || baseCamera == _transparentCamera) return;
+            var baseData = baseCamera.GetComponent<UnityEngine.Rendering.Universal.UniversalAdditionalCameraData>();
+            if (baseData == null)
+                baseData = baseCamera.gameObject.AddComponent<UnityEngine.Rendering.Universal.UniversalAdditionalCameraData>();
+            if (baseData.renderType != UnityEngine.Rendering.Universal.CameraRenderType.Base) return;
+            if (!baseData.cameraStack.Contains(_transparentCamera))
+                baseData.cameraStack.Add(_transparentCamera);
+            _transparentCameraBase = baseCamera;
+        }
+
+        private void RemoveTransparentCameraFromStack()
+        {
+            if (_transparentCameraBase != null && _transparentCamera != null)
+            {
+                var baseData = _transparentCameraBase.GetComponent<UnityEngine.Rendering.Universal.UniversalAdditionalCameraData>();
+                if (baseData != null) baseData.cameraStack.Remove(_transparentCamera);
+            }
+            _transparentCameraBase = null;
+        }
+
+        // UpdateTransparentCamera copies position, rotation, fieldOfView and the clip planes. Done
+        // right before the base camera renders, so the copy sees its final pose of the frame.
+        private void OnBeginCameraRenderingTransparent(UnityEngine.Rendering.ScriptableRenderContext context, Camera camera)
+        {
+            if (_transparentCamera == null || camera != _transparentCameraBase) return;
+            Transform source = camera.transform;
+            _transparentCameraTransform.SetPositionAndRotation(source.position, source.rotation);
+            _transparentCamera.fieldOfView = camera.fieldOfView;
+            _transparentCamera.nearClipPlane = camera.nearClipPlane;
+            _transparentCamera.farClipPlane = camera.farClipPlane;
         }
 
         public void InitializeMultiCamera(LiveTimelineControl control)
@@ -1041,6 +1117,7 @@ namespace Gallop.Live
                 MainRenderCamera.depth = (_multiCameras != null ? _multiCameras.Length : 0) + 1;
                 MultiCameraFinalComposite.SetRenderCamera(MainRenderCamera);
             }
+            UpdateTransparentCameraStack();
         }
 
         // Luz direccional del escenario: la unica Light real del live y la que proyecta la sombra
@@ -2111,6 +2188,8 @@ namespace Gallop.Live
 
         private void OnDestroy()
         {
+            UnityEngine.Rendering.RenderPipelineManager.beginCameraRendering -= OnBeginCameraRenderingTransparent;
+            RemoveTransparentCameraFromStack();
             _stageController?.DestroyMirrorReflections();
             UnbindTimelineEvents();
             _footLightRuntime?.Dispose();
