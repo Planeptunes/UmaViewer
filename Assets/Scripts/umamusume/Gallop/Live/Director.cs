@@ -878,6 +878,9 @@ namespace Gallop.Live
                         camera = gameObject.GetComponentInChildren<Camera>();
                     }
                     //camera.cullingMask = num;
+                    // Native InitializeCamera: every live camera clears with a solid colour, so a
+                    // cut that culls the stage shows the timeline BgColor instead of a skybox.
+                    camera.clearFlags = CameraClearFlags.SolidColor;
                     _cameraObjects[i] = camera;
                     _cameraTransforms[i] = camera.transform;
                 }
