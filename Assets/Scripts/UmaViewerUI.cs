@@ -970,6 +970,8 @@ public class UmaViewerUI : MonoBehaviour
         {
             var container = Instantiate(containerPrefab, parent.content).GetComponent<UmaUIContainer>();
             container.Name = " " + live.MusicId + " " + live.SongName;
+            //(Indicador de verificación: tick verde si el live está comprobado, WIP si no.)
+            if (parent == LiveList) LiveVerificationStatus.AttachBadge(container, live.MusicId);
             container.Image.sprite = live.Icon;
             container.Image.enabled = container.Image.sprite;
             container.Button.onClick.AddListener(() =>
