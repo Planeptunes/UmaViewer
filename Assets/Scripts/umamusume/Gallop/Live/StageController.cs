@@ -540,9 +540,42 @@ namespace Gallop.Live
             }
         }
 
+        // StageController.CollectBillboardController: every BillboardController of the stage
+        // (e.g. the wash light beams `light00X_..._billboard`) faces the main camera.
+        private readonly List<BillboardController> _billboardControllers = new List<BillboardController>();
+
+        private void CollectBillboardController()
+        {
+            _billboardControllers.Clear();
+            Transform cameraTransform = Director.instance != null ? Director.instance.MainCameraTransform : null;
+            foreach (var billboard in GetComponentsInChildren<BillboardController>(true))
+            {
+                // Spotlight3dController drives its own billboard from the timeline.
+                if (billboard == null || billboard.GetComponentInParent<Spotlight3dController>(true) != null) continue;
+                billboard.Initialize(cameraTransform);
+                _billboardControllers.Add(billboard);
+            }
+        }
+
+        // StageController.AlterLateUpdate, after the stage animations have posed the parents. The
+        // viewer swaps MainCameraTransform between camera nodes, so the target follows it.
+        private void AlterLateUpdateBillboardControllers()
+        {
+            Transform cameraTransform = Director.instance != null ? Director.instance.MainCameraTransform : null;
+            if (cameraTransform == null) return;
+            for (int i = 0; i < _billboardControllers.Count; i++)
+            {
+                var billboard = _billboardControllers[i];
+                if (billboard == null) continue;
+                billboard.TargetCameraTransform = cameraTransform;
+                billboard.AlterLateUpdate();
+            }
+        }
+
         private void LateUpdate()
         {
             UpdateLegacyTimelineAnimations();
+            AlterLateUpdateBillboardControllers();
 
             var dir = Director.instance;
             var ctl = dir ? dir._liveTimelineControl : null;
@@ -1703,6 +1736,7 @@ namespace Gallop.Live
                         StageObjectUnitMap.Add(unit.UnitName, unit);
                 }
 
+            CollectBillboardController();
             AutoAttachMirrorReflectionComponents();
             var washBeams = GetComponent<StageWashBeamDriver>();
             if (washBeams == null) washBeams = gameObject.AddComponent<StageWashBeamDriver>();
