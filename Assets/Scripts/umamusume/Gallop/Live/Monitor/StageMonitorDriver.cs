@@ -195,8 +195,10 @@ namespace Gallop.Live
                     float localTime = (currentFrame - key.frame) * LiveTimelineControl.kFrameToSec;
                     bool reverse = key.IsReversePlayFlag();
                     if (key.speed < 0f) reverse = !reverse;
+                    // speed == 0 is authored data: the UVMovie stays frozen on the frame selected by
+                    // playStartOffsetFrame (stop-motion slideshow). Promoting it to 1x made the whole
+                    // atlas run at the clip fps.
                     float speed = Mathf.Abs(key.speed);
-                    if (speed <= 0f) speed = 1f;
                     int lightImage = slot == primary ? key.LightImageNo : key.LightImageNo2;
                     if (!TryBuildTextureState(slot, slot.clip, localTime, speed, reverse,
                         key.playStartOffsetFrame, lightImage, out var state)) continue;
@@ -631,9 +633,9 @@ namespace Gallop.Live
             if (curKey.speed < 0f)
                 isReversePlay = !isReversePlay;
 
+            // speed == 0 is authored data: the movie holds the frame picked by playStartOffsetFrame
+            // instead of playing the atlas at the clip fps.
             float playbackSpeed = Mathf.Abs(curKey.speed);
-            if (playbackSpeed <= 0f)
-                playbackSpeed = 1f;
 
             state.useMonitorCamera = curKey.IsMonitorCameraFlag() || curKey.IsForcedUseMonitorCamera;
             if (state.useMonitorCamera)
