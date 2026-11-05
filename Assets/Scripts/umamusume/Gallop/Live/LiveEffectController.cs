@@ -12,17 +12,18 @@ namespace Gallop.Live
     {
         private readonly Dictionary<int, Effect> effects = new Dictionary<int, Effect>();
         private readonly List<UmaDatabaseEntry> resources = new List<UmaDatabaseEntry>();
-        private readonly Transform defaultParent, worldOwner;
+        private readonly Transform defaultParent;
+        private readonly Func<Transform> cameraOwner;
         private readonly Func<int, Transform> characterTransform;
         private readonly Func<string, int, Transform> stageTransform;
         private readonly int normalLayer, excludedColorCorrectionLayer, transparentLayer;
 
-        public LiveEffectController(Transform defaultParent, Transform worldOwner,
+        public LiveEffectController(Transform defaultParent, Func<Transform> cameraOwner,
             Func<int, Transform> characterTransform, Func<string, int, Transform> stageTransform,
             int normalLayer, int excludedColorCorrectionLayer, int transparentLayer)
         {
             this.defaultParent = defaultParent;
-            this.worldOwner = worldOwner;
+            this.cameraOwner = cameraOwner;
             this.characterTransform = characterTransform;
             this.stageTransform = stageTransform;
             this.normalLayer = normalLayer;
@@ -115,11 +116,46 @@ namespace Gallop.Live
             return null;
         }
 
+        // LiveCharaPosition: Place01..Place18 = 0..17, World = 18, Camera = 19, Place19..Place20 = 20..21.
+        // 22 (stage object) is handled apart.
         public static int CharacterIndex(int owner)
         {
-            if (owner >= 1 && owner <= 17) return owner - 1;
-            if (owner >= 23 && owner <= 24) return owner - 2;
+            if (owner >= 0 && owner <= 17) return owner;
+            if (owner >= 20 && owner <= 21) return owner - 2;
             return -1;
+        }
+
+        // EffectOccurrenceSpot -> bone name (StaticVariableDefine.Live.CharacterObject.EffectOccurrenceSpotNames).
+        private static readonly string[] OccurrenceSpotNames =
+        {
+            "Head", "Nose", "Eye_middle_01_L", "Eye_bottom_01_L", "Eye_middle_01_R", "Eye_bottom_01_R",
+            "Neck", "Chest", "Waist", "Hand_Attach_L", "Thumb_03_L", "Index_03_L", "Middle_03_L",
+            "Ring_03_L", "Pinky_03_L", "Hand_Attach_R", "Thumb_03_R", "Index_03_R", "Middle_03_R",
+            "Ring_03_R", "Pinky_03_R", "Ankle_L", "Toe_L", "Ankle_R", "Toe_R", "Position"
+        };
+
+        private readonly Dictionary<(Transform, int), Transform> spotTransforms = new Dictionary<(Transform, int), Transform>();
+
+        // CharacterObject._effectAttachTransformArray[model, spot]: the effect hangs from that bone.
+        private Transform ResolveOccurrenceSpot(Transform character, int spot)
+        {
+            if (character == null || spot < 0 || spot >= OccurrenceSpotNames.Length) return character;
+            if (spotTransforms.TryGetValue((character, spot), out var cached) && cached != null) return cached;
+            Transform found = FindChild(character, OccurrenceSpotNames[spot]) ?? character;
+            spotTransforms[(character, spot)] = found;
+            return found;
+        }
+
+        private static Transform FindChild(Transform node, string name)
+        {
+            for (int i = 0; i < node.childCount; i++)
+            {
+                Transform child = node.GetChild(i);
+                if (child.name == name) return child;
+                Transform found = FindChild(child, name);
+                if (found != null) return found;
+            }
+            return null;
         }
 
         public static bool IsOwnerEnabled(int owner, Func<int, bool> characterEnabled)
@@ -131,11 +167,12 @@ namespace Gallop.Live
 
         private Transform ResolveOwner(LiveEffectTimeline.EffectUpdateInfo info)
         {
+            // Effect.Update: World has no parent, Camera hangs from Director._mainCameraTransform.
             if (info.owner == 18) return null;
-            if (info.owner == 19) return worldOwner;
+            if (info.owner == 19) return cameraOwner?.Invoke();
             if (info.owner == 22) return stageTransform?.Invoke(info.ParentStageObjectName, info.ParentStageObjectNameHash);
             int index = CharacterIndex(info.owner);
-            return index >= 0 ? characterTransform?.Invoke(index) : null;
+            return index >= 0 ? ResolveOccurrenceSpot(characterTransform?.Invoke(index), info.occurrenceSpot) : null;
         }
 
         public void Update(LiveEffectTimeline.EffectUpdateInfo info)
@@ -168,6 +205,7 @@ namespace Gallop.Live
         {
             foreach (var effect in effects.Values) effect.Dispose();
             effects.Clear();
+            spotTransforms.Clear();
             for (int i = resources.Count - 1; i >= 0; i--) UmaAssetManager.UnloadAssetBundle(resources[i], false);
             resources.Clear();
         }

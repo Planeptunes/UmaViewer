@@ -247,7 +247,7 @@ namespace Gallop.Live
             _effectStageObjects.Clear();
             foreach (var item in _liveTimelineControl.StageObjectMap)
                 if (item.Value != null) _effectStageObjects[FNVHash.Generate(item.Key)] = item.Value.transform;
-            _effectController = new LiveEffectController(transform, transform,
+            _effectController = new LiveEffectController(transform, () => MainCameraTransform,
                 ResolveEffectCharacter, ResolveEffectStageObject, normalLayer, excludedLayer, transparentLayer);
             var sheet = _liveTimelineControl.GetWorkSheetBySheetIndex(LiveTimelineDefine.SheetIndex.MainLive);
             if (sheet?.effectList != null)
