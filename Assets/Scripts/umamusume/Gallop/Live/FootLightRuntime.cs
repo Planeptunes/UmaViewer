@@ -20,6 +20,7 @@ namespace Gallop.Live
             public Transform character;
             public FollowSpotLightController spotlight;
             public Renderer[] shadowCasters;
+            public UmaContainerCharacter container;
             public FakeShadowController leftShadow;
             public FakeShadowController rightShadow;
         }
@@ -57,6 +58,9 @@ namespace Gallop.Live
                     // Renderers del personaje: su sombra (shadow map) se enciende/apaga con las
                     // ventanas BgColor1 en LightBlendMode.Multiply (ver AlterLateUpdate).
                     binding.shadowCasters = character.GetComponentsInChildren<Renderer>(true);
+                    binding.container = character.GetComponentInParent<UmaContainerCharacter>();
+                    if (binding.container == null)
+                        binding.container = character.GetComponentInChildren<UmaContainerCharacter>(true);
                     _bindings.Add(binding);
                     GameObject spotlight = InstantiateResource(spotlightPathResolver?.Invoke(i),
                         DefaultSpotlightPath, stageRoot, prefabResolver, prefabs);
@@ -219,8 +223,11 @@ namespace Gallop.Live
                 // La sombra del personaje (shadow map real) solo se dibuja en las ventanas
                 // BgColor1 con LightBlendMode.Multiply: es cuando el juego la muestra. Durante el
                 // fogonazo (los haces barren y el spot se apaga) la sombra desaparece.
+                // Además, la FormationOffset del cutt la apaga por personaje (IsCastShadow).
+                var locator = binding.container != null ? binding.container.LiveLocator : null;
+                bool castByTimeline = locator == null || locator.IsCastShadow;
                 UnityEngine.Rendering.ShadowCastingMode castMode =
-                    binding.spotlight != null && binding.spotlight.IsShadowMode
+                    castByTimeline && binding.spotlight != null && binding.spotlight.IsShadowMode
                         ? UnityEngine.Rendering.ShadowCastingMode.On
                         : UnityEngine.Rendering.ShadowCastingMode.Off;
                 Renderer[] casters = binding.shadowCasters;

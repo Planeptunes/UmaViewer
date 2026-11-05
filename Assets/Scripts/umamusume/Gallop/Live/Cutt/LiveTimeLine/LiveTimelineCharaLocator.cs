@@ -286,7 +286,26 @@ namespace Gallop.Live.Cutt
         public bool IsCastShadow
         {
             get => _isCastShadow;
-            set => _isCastShadow = value;
+            set
+            {
+                if (_isCastShadow == value)
+                {
+                    return;
+                }
+                _isCastShadow = value;
+                if (UmaContainer == null)
+                {
+                    return;
+                }
+
+                // Sombra en tiempo real del modelo: la FormationOffset la enciende y apaga por
+                // personaje. La sombra falsa de los pies no depende de esto.
+                var mode = value ? UnityEngine.Rendering.ShadowCastingMode.On : UnityEngine.Rendering.ShadowCastingMode.Off;
+                foreach (Renderer r in UmaContainer.GetComponentsInChildren<Renderer>(true))
+                {
+                    r.shadowCastingMode = mode;
+                }
+            }
         }
 
         public float CySpringRate

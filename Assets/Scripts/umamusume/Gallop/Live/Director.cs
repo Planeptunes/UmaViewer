@@ -128,9 +128,13 @@ namespace Gallop.Live
                 foreach (Renderer target in root.GetComponentsInChildren<Renderer>(true))
                 {
                     if (target == null) continue;
-                    target.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On;
                     // Cabeza y cola no reciben sombras en el juego (ModelLoader.CompositeHead/Tail).
                     var chara = target.GetComponentInParent<UmaContainerCharacter>();
+                    // Proyecta según el IsCastShadow que ya haya fijado la FormationOffset.
+                    bool cast = chara == null || chara.LiveLocator == null || chara.LiveLocator.IsCastShadow;
+                    target.shadowCastingMode = cast
+                        ? UnityEngine.Rendering.ShadowCastingMode.On
+                        : UnityEngine.Rendering.ShadowCastingMode.Off;
                     target.receiveShadows = chara == null || !chara.IsHeadOrTailRenderer(target);
                 }
             }

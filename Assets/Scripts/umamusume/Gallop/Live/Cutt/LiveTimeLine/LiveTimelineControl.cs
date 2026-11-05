@@ -1370,10 +1370,15 @@ namespace Gallop.Live.Cutt
                     // Capa del personaje (CHAR / Character3D_0 / Character3D_1) de la key actual,
                     // sin interpolar: las MultiCameras la usan para ver sólo a su personaje.
                     var layerKey = curKey.key as LiveTimelineKeyFormationOffsetData;
-                    if (layerKey != null && layerKey.IsLayerIndex && liveCharactorLocators != null &&
+                    if (layerKey != null && liveCharactorLocators != null &&
                         i < liveCharactorLocators.Length && liveCharactorLocators[i] != null)
                     {
-                        liveCharactorLocators[i].LayerIndex = layerKey.LayerIndex;
+                        if (layerKey.IsLayerIndex)
+                        {
+                            liveCharactorLocators[i].LayerIndex = layerKey.LayerIndex;
+                        }
+                        // Sombra real del personaje según la key actual.
+                        liveCharactorLocators[i].IsCastShadow = layerKey.IsCastShadow;
                     }
                 }
             }
@@ -1582,6 +1587,13 @@ namespace Gallop.Live.Cutt
 
         public Vector3 GetPositionWithCharacters(LiveCharaPositionFlag posFlags, LiveCameraCharaParts parts, Vector3 charaPos, Vector3 cameraOffset)
         {
+            // ConstFootHeight es sólo el charaPos del key (+ position): no depende de los personajes
+            // seleccionados, ni de la altura de sus pies, ni del centro del escenario.
+            if (parts == LiveCameraCharaParts.ConstFootHeight)
+            {
+                return charaPos;
+            }
+
             Vector3 retPos = Vector3.zero;
             Vector3 tmpPos = Vector3.zero;
             if (posFlags == 0)
@@ -1590,7 +1602,7 @@ namespace Gallop.Live.Cutt
                 tmpPos = liveStageCenterPos;
                 // Las alturas Const* anclan el punto al charaPos del key aunque no haya personajes
                 // seleccionados (centro del escenario + charaPos + position), como hace el juego.
-                if (parts >= LiveCameraCharaParts.ConstFaceHeight && parts <= LiveCameraCharaParts.ConstFootHeight)
+                if (parts >= LiveCameraCharaParts.ConstFaceHeight && parts <= LiveCameraCharaParts.ConstWaistHeight)
                 {
                     retPos += charaPos;
                 }
@@ -1739,20 +1751,6 @@ namespace Gallop.Live.Cutt
                                 if (posFlags.hasFlag((LiveCharaPosition)i) && liveCharactorLocators[i] != null)
                                 {
                                     retPos.y += liveCharactorLocators[i].liveCharaConstHeightChestPosition.y;
-                                    retPos += cameraOffset * liveCharactorLocators[i].liveCharaHeightRatio;
-                                    retPos += charaPos;
-                                    num++;
-                                }
-                            }
-                            break;
-                        }
-                    case LiveCameraCharaParts.ConstFootHeight:
-                        {
-                            for (int i = 0; i < liveCharaPositionMax; i++)
-                            {
-                                if (posFlags.hasFlag((LiveCharaPosition)i) && liveCharactorLocators[i] != null)
-                                {
-                                    retPos.y += liveCharactorLocators[i].liveCharaFootPosition.y;
                                     retPos += cameraOffset * liveCharactorLocators[i].liveCharaHeightRatio;
                                     retPos += charaPos;
                                     num++;

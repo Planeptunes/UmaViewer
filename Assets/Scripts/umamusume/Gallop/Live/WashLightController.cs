@@ -39,6 +39,15 @@ namespace Gallop.StaticVariableDefine.Live
             0, 2, 1,
             2, 3, 1,
         };
+
+        // Mismos triangulos con el orden invertido: se usan cuando la cara del quad, ya proyectado
+        // sobre el plano, queda mirando hacia abajo (el cono apunta al suelo y su eje local esta
+        // girado), para que la mancha se vea desde arriba con el culling del shader.
+        public static readonly int[] PROJECTION_MESH_FLIPPED_INDEX_ARRAY =
+        {
+            0, 1, 2,
+            2, 1, 3,
+        };
     }
 }
 
@@ -113,6 +122,7 @@ namespace Gallop.Live
         private float _projectionColorPower;
         private Vector3 _projectionPlanePosition = Vector3.zero;
         private Vector3 _projectionPlaneNormal = Vector3.up;
+        private bool _isProjectionMeshFlipped;
 
         private Vector3[] _cameraProjectionVertexOffsetArray = new Vector3[RECTANGLE_VERTEX_NUM];
         private float _cameraProjectionColorPower = 0.5f;
@@ -502,6 +512,7 @@ namespace Gallop.Live
                 throw new NullReferenceException(nameof(_projectionMesh));
 
             _projectionMesh.SetVertices(_projectionMeshVertexArray);
+            OrientProjectionMesh(_projectionPlane.normal);
             _projectionMesh.RecalculateNormals();
             _projectionMesh.RecalculateBounds();
 
@@ -583,6 +594,13 @@ namespace Gallop.Live
             if (_projectionMesh == null)
                 throw new NullReferenceException(nameof(_projectionMesh));
 
+            // La proyeccion hacia camara ya invierte su orden de vertices: usa los indices fijos.
+            if (_isProjectionMeshFlipped)
+            {
+                _isProjectionMeshFlipped = false;
+                _projectionMesh.SetIndices(Gallop.StaticVariableDefine.Live.WashLightController.PROJECTION_MESH_INDEX_ARRAY,
+                    MeshTopology.Triangles, 0);
+            }
             _projectionMesh.SetVertices(_projectionMeshVertexArray);
             _projectionMesh.RecalculateNormals();
             _projectionMesh.RecalculateBounds();
@@ -640,6 +658,29 @@ namespace Gallop.Live
 
             for (int i = 0; i < _cameraProjectionVertexOffsetArray.Length; i++)
                 _cameraProjectionVertexOffsetArray[i] = src[i] * _cameraProjectionSide;
+        }
+
+        // La cara visible del quad debe mirar hacia el lado del plano desde el que se ve (arriba en
+        // el suelo). Con el orden fijo de indices queda al reves cuando el cono apunta hacia abajo.
+        private void OrientProjectionMesh(Vector3 faceNormal)
+        {
+            if (_projectionMesh == null || _projectionMeshVertexArray == null ||
+                _projectionMeshVertexArray.Length < RECTANGLE_VERTEX_NUM || _projectionTransform == null)
+                return;
+
+            Vector3 a = _projectionMeshVertexArray[0];
+            Vector3 b = _projectionMeshVertexArray[2];
+            Vector3 c = _projectionMeshVertexArray[1];
+            Vector3 normal = _projectionTransform.TransformDirection(Vector3.Cross(b - a, c - a));
+            bool flip = Vector3.Dot(normal, faceNormal) < 0f;
+            if (flip == _isProjectionMeshFlipped)
+                return;
+
+            _isProjectionMeshFlipped = flip;
+            _projectionMesh.SetIndices(flip
+                    ? Gallop.StaticVariableDefine.Live.WashLightController.PROJECTION_MESH_FLIPPED_INDEX_ARRAY
+                    : Gallop.StaticVariableDefine.Live.WashLightController.PROJECTION_MESH_INDEX_ARRAY,
+                MeshTopology.Triangles, 0);
         }
 
         private static Mesh CreateProjectionMesh()

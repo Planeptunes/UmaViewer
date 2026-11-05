@@ -1472,7 +1472,7 @@ namespace Gallop.Live
                         _mpb.SetColor("_MulColor0", Color.black);
                         _mpb.SetColor("_MulColor1", Color.black);
                         _mpb.SetFloat("_ColorPower", 0f);
-                        _mpb.SetFloat("_ColorPowerMultiply", emissionBoost);
+                        _mpb.SetFloat("_ColorPowerMultiply", GetAuthoredColorPowerMultiply(r));
                         _mpb.SetFloat("_AppTime", LiveNow());
                     }
                     else if (e.isLightAdd1)
@@ -1480,7 +1480,7 @@ namespace Gallop.Live
                         _mpb.SetColor("_MulColor0", Color.black);
                         _mpb.SetColor("_MulColor1", Color.black);
                         _mpb.SetFloat("_ColorPower", 0f);
-                        if (e.hasColorPowerMultiply) _mpb.SetFloat("_ColorPowerMultiply", emissionBoost);
+                        if (e.hasColorPowerMultiply) _mpb.SetFloat("_ColorPowerMultiply", GetAuthoredColorPowerMultiply(r));
                     }
                     else if (e.isBlinkSimple)
                     {
@@ -1691,7 +1691,7 @@ namespace Gallop.Live
                 _mpb.SetColor("_MulColor0", weighted);
                 _mpb.SetColor("_MulColor1", weighted);
                 _mpb.SetFloat("_ColorPower", beamColorPower);
-                if (hasColorPowerMultiply) _mpb.SetFloat("_ColorPowerMultiply", 1f);
+                if (hasColorPowerMultiply) _mpb.SetFloat("_ColorPowerMultiply", GetAuthoredColorPowerMultiply(r));
                 _mpb.SetFloat("_AppTime", liveNow);
             }
             else if (isUvAlphaMask)
@@ -1699,7 +1699,7 @@ namespace Gallop.Live
                 _mpb.SetColor("_MulColor0", currentColor);
                 _mpb.SetColor("_MulColor1", currentColor);
                 _mpb.SetFloat("_ColorPower", p);
-                _mpb.SetFloat("_ColorPowerMultiply", emissionBoost);
+                _mpb.SetFloat("_ColorPowerMultiply", GetAuthoredColorPowerMultiply(r));
                 _mpb.SetFloat("_AppTime", liveNow);
             }
             else if (isLightAdd1)
@@ -1707,7 +1707,7 @@ namespace Gallop.Live
                 _mpb.SetColor("_MulColor0", currentColor);
                 _mpb.SetColor("_MulColor1", currentColor);
                 _mpb.SetFloat("_ColorPower", p);
-                if (hasColorPowerMultiply) _mpb.SetFloat("_ColorPowerMultiply", emissionBoost);
+                if (hasColorPowerMultiply) _mpb.SetFloat("_ColorPowerMultiply", GetAuthoredColorPowerMultiply(r));
             }
             else if (isBlinkSimple)
             {
@@ -1717,6 +1717,15 @@ namespace Gallop.Live
             }
 
             r.SetPropertyBlock(_mpb);
+        }
+
+        // El juego no reescribe _ColorPowerMultiply: el shader usa el del material (10 en los
+        // glows, 4,5 en los conos, 5 en las proyecciones de suelo). Como un MaterialPropertyBlock no
+        // permite quitar una sola propiedad, se escribe ese mismo valor.
+        private static float GetAuthoredColorPowerMultiply(Renderer r)
+        {
+            Material m = r != null ? r.sharedMaterial : null;
+            return m != null && m.HasProperty("_ColorPowerMultiply") ? m.GetFloat("_ColorPowerMultiply") : 1f;
         }
 
         private static float GetBeamColorPower(Renderer r)
