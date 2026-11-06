@@ -11,7 +11,11 @@ namespace Gallop.Live
     {
         public bool verboseLog = false;
 
-        public float emissionBoost = 1.1f;
+        // El juego no aplica ningun multiplicador extra al _ColorPower del blink: escribe el power
+        // tal cual (BlinkLightController.Update). Se deja el campo para poder comparar, pero a 1.
+        // Importa doble: el flare lee ese mismo _ColorPower (RecoveredLensFlareController), asi que
+        // un boost aqui infla el tinte del flare respecto al juego.
+        public float emissionBoost = 1f;
         public float blinkSimpleUseNormalCorrection = 0f;
         public float localTimeScale = 1f;
         public float powerSmoothing = 0f;
