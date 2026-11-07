@@ -88,8 +88,10 @@ namespace Gallop.Live.Cutt
                         ? LiveTimelineControl.CalculateInterpolationValue(a, b, frame) : 0f;
                     b = b ?? a;
                     var p = camera.Composite.ImageEffect.DofDiffusionBloomOverlayParam;
-                    p.IsEnableBloom = a.IsEnabledBloom;
-                    p.IsEnableDiffusion = a.IsEnabledDiffusion;
+                    // Per-effect switches from the live settings panel must gate the timeline
+                    // values, otherwise the PostEffectList toggles have no effect on multicameras.
+                    p.IsEnableBloom = a.IsEnabledBloom && Gallop.RenderPipeline.PostEffectSelection.IsEnabled(Gallop.RenderPipeline.PostEffectId.Bloom);
+                    p.IsEnableDiffusion = a.IsEnabledDiffusion && Gallop.RenderPipeline.PostEffectSelection.IsEnabled(Gallop.RenderPipeline.PostEffectId.Diffusion);
                     p.BloomDofWeight = Mathf.LerpUnclamped(a.bloomDofWeight, b.bloomDofWeight, t);
                     p.BloomThreshold = Mathf.LerpUnclamped(a.threshold, b.threshold, t);
                     p.BloomIntensity = Mathf.LerpUnclamped(a.intensity, b.intensity, t);

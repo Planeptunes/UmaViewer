@@ -25,12 +25,11 @@ Shader "Hidden/UmaViewer/LensFlareAdditive"
 
         Blend One One
         ZWrite Off
-        // El flare nativo de Unity NO pasa por el depth buffer: es un efecto de overlay y su unica
-        // oclusion es el raycast de `LensFlare.ignoreLayers` (aqui, CustomLensFlare.RuntimeOcclusion).
-        // Con ZTest LEqual el plano del quad (a la profundidad del foco) se corta contra la propia
-        // luminaria: medio foco se ve iluminado y el otro medio no, con un borde recto. Eso es lo
-        // que hacia que las luces del techo pareciesen "a medias".
-        ZTest Always
+        // ZTest LEqual matches the native LensFlareRenderPass (URP pass at AfterRenderingTransparents):
+        // flares are occluded by opaque geometry in front of the light source. The small depth bias
+        // in CustomLensFlare.LateUpdate (offsetting the quad toward the camera) prevents z-fighting
+        // with the light fixture mesh at the same depth.
+        ZTest LEqual
         Cull Off
         Lighting Off
 

@@ -321,6 +321,20 @@ namespace Gallop.RenderPipeline
             // incidentally producing _CameraDepthTexture. Reset when leaving DOF.
             _dofDiffusionBloomOverlayPass.ConfigureInput(parameter.IsUseDepthTexture
                 ? ScriptableRenderPassInput.Depth : ScriptableRenderPassInput.None);
+
+            // Native AddRenderPasses sets IsRequestDepthPass on SetSourceRTPass when any effect
+            // needs depth. URP's ConfigureInput(Depth) triggers a depth prepass that only covers
+            // opaque objects (queue <= 2500); character alpha parts at queue 2501-2604 are
+            // transparent and get no depth, so the CoC shader cannot blur them correctly.
+            // requiresDepthTexture forces URP's copy-depth path instead, which captures every
+            // object that writes to the depth buffer (opaque + transparent with ZWrite On).
+            if (parameter.IsUseDepthTexture)
+            {
+                var camData = camera.GetUniversalAdditionalCameraData();
+                if (camData != null && !camData.requiresDepthTexture)
+                    camData.requiresDepthTexture = true;
+            }
+
             RenderPassEvent effectEvent = parameter.DofDiffuionBloomOverlay.RenderPassEvent;
 
             // Color keeps its native default event550, independent of DOF's event.

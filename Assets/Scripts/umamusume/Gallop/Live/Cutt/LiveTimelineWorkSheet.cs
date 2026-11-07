@@ -381,6 +381,9 @@ namespace Gallop.Live.Cutt
         public LiveTimelineDefine.SheetIndex SheetType;
         [SerializeField] public LiveTimelineKeyTimescaleDataList timescaleKeys;
         [SerializeField] public LiveTimelineKeyCameraPositionDataList cameraPosKeys;
+        // Field names are case-sensitive and must match the bundle TypeTree exactly or the data
+        // silently never binds (see the ExposureKeys note below). The multi-camera tracks use the
+        // native names: multiCamera*DataLists / *MultiCameraKeys / MultiCameraTransmittedLightDataList.
         [SerializeField] public List<LiveTimelineMultiCameraPositionData> multiCameraPosKeys;
         [SerializeField] public List<LiveTimelineMultiCameraLookAtData> multiCameraLookAtKeys;
         [SerializeField] public List<LiveTimelineMultiCameraLayerData> multiCameraLayerKeys;
@@ -388,6 +391,11 @@ namespace Gallop.Live.Cutt
         [SerializeField] public List<LiveTimelineMultiCameraPostFilmData> postFilm2MultiCameraKeys;
         [SerializeField] public List<LiveTimelineMultiCameraPostFilmData> postFilm3MultiCameraKeys;
         [SerializeField] public List<LiveTimelineMultiCameraPostEffectBloomDiffusionData> postEffectBloomDiffusionMultiCameraKeys;
+        [SerializeField] public List<LiveTimelineMultiCameraPostEffectDOFData> postEffectDOFMultiCameraKeys;
+        [SerializeField] public List<LiveTimelineMultiCameraTiltShiftData> multiCameraTiltShiftDataLists;
+        [SerializeField] public List<LiveTimelineMultiCameraRadialBlurData> multiCameraRadialBlurDataLists;
+        [SerializeField] public List<LiveTimelineMultiCameraColorCorrectionData> multiCameraColorCorrectionDataLists;
+        [SerializeField] public List<LiveTimelineMultiCameraTransmittedLightData> MultiCameraTransmittedLightDataList;
 
         //[SerializeField]锟斤拷锟节革拷锟斤拷锟节憋拷慕疟锟斤拷锒拷锟斤拷时锟斤拷
         [SerializeField] public LiveTimelineKeyCameraLookAtDataList cameraLookAtKeys;
@@ -408,7 +416,7 @@ namespace Gallop.Live.Cutt
         [SerializeField] public LiveTimelineKeyPostFilmDataList postFilm2Keys;
         [SerializeField] public LiveTimelineKeyPostFilmDataList postFilm3Keys;
         [SerializeField]
-        public List<LiveTimelineHdrBloomData> hdrBloomList;
+        public List<LiveTimelineHdrBloomData> hdrBloomKeys;
 
         // 子系统 A7b：Exposure(轨道92)/ToneCurve(轨道91) 关键帧表。
         // 原生 AlterLateUpdate(0x1ac9460) 在 0x1ac9e0f/0x1ac9e24 传
@@ -456,7 +464,7 @@ namespace Gallop.Live.Cutt
         [SerializeField] public List<LiveTimelineBgColor1Data> bgColor1List;
         [SerializeField] public List<LiveTimelineBgColor2Data> bgColor2List;
         [SerializeField] public List<LiveTimelineBlinkLightData> blinkLightList;
-        [SerializeField] public List<LiveTimelineWashLightData> washLightList;
+        [SerializeField] public List<LiveTimelineWashLightData> WashLightList;
         [SerializeField] public List<LiveTimelineMonitorControlData> monitorControlList;
         [SerializeField] public List<LiveTimelineMonitorCameraLayerData> monitorCameraLayerKeys;
         [SerializeField] public List<LiveTimelineMonitorCameraPositionData> monitorCameraPosKeys;
@@ -471,6 +479,9 @@ namespace Gallop.Live.Cutt
 
         [SerializeField] public List<LiveTimelineTransformData> transformList;
         [SerializeField] public List<LiveTimelineObjectData> objectList;
+        // Real stage lights (AdditionalLightComponent). One group per light; the group index is
+        // the light index. Native worksheet offset 0x2B8/0x360.
+        [SerializeField] public List<LiveTimelineAdditionalLight> AdditionalLightList;
         [SerializeField] public List<LiveTimelineMobCyalumeControlData> MobControlKeys;
         [SerializeField] public List<LiveTimelineMobCyalumeControlData> CyalumeControlKeys;
 

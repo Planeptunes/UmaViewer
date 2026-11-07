@@ -105,7 +105,15 @@ namespace Gallop.Live
                 int off = (MAX_ORDER - Mathf.Min(order, MAX_ORDER)) * 4;   // UpdateRenderQueue
                 int queue = RENDER_QUEUE_ALPHA + off * 4;                  // GetAlphaMeshRenderQueue
                 foreach (var m in _byChara[_sorted[order].Key])
-                    if (m != null && m.renderQueue != queue) m.renderQueue = queue;
+                {
+                    if (m == null) continue;
+                    if (m.renderQueue != queue) m.renderQueue = queue;
+                    // Transparent character parts (queue > 2500) must write depth so the DOF CoC
+                    // shader can see them in _CameraDepthTexture. Without this they read as
+                    // background depth and the blur skips them entirely.
+                    if (queue > 2500 && m.GetInt("_ZWrite") == 0)
+                        m.SetInt("_ZWrite", 1);
+                }
             }
         }
     }

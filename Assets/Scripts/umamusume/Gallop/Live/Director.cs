@@ -33,6 +33,7 @@ namespace Gallop.Live
         private GallopImageEffect _mainGallopImageEffect;
         public MultiCameraFinalComposite MultiCameraFinalComposite { get; private set; }
         private MultiCamera[] _multiCameras;
+        public MultiCamera[] GetMultiCameras() => _multiCameras;
         private LiveVolumeLightController _volumeLightController;
         private LiveStageParticleController _stageParticleController;
         private LiveEffectController _effectController;
@@ -1081,8 +1082,12 @@ namespace Gallop.Live
                         _cameraDataCache[i] = cameraData;
                     }
 
-                    if (!cameraData.renderPostProcessing)
-                        cameraData.renderPostProcessing = true;
+                    // The client applies its image effects through the Gallop chain only. URP's
+                    // built-in post (ColorGradingLUT + UberPostProcess) must stay OFF on the live
+                    // cameras: it re-grades and re-encodes the finished frame, washing the active
+                    // camera out compared to the MultiCamera views (which never run it).
+                    if (cameraData.renderPostProcessing)
+                        cameraData.renderPostProcessing = false;
                 }
 
                 if (i == 0 && activeSelf != flag && flag && _cameraLookAt != null)
@@ -1973,6 +1978,10 @@ namespace Gallop.Live
                 param.BallBlurBrightnessIntensity = key.BallBlurBrightnessIntensity;
                 param.BallBlurSpread = key.BallBlurSpread;
             }
+            // Do NOT propagate DOF parameters to multicameras. Each MultiCamera has its own
+            // PostEffectParameter set by the multi-camera DOF track (MultiCameraPostEffectDOFData).
+            // Copying the active camera's DOF to all sub-cameras forces identical depth-of-field
+            // on every view — the native game gives each camera its own focal distance and blur.
             if (bypassReason != _lastDofBypassReason)
             {
                 _lastDofBypassReason = bypassReason;
@@ -1985,7 +1994,20 @@ namespace Gallop.Live
 
         private void OnUpdateColorCorrection(Gallop.RenderPipeline.SimpleColorCorrectionPass.Parameter sample)
         {
+            // Native Director.InitializeCamera creates ONE ColorCorrectionParam and assigns it to
+            // every camera's ColorCorrection effect (set_Param loop), so the global track applies to
+            // ALL cameras, split-screen panels included. Per-camera overrides come later from the
+            // multicamera track (AlterUpdate_MultiCameraColorCorrection).
             Gallop.RenderPipeline.PostImageEffectFeature.RuntimeParameter.ColorCorrection = sample;
+            if (_multiCameras != null)
+            {
+                for (int i = 0; i < _multiCameras.Length; i++)
+                {
+                    var mc = _multiCameras[i];
+                    if (mc == null) continue;
+                    mc.PostEffectParameter.ColorCorrection = sample;
+                }
+            }
         }
 
         // [A7b] 原生 Director.OnUpdateExposure(RVA=0x1a63430) 三连：

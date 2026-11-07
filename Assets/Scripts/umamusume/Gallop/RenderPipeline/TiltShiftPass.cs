@@ -99,11 +99,13 @@ namespace Gallop.RenderPipeline
 
         public static void ApplyMaterial(Material material, Parameter p)
         {
-            material.SetFloat(ShaderManager.GetPropertyId(ShaderManager.PropertyId._BlurSize),
+            // Native Execute sets these as GLOBAL shader properties via CommandBuffer.SetGlobalFloat,
+            // not material properties. Use Shader.SetGlobalFloat to match.
+            Shader.SetGlobalFloat(ShaderManager.GetPropertyId(ShaderManager.PropertyId._BlurSize),
                 p.MaxBlurSize >= 0f ? p.MaxBlurSize : 0f);
-            material.SetFloat(ShaderManager.GetPropertyId(ShaderManager.PropertyId._BlurArea), p.BlurArea);
+            Shader.SetGlobalFloat(ShaderManager.GetPropertyId(ShaderManager.PropertyId._BlurArea), p.BlurArea);
             float roll = p.Roll * kDeg2Rad;
-            material.SetVector(ShaderManager.GetPropertyId(ShaderManager.PropertyId._Params),
+            Shader.SetGlobalVector(ShaderManager.GetPropertyId(ShaderManager.PropertyId._Params),
                 new Vector4(p.Offset.x, p.Offset.y, Mathf.Sin(roll), Mathf.Cos(roll)));
         }
 

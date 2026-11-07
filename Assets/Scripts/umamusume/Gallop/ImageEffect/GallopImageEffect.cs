@@ -1,4 +1,5 @@
 using Gallop.ImageEffect;
+using Gallop.Live;
 using Gallop.RenderPipeline;
 using UnityEngine;
 
@@ -79,6 +80,12 @@ namespace Gallop
             // Exposure and tone curves publish into the same camera-owned render state.
             parameter.ExposureParam.Setup(ExposureParam);
             parameter.ToneCurveParam.Setup(ToneCurveParam);
+
+            // Do NOT propagate parameters to MultiCameras. Each MultiCamera has its own
+            // PostEffectParameter set by the multi-camera timeline tracks (MultiCameraPostEffectDOFData,
+            // MultiCameraPostEffectBloomDiffusionData, MultiCameraPostFilmData). Copying the active
+            // camera's parameters to all sub-cameras forces identical effects on every view — the
+            // native game gives each camera its own TiltShift, DOF, ChromaticAberration, etc.
         }
     }
 }

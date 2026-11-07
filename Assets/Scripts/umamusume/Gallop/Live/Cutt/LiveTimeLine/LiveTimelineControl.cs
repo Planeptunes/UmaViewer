@@ -329,6 +329,12 @@ namespace Gallop.Live.Cutt
 
         public event GlobalLightUpdateInfoDelegate OnUpdateGlobalLight;
 
+        // AdditionalLight track: the client's real stage lights (enable/position/parameters).
+        public event AdditionalLightUpdateInfoDelegate OnUpdateAdditionalLight;
+
+        // Fires once per frame with the number of AdditionalLightList groups (light count).
+        public event AdditionalLightCountUpdateInfoDelegate OnUpdateAdditionalLightCount;
+
         public event FacialToonUpdateInfoDelegate OnUpdateFacialToon;
 
         public event EnvironmentMirrorDelegate OnEnvironmentMirror;
@@ -707,6 +713,9 @@ namespace Gallop.Live.Cutt
             AlterUpdate_MultiCamera(camSheet, _currentFrame);
 
             AlterUpdate_GlobalLight(camSheet, _currentFrame);
+            // Native order: AlterUpdate_MultiLightShadow → AlterUpdate_AdditionalLight →
+            // AlterUpdate_FacialToon. The light count update comes before the per-light updates.
+            AlterUpdate_AdditionalLight(camSheet, _currentFrame);
             AlterUpdate_FacialToon(camSheet, _currentFrame);
             AlterUpdate_EnvironmentMirror(camSheet, _currentFrame);
             AlterUpdate_EnvironmentStageFovShift(camSheet, _currentFrame);
@@ -721,6 +730,12 @@ namespace Gallop.Live.Cutt
                 camSheet.postFilm2MultiCameraKeys, camSheet.postFilm3MultiCameraKeys,
                 camSheet.postEffectBloomDiffusionMultiCameraKeys, _multiCamera,
                 _currentFrame, _playMode, _postFilmBlinkResolver);
+            // Native AlterUpdate_MultiCameraPostEffect_DOF runs AFTER EvaluatePostEffects so its
+            // per-camera DOF parameters are not overwritten by the post-film/bloom pass above.
+            AlterUpdate_MultiCameraPostEffect_DOF(camSheet, _currentFrame);
+            AlterUpdate_MultiCameraTiltShift(camSheet, _currentFrame);
+            AlterUpdate_MultiCameraRadialBlur(camSheet, _currentFrame);
+            AlterUpdate_MultiCameraTransmittedLight(camSheet, _currentFrame);
             // [A7b][原生顺序 REPORT §2.5] AlterLateUpdate RVA=0x1ac9460 中
             // AlterUpdate_Exposure(0x1ac9e0f) → AlterUpdate_ToneCurve(0x1ac9e24)
             // 位于 AlterUpdate_PostFilm×3 / MultiCameraPostFilm×3 /
@@ -734,6 +749,10 @@ namespace Gallop.Live.Cutt
                 camSheet != null ? camSheet.radialBlurKeys : null, _currentFrame, _playMode));
             OnUpdateColorCorrection?.Invoke(LiveColorCorrectionTimeline.Evaluate(
                 camSheet != null ? camSheet.colorCorrectionDataLists : null, _currentFrame, _playMode));
+            // Native model (Director.InitializeCamera): the global ColorCorrection lives in ONE
+            // shared parameter assigned to every camera, and multiCameraColorCorrectionDataLists
+            // overrides it per camera. So the multicamera update runs AFTER the global one.
+            AlterUpdate_MultiCameraColorCorrection(camSheet, _currentFrame);
             var chromaticAberration = LiveChromaticAberrationTimeline.Evaluate(
                 camSheet != null ? camSheet.chromaticAberrationList : null, _currentFrame, _playMode);
             OnUpdateChromaticAberration?.Invoke(ref chromaticAberration);
@@ -2423,6 +2442,230 @@ namespace Gallop.Live.Cutt
             owner.EndTimelineFrame();
         }
 
+        // Native AlterUpdate_MultiCameraPostEffect_DOF (RVA 0x7ffffc798490): iterates the
+        // multi-camera DOF keys, resolves the camera index from MultiCameraNo, evaluates the
+        // active key at the current frame and writes the DOF parameters into that camera's
+        // PostEffectParameter.DofDiffuionBloomOverlay.
+        private void AlterUpdate_MultiCameraPostEffect_DOF(LiveTimelineWorkSheet sheet, float currentFrame)
+        {
+            if (sheet.postEffectDOFMultiCameraKeys == null || _multiCamera == null) return;
+            for (int g = 0; g < sheet.postEffectDOFMultiCameraKeys.Count; g++)
+            {
+                var group = sheet.postEffectDOFMultiCameraKeys[g];
+                if (group == null) continue;
+                int camIndex = group.MultiCameraNo;
+                if (camIndex < 0 || camIndex >= _multiCamera.Length) continue;
+                var mc = _multiCamera[camIndex];
+                if (mc == null) continue;
+                var keys = group.keys;
+                if (keys == null || keys.Count == 0) continue;
+                if (keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable) ||
+                    !keys.EnablePlayModeTimeline(_playMode)) continue;
+                FindTimelineKey(out var curKey, out var nextKey, keys, currentFrame);
+                var cur = curKey as LiveTimelineKeyMultiCameraPostEffectDOFData;
+                if (cur == null) continue;
+                var nextInterp = nextKey as LiveTimelineKeyWithInterpolate;
+                float t = nextInterp != null && nextInterp.IsInterpolateKey()
+                    ? CalculateInterpolationValue(cur, nextInterp, currentFrame) : 0f;
+                var next = (nextKey as LiveTimelineKeyMultiCameraPostEffectDOFData) ?? cur;
+                // Native SetupDOFUpdateInfo RVA 0x726a610: bit18 enables DOF, bit17 metric focal
+                // point, bit16 camera look-at, bit19 point ball blur.
+                bool metric = ((int)cur.attribute & (1 << 17)) != 0;
+                bool enableDof = ((int)cur.attribute & (1 << 18)) != 0;
+                // DofDiffusionBloomOverlayPass.Parameter is a struct: use ref to modify in place.
+                ref var dof = ref mc.PostEffectParameter.DofDiffuionBloomOverlay;
+                dof.IsEnableDof = enableDof;
+                dof.IsEnableOldDof = false;
+                dof.DofFocalType = metric
+                    ? (DepthBlurAndBloom.DofFocalType)2   // Point (metric)
+                    : (DepthBlurAndBloom.DofFocalType)1;  // Position
+                dof.DofFocalPoint = LerpWithoutClamp(cur.dofFocalPoint, next.dofFocalPoint, t);
+                dof.DofQualityType = (DepthBlurAndBloom.DofQuality)cur.dofQuality;
+                dof.DofFocalSize = LerpWithoutClamp(cur.forcalSize, next.forcalSize, t);
+                dof.DofMaxFocalSize = data != null ? Mathf.Max(1e-30f, data.maxForcalSize) : 0f;
+                dof.DofMaxBlurSpread = LerpWithoutClamp(cur.blurSpread, next.blurSpread, t);
+                dof.DofForegroundSize = LerpWithoutClamp(cur.dofForegroundSize, next.dofForegroundSize, t);
+                dof.DofSmoothness = LerpWithoutClamp(cur.dofSmoothness, next.dofSmoothness, t);
+                dof.DofBlurType = (DepthBlurAndBloom.DofBlur)cur.dofBlurType;
+                dof.BallBlurPowerFactor = LerpWithoutClamp(cur.BallBlurPowerFactor, next.BallBlurPowerFactor, t);
+                dof.BallBlurBrightnessThreshhold = LerpWithoutClamp(cur.BallBlurBrightnessThreshhold, next.BallBlurBrightnessThreshhold, t);
+                dof.BallBlurBrightnessIntensity = LerpWithoutClamp(cur.BallBlurBrightnessIntensity, next.BallBlurBrightnessIntensity, t);
+                dof.BallBlurSpread = LerpWithoutClamp(cur.BallBlurSpread, next.BallBlurSpread, t);
+                // EvaluatePostEffects calls DecideDrawType(false) which sets the type to Bloom.
+                // Recompute the draw type now that IsEnableDof is set.
+                dof.DecideDrawType(dof.IsEnableDof && !dof.IsDisableDofTemporary &&
+                    Gallop.GallopImageEffect.UserDofEnabled &&
+                    Gallop.RenderPipeline.PostEffectSelection.IsEnabled(Gallop.RenderPipeline.PostEffectId.Dof));
+            }
+        }
+
+        private void AlterUpdate_MultiCameraTiltShift(LiveTimelineWorkSheet sheet, float currentFrame)
+        {
+            if (sheet.multiCameraTiltShiftDataLists == null || _multiCamera == null) return;
+            for (int g = 0; g < sheet.multiCameraTiltShiftDataLists.Count; g++)
+            {
+                var group = sheet.multiCameraTiltShiftDataLists[g];
+                if (group == null) continue;
+                int camIndex = group.MultiCameraNo;
+                if (camIndex < 0 || camIndex >= _multiCamera.Length) continue;
+                var mc = _multiCamera[camIndex];
+                if (mc == null) continue;
+                var keys = group.keys;
+                if (keys == null || keys.Count == 0) continue;
+                if (keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable) ||
+                    !keys.EnablePlayModeTimeline(_playMode)) continue;
+                FindTimelineKey(out var curKey, out var nextKey, keys, currentFrame);
+                var cur = curKey as LiveTimelineKeyMultiCameraTiltShiftData;
+                if (cur == null) continue;
+                var nextInterp = nextKey as LiveTimelineKeyWithInterpolate;
+                float t = nextInterp != null && nextInterp.IsInterpolateKey()
+                    ? CalculateInterpolationValue(cur, nextInterp, currentFrame) : 0f;
+                var next = (nextKey as LiveTimelineKeyMultiCameraTiltShiftData) ?? cur;
+                ref var tilt = ref mc.PostEffectParameter.TiltShift;
+                if (!Gallop.RenderPipeline.PostEffectSelection.IsEnabled(Gallop.RenderPipeline.PostEffectId.TiltShift)) { tilt.Mode = 0; continue; }
+                tilt.Mode = cur.mode;
+                tilt.Quality = cur.quality;
+                tilt.BlurArea = LerpWithoutClamp(cur.blurArea, next.blurArea, t);
+                tilt.MaxBlurSize = LerpWithoutClamp(cur.maxBlurSize, next.maxBlurSize, t);
+                tilt.Downsample = cur.downsample;
+                tilt.Offset = Vector2.LerpUnclamped(cur.offset, next.offset, t);
+                tilt.Roll = LerpWithoutClamp(cur.roll, next.roll, t);
+            }
+        }
+
+        private void AlterUpdate_MultiCameraRadialBlur(LiveTimelineWorkSheet sheet, float currentFrame)
+        {
+            if (sheet.multiCameraRadialBlurDataLists == null || _multiCamera == null) return;
+            for (int g = 0; g < sheet.multiCameraRadialBlurDataLists.Count; g++)
+            {
+                var group = sheet.multiCameraRadialBlurDataLists[g];
+                if (group == null) continue;
+                int camIndex = group.MultiCameraNo;
+                if (camIndex < 0 || camIndex >= _multiCamera.Length) continue;
+                var mc = _multiCamera[camIndex];
+                if (mc == null) continue;
+                var keys = group.keys;
+                if (keys == null || keys.Count == 0) continue;
+                if (keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable) ||
+                    !keys.EnablePlayModeTimeline(_playMode)) continue;
+                FindTimelineKey(out var curKey, out var nextKey, keys, currentFrame);
+                var cur = curKey as LiveTimelineKeyMultiCameraRadialBlurData;
+                if (cur == null) continue;
+                var nextInterp = nextKey as LiveTimelineKeyWithInterpolate;
+                float t = nextInterp != null && nextInterp.IsInterpolateKey()
+                    ? CalculateInterpolationValue(cur, nextInterp, currentFrame) : 0f;
+                var next = (nextKey as LiveTimelineKeyMultiCameraRadialBlurData) ?? cur;
+                ref var rb = ref mc.PostEffectParameter.RadialBlur;
+                if (!Gallop.RenderPipeline.PostEffectSelection.IsEnabled(Gallop.RenderPipeline.PostEffectId.RadialBlur)) { rb.Type = 0; continue; }
+                rb.Type = cur.moveBlurType;
+                rb.Offset = Vector2.LerpUnclamped(cur.radialBlurOffset, next.radialBlurOffset, t);
+                rb.Downsample = cur.radialBlurDownsample;
+                rb.StartArea = LerpWithoutClamp(cur.radialBlurStartArea, next.radialBlurStartArea, t);
+                rb.EndArea = LerpWithoutClamp(cur.radialBlurEndArea, next.radialBlurEndArea, t);
+                rb.Power = LerpWithoutClamp(cur.radialBlurPower, next.radialBlurPower, t);
+                rb.Iteration = cur.radialBlurIteration;
+                rb.EllipseDir = Vector2.LerpUnclamped(cur.radialBlurEllipseDir, next.radialBlurEllipseDir, t);
+                rb.RollEulerAngles = LerpWithoutClamp(cur.radialBlurRollEulerAngles, next.radialBlurRollEulerAngles, t);
+                rb.DepthPowerFront = LerpWithoutClamp(cur.depthPowerFront, next.depthPowerFront, t);
+                rb.DepthPowerBack = LerpWithoutClamp(cur.depthPowerBack, next.depthPowerBack, t);
+                rb.DepthCancelRect = cur.depthCancelRect;
+                rb.DepthCancelBlendLength = LerpWithoutClamp(cur.depthCancelBlendLength, next.depthCancelBlendLength, t);
+            }
+        }
+
+        private void AlterUpdate_MultiCameraColorCorrection(LiveTimelineWorkSheet sheet, float currentFrame)
+        {
+            if (sheet.multiCameraColorCorrectionDataLists == null || _multiCamera == null) return;
+            for (int g = 0; g < sheet.multiCameraColorCorrectionDataLists.Count; g++)
+            {
+                var group = sheet.multiCameraColorCorrectionDataLists[g];
+                if (group == null) continue;
+                int camIndex = group.MultiCameraNo;
+                if (camIndex < 0 || camIndex >= _multiCamera.Length) continue;
+                var mc = _multiCamera[camIndex];
+                if (mc == null) continue;
+                var keys = group.keys;
+                if (keys == null || keys.Count == 0) continue;
+                if (keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable) ||
+                    !keys.EnablePlayModeTimeline(_playMode)) continue;
+                FindTimelineKey(out var curKey, out _, keys, currentFrame);
+                var cur = curKey as LiveTimelineKeyMultiCameraColorCorrectionData;
+                if (cur == null) continue;
+                ref var cc = ref mc.PostEffectParameter.ColorCorrection;
+                if (!Gallop.RenderPipeline.PostEffectSelection.IsEnabled(Gallop.RenderPipeline.PostEffectId.ColorCorrection)) { cc.Enabled = false; continue; }
+                cc.Enabled = cur.enable != 0;
+                cc.Saturation = cur.saturation;
+                cc.Red = cur.redCurve;
+                cc.Green = cur.greenCurve;
+                cc.Blue = cur.blueCurve;
+            }
+        }
+
+        private void AlterUpdate_MultiCameraTransmittedLight(LiveTimelineWorkSheet sheet, float currentFrame)
+        {
+            if (sheet.MultiCameraTransmittedLightDataList == null || _multiCamera == null) return;
+            for (int g = 0; g < sheet.MultiCameraTransmittedLightDataList.Count; g++)
+            {
+                var group = sheet.MultiCameraTransmittedLightDataList[g];
+                if (group == null) continue;
+                int camIndex = group.MultiCameraNo;
+                if (camIndex < 0 || camIndex >= _multiCamera.Length) continue;
+                var mc = _multiCamera[camIndex];
+                if (mc == null) continue;
+                var keys = group.keys;
+                if (keys == null || keys.Count == 0) continue;
+                if (keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable) ||
+                    !keys.EnablePlayModeTimeline(_playMode)) continue;
+                FindTimelineKey(out var curKey, out _, keys, currentFrame);
+                var cur = curKey as LiveTimelineKeyMultiCameraTransmittedLightData;
+                if (cur == null) continue;
+                // TransmittedLight is a simple on/off per camera; the parameter lives in the
+                // DofDiffusionBloomOverlay struct alongside the other post effects.
+                ref var dof = ref mc.PostEffectParameter.DofDiffuionBloomOverlay;
+                if (!Gallop.RenderPipeline.PostEffectSelection.IsEnabled(Gallop.RenderPipeline.PostEffectId.TransmittedLight)) continue;
+                // TransmittedLight toggle is stored in the overlay's IsEnableTransmittedLight flag
+                // or equivalent; for now just keep the camera's own state.
+            }
+        }
+
+        // Native AlterUpdate_MultiCameraPostEffect_BloomDiffusion: same pattern as DOF but for
+        // Bloom/Diffusion parameters.
+        private void AlterUpdate_MultiCameraPostEffect_BloomDiffusion(LiveTimelineWorkSheet sheet, float currentFrame)
+        {
+            if (sheet.postEffectBloomDiffusionMultiCameraKeys == null || _multiCamera == null) return;
+            for (int g = 0; g < sheet.postEffectBloomDiffusionMultiCameraKeys.Count; g++)
+            {
+                var group = sheet.postEffectBloomDiffusionMultiCameraKeys[g];
+                if (group == null) continue;
+                int camIndex = group.MultiCameraNo;
+                if (camIndex < 0 || camIndex >= _multiCamera.Length) continue;
+                var mc = _multiCamera[camIndex];
+                if (mc == null) continue;
+                var keys = group.keys;
+                if (keys == null || keys.Count == 0) continue;
+                if (keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable) ||
+                    !keys.EnablePlayModeTimeline(_playMode)) continue;
+                FindTimelineKey(out var curKey, out var nextKey, keys, currentFrame);
+                var cur = curKey as LiveTimelineKeyMultiCameraPostEffectBloomDiffusionData;
+                if (cur == null) continue;
+                var nextInterp = nextKey as LiveTimelineKeyWithInterpolate;
+                float t = nextInterp != null && nextInterp.IsInterpolateKey()
+                    ? CalculateInterpolationValue(cur, nextInterp, currentFrame) : 0f;
+                var next = (nextKey as LiveTimelineKeyMultiCameraPostEffectBloomDiffusionData) ?? cur;
+                var dof = mc.PostEffectParameter.DofDiffuionBloomOverlay;
+                dof.IsEnableBloom = cur.IsEnabledBloom;
+                dof.IsEnableDiffusion = cur.IsEnabledDiffusion;
+                dof.BloomThreshold = LerpWithoutClamp(cur.threshold, next.threshold, t);
+                dof.BloomIntensity = LerpWithoutClamp(cur.intensity, next.intensity, t);
+                dof.BloomBlurSize = LerpWithoutClamp(cur.BloomBlurSize, next.BloomBlurSize, t);
+                dof.BloomDofWeight = LerpWithoutClamp(cur.bloomDofWeight, next.bloomDofWeight, t);
+                dof.DiffusionBright = LerpWithoutClamp(cur.diffusionBright, next.diffusionBright, t);
+                dof.DiffusionThreshold = LerpWithoutClamp(cur.diffusionThreshold, next.diffusionThreshold, t);
+                dof.DiffusionSaturation = LerpWithoutClamp(cur.diffusionSaturation, next.diffusionSaturation, t);
+                dof.DiffusionContrast = LerpWithoutClamp(cur.diffusionContrast, next.diffusionContrast, t);
+            }
+        }
+
         private void AlterUpdate_EnvironmentMirror(LiveTimelineWorkSheet sheet, float currentFrame)
         {
             if (OnEnvironmentMirror == null) return;
@@ -2631,6 +2874,84 @@ namespace Gallop.Live.Cutt
                     }
                     OnUpdateGlobalLight.Invoke(ref updateInfo);
                 }
+            }
+        }
+
+        // Samples the client's AdditionalLight track: one group per real stage light, the group
+        // index being the light index inside AdditionalLightComponent._addLightList. IsEnable and
+        // Type come from the current key (never interpolated); every other field lerps towards the
+        // next key when it asks for interpolation, like AlterUpdate_AdditionalLight in the client.
+        private void AlterUpdate_AdditionalLight(LiveTimelineWorkSheet sheet, float currentFrame)
+        {
+            if (sheet == null || sheet.AdditionalLightList == null)
+                return;
+
+            int count = sheet.AdditionalLightList.Count;
+            OnUpdateAdditionalLightCount?.Invoke(count);
+            if (OnUpdateAdditionalLight == null)
+                return;
+
+            for (int i = 0; i < count; i++)
+            {
+                LiveTimelineAdditionalLight group = sheet.AdditionalLightList[i];
+                LiveTimelineKeyAdditionalLightList keys = group != null ? group.keys : null;
+                if (keys == null)
+                    continue;
+                if (keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable) || !keys.EnablePlayModeTimeline(_playMode))
+                    continue;
+
+                FindTimelineKey(out var curKey, out var nextKey, keys, currentFrame);
+                if (!(curKey is LiveTimelineKeyData_AdditionalLight cur))
+                    continue;
+
+                AdditionalLightUpdateInfo updateInfo = default;
+                updateInfo.Index = i;
+                updateInfo.IsEnable = cur.IsEnable;
+                updateInfo.Type = ToLightType(cur.Type);
+
+                LiveTimelineKeyData_AdditionalLight next = nextKey as LiveTimelineKeyData_AdditionalLight;
+                if (next != null && next.interpolateType != 0)
+                {
+                    float t = CalculateInterpolationValue(cur, next, currentFrame);
+                    updateInfo.Position = LerpWithoutClamp(cur.Position, next.Position, t);
+                    updateInfo.Rotate = LerpWithoutClamp(cur.Rotate, next.Rotate, t);
+                    updateInfo.Range = LerpWithoutClamp(cur.Range, next.Range, t);
+                    updateInfo.SpotAngle = (int)(cur.SpotAngle + (next.SpotAngle - cur.SpotAngle) * t);
+                    updateInfo.IndirectMultiplier = (int)(cur.IndirectMultiplier + (next.IndirectMultiplier - cur.IndirectMultiplier) * t);
+                    updateInfo.Strength = LerpWithoutClamp(cur.Strength, next.Strength, t);
+                    updateInfo.Bias = LerpWithoutClamp(cur.Bias, next.Bias, t);
+                    updateInfo.NormalBias = LerpWithoutClamp(cur.NormalBias, next.NormalBias, t);
+                    updateInfo.NearPlane = LerpWithoutClamp(cur.NearPlane, next.NearPlane, t);
+                }
+                else
+                {
+                    updateInfo.Position = cur.Position;
+                    updateInfo.Rotate = cur.Rotate;
+                    updateInfo.Range = cur.Range;
+                    updateInfo.SpotAngle = cur.SpotAngle;
+                    updateInfo.IndirectMultiplier = cur.IndirectMultiplier;
+                    updateInfo.Strength = cur.Strength;
+                    updateInfo.Bias = cur.Bias;
+                    updateInfo.NormalBias = cur.NormalBias;
+                    updateInfo.NearPlane = cur.NearPlane;
+                }
+
+                OnUpdateAdditionalLight.Invoke(ref updateInfo);
+            }
+        }
+
+        // MyLightType (Directional/Spot/Point) -> UnityEngine.LightType (Directional=1, Spot=0,
+        // Point=2), the same mapping the client applies when it fills AdditionalLightUpdateInfo.
+        private static LightType ToLightType(LiveTimelineKeyData_AdditionalLight.MyLightType type)
+        {
+            switch (type)
+            {
+                case LiveTimelineKeyData_AdditionalLight.MyLightType.Directional:
+                    return LightType.Directional;
+                case LiveTimelineKeyData_AdditionalLight.MyLightType.Point:
+                    return LightType.Point;
+                default:
+                    return LightType.Spot;
             }
         }
 
@@ -3233,9 +3554,9 @@ namespace Gallop.Live.Cutt
         private void AlterUpdate_WashLight(LiveTimelineWorkSheet workSheet, float currentFrame)
         {
             if (OnUpdateWashLight == null) return;
-            if (workSheet == null || workSheet.washLightList == null) return;
+            if (workSheet == null || workSheet.WashLightList == null) return;
 
-            var list = workSheet.washLightList;
+            var list = workSheet.WashLightList;
             if (list.Count <= 0) return;
 
             for (int i = 0; i < list.Count; i++)
@@ -3563,15 +3884,15 @@ namespace Gallop.Live.Cutt
             if (OnUpdateHdrBloom == null)
                 return;
 
-            if (sheet == null || sheet.hdrBloomList == null)
+            if (sheet == null || sheet.hdrBloomKeys == null)
                 return;
 
-            int count = sheet.hdrBloomList.Count;
+            int count = sheet.hdrBloomKeys.Count;
 
             for (int i = 0; i < count; i++)
             {
                 LiveTimelineHdrBloomData timelineData =
-                    sheet.hdrBloomList[i];
+                    sheet.hdrBloomKeys[i];
 
                 if (timelineData == null ||
                     timelineData.keys == null)

@@ -867,9 +867,6 @@ namespace Gallop.RenderPipeline
 
                 Allocate(cmd, result, width, height);
                 Blit(cmd, source, result, _fastBloomMaterial, PASS_FASTBLOOM_DOWNSAMPLE);
-
-                context.ExecuteCommandBuffer(cmd);
-                cmd.Clear();
                 return result;
             }
 
@@ -891,9 +888,6 @@ namespace Gallop.RenderPipeline
 
                 Allocate(cmd, downSample, width, height);
                 Blit(cmd, source, downSample, _fastBloomMaterial, PASS_FASTBLOOM_DOWNSAMPLE);
-
-                context.ExecuteCommandBuffer(cmd);
-                cmd.Clear();
                 createdDownSample = true;
             }
 

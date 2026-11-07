@@ -131,6 +131,10 @@ namespace Gallop.Live
         private Color _currentAmbientColor;
         [SerializeField] private bool _autoAddBlinkDriver = true;
 
+        // Client's StageController._addLight: the real stage lights driven by the AdditionalLight
+        // timeline track (enabled/placed per frame).
+        [SerializeField] private AdditionalLightComponent _addLight;
+
         [Header("Official-like BgColor2 material sources")]
         [SerializeField] private Material[] _washLightMaterials;
         [SerializeField]
@@ -485,6 +489,7 @@ namespace Gallop.Live
             //AutoAddDriver("StageLaserDriver");
 
             InitializeStage();
+            SetupAdditionalLight();
             RebuildMirrorReflectionCache();
             RebuildBgColorCache();
 
@@ -651,6 +656,8 @@ namespace Gallop.Live
             ctl.OnUpdateMirrorReflection -= UpdateMirrorReflection;
             ctl.OnUpdateLaser -= UpdateLaser;
             ctl.OnUpdateAnimation -= UpdateAnimation;
+            ctl.OnUpdateAdditionalLight -= UpdateAdditionalLight;
+            ctl.OnUpdateAdditionalLightCount -= UpdateAdditionalLightCount;
 
             ctl.OnUpdateTransform += UpdateTransform;
             ctl.OnUpdateObject += UpdateObject;
@@ -661,6 +668,8 @@ namespace Gallop.Live
             ctl.OnUpdateMirrorReflection += UpdateMirrorReflection;
             ctl.OnUpdateLaser += UpdateLaser;
             ctl.OnUpdateAnimation += UpdateAnimation;
+            ctl.OnUpdateAdditionalLight += UpdateAdditionalLight;
+            ctl.OnUpdateAdditionalLightCount += UpdateAdditionalLightCount;
 
             _laserSetupDone = false;
             _laserSetupTimelineControl = ctl;
@@ -1245,6 +1254,47 @@ namespace Gallop.Live
             ctl.OnUpdateMirrorReflection -= UpdateMirrorReflection;
             ctl.OnUpdateLaser -= UpdateLaser;
             ctl.OnUpdateAnimation -= UpdateAnimation;
+            ctl.OnUpdateAdditionalLight -= UpdateAdditionalLight;
+            ctl.OnUpdateAdditionalLightCount -= UpdateAdditionalLightCount;
+        }
+
+        // Client's StageController.SetupAdditionalLight: the light root is the StageController
+        // itself and the culling mask is CHAR + BG + 3D + Background3D_NotReflect +
+        // Character3D_NotReflect + Character3D_0 + Character3D_1 (layer indices 1, 2, 7, 13-16).
+        private void SetupAdditionalLight()
+        {
+            if (_addLight == null)
+                _addLight = GetComponent<AdditionalLightComponent>();
+            if (_addLight == null)
+                _addLight = gameObject.AddComponent<AdditionalLightComponent>();
+
+            int mask =
+                GraphicSettings.GetCullingLayer(GraphicSettings.LayerIndex.LayerCHAR) |
+                GraphicSettings.GetCullingLayer(GraphicSettings.LayerIndex.LayerBG) |
+                GraphicSettings.GetCullingLayer(GraphicSettings.LayerIndex.Layer3D) |
+                GraphicSettings.GetCullingLayer(GraphicSettings.LayerIndex.LayerBackground3D_NotReflect) |
+                GraphicSettings.GetCullingLayer(GraphicSettings.LayerIndex.LayerCharacter3D_NotReflect) |
+                GraphicSettings.GetCullingLayer(GraphicSettings.LayerIndex.LayerCharacter3D_0) |
+                GraphicSettings.GetCullingLayer(GraphicSettings.LayerIndex.LayerCharacter3D_1);
+
+            _addLight.Initialize(transform, mask);
+        }
+
+        // Client's StageController.UpdateAdditionalLight: forwards the per-frame key state to the
+        // AdditionalLightComponent.
+        public void UpdateAdditionalLight(ref AdditionalLightUpdateInfo updateInfo)
+        {
+            if (_addLight == null)
+                return;
+            _addLight.UpdateAdditionalLight(ref updateInfo);
+        }
+
+        // Client's StageController.UpdateAdditionalLightCount: forwards the track's light count.
+        public void UpdateAdditionalLightCount(int count)
+        {
+            if (_addLight == null)
+                return;
+            _addLight.UpdateAdditionalLightCount(count);
         }
 
         // Routes the `animationList` track (`OnUpdateAnimation`) to the stage's

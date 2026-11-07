@@ -215,8 +215,13 @@ namespace Gallop.RenderPipeline
                 }
 
                 Transform quadTransform = quad.Transform;
+                // Small depth bias toward the camera so the flare quad wins the ZTest against the
+                // light fixture mesh sitting at the same depth (native LensFlareRenderPass draws at
+                // AfterRenderingTransparents with depth testing; the bias replaces its instancing
+                // depth offset).
+                float biasedDepth = sourceScreen.z * 0.995f;
                 quadTransform.SetPositionAndRotation(
-                    camera.ScreenToWorldPoint(new Vector3(elementScreen.x, elementScreen.y, sourceScreen.z)),
+                    camera.ScreenToWorldPoint(new Vector3(elementScreen.x, elementScreen.y, biasedDepth)),
                     rotation);
                 quadTransform.localScale = new Vector3(size, size, 1f);
 

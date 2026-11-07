@@ -63,4 +63,89 @@ namespace Gallop.Live.Cutt
         public LiveTimelineMultiCameraPostEffectBloomDiffusionData() : base("Bloom/Diffusion") { }
         public override ILiveTimelineKeyDataList GetKeyList() => keys;
     }
+
+    [Serializable]
+    public class LiveTimelineKeyMultiCameraPostEffectDOFData : LiveTimelineKeyPostEffectDOFData
+    {
+        public override LiveTimelineKeyDataType dataType => LiveTimelineKeyDataType.MultiCameraPostEffectDOF;
+    }
+
+    [Serializable]
+    public class LiveTimelineKeyMultiCameraPostEffectDOFDataList : LiveTimelineKeyDataListTemplate<LiveTimelineKeyMultiCameraPostEffectDOFData> { }
+
+    [Serializable]
+    public class LiveTimelineMultiCameraPostEffectDOFData : LiveTimelineMultiCameraPostEffect
+    {
+        public LiveTimelineKeyMultiCameraPostEffectDOFDataList keys = new LiveTimelineKeyMultiCameraPostEffectDOFDataList();
+        public LiveTimelineMultiCameraPostEffectDOFData() : base("DOF") { }
+        public override ILiveTimelineKeyDataList GetKeyList() => keys;
+    }
+
+    [Serializable]
+    public class LiveTimelineKeyMultiCameraTiltShiftData : LiveTimelineKeyTiltShiftData
+    {
+        public override LiveTimelineKeyDataType dataType => LiveTimelineKeyDataType.MultiCameraTiltShift;
+    }
+
+    [Serializable]
+    public class LiveTimelineKeyMultiCameraTiltShiftDataList : LiveTimelineKeyDataListTemplate<LiveTimelineKeyMultiCameraTiltShiftData> { }
+
+    [Serializable]
+    public class LiveTimelineMultiCameraTiltShiftData : LiveTimelineMultiCameraPostEffect
+    {
+        public LiveTimelineKeyMultiCameraTiltShiftDataList keys = new LiveTimelineKeyMultiCameraTiltShiftDataList();
+        public LiveTimelineMultiCameraTiltShiftData() : base("TiltShift") { }
+        public override ILiveTimelineKeyDataList GetKeyList() => keys;
+    }
+
+    [Serializable]
+    public class LiveTimelineKeyMultiCameraRadialBlurData : LiveTimelineKeyRadialBlurData
+    {
+        public override LiveTimelineKeyDataType dataType => LiveTimelineKeyDataType.MultiCameraRadialBlur;
+    }
+
+    [Serializable]
+    public class LiveTimelineKeyMultiCameraRadialBlurDataList : LiveTimelineKeyDataListTemplate<LiveTimelineKeyMultiCameraRadialBlurData> { }
+
+    [Serializable]
+    public class LiveTimelineMultiCameraRadialBlurData : LiveTimelineMultiCameraPostEffect
+    {
+        public LiveTimelineKeyMultiCameraRadialBlurDataList keys = new LiveTimelineKeyMultiCameraRadialBlurDataList();
+        public LiveTimelineMultiCameraRadialBlurData() : base("RadialBlur") { }
+        public override ILiveTimelineKeyDataList GetKeyList() => keys;
+    }
+
+    [Serializable]
+    public class LiveTimelineKeyMultiCameraColorCorrectionData : LiveTimelineKeyColorCorrectionData
+    {
+        public override LiveTimelineKeyDataType dataType => LiveTimelineKeyDataType.MultiCameraColorCorrection;
+    }
+
+    [Serializable]
+    public class LiveTimelineKeyMultiCameraColorCorrectionDataList : LiveTimelineKeyDataListTemplate<LiveTimelineKeyMultiCameraColorCorrectionData> { }
+
+    [Serializable]
+    public class LiveTimelineMultiCameraColorCorrectionData : LiveTimelineMultiCameraPostEffect
+    {
+        public LiveTimelineKeyMultiCameraColorCorrectionDataList keys = new LiveTimelineKeyMultiCameraColorCorrectionDataList();
+        public LiveTimelineMultiCameraColorCorrectionData() : base("ColorCorrection") { }
+        public override ILiveTimelineKeyDataList GetKeyList() => keys;
+    }
+
+    [Serializable]
+    public class LiveTimelineKeyMultiCameraTransmittedLightData : LiveTimelineKeyTransmittedLightData
+    {
+        public override LiveTimelineKeyDataType dataType => LiveTimelineKeyDataType.MultiCameraTransmittedLight;
+    }
+
+    [Serializable]
+    public class LiveTimelineKeyMultiCameraTransmittedLightDataList : LiveTimelineKeyDataListTemplate<LiveTimelineKeyMultiCameraTransmittedLightData> { }
+
+    [Serializable]
+    public class LiveTimelineMultiCameraTransmittedLightData : LiveTimelineMultiCameraPostEffect
+    {
+        public LiveTimelineKeyMultiCameraTransmittedLightDataList keys = new LiveTimelineKeyMultiCameraTransmittedLightDataList();
+        public LiveTimelineMultiCameraTransmittedLightData() : base("TransmittedLight") { }
+        public override ILiveTimelineKeyDataList GetKeyList() => keys;
+    }
 }
