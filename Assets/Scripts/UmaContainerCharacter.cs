@@ -1728,6 +1728,30 @@ public class UmaContainerCharacter : UmaContainer
         _globalLightRotation = rotation;
     }
 
+    // (FOOT LIGHT) charaFootLightKeys from the Director: the client's
+    // CharacterObject.SetFootLightParameter writes _HightLightParam = (rootY, heightMax, easing,
+    // blendMode) and _HightLightColor on every renderer's MaterialPropertyBlock. The character
+    // shader draws a height gradient light rising from the feet up to heightMax.
+    private static readonly int HightLightParamId = Shader.PropertyToID("_HightLightParam");
+    private static readonly int HightLightColorId = Shader.PropertyToID("_HightLightColor");
+    private MaterialPropertyBlock _footLightBlock;
+
+    public void SetFootLightParameter(float heightMax, Color lightColor, int blendMode, int easing)
+    {
+        if (Renderers == null) return;
+        if (_footLightBlock == null) _footLightBlock = new MaterialPropertyBlock();
+        float rootY = transform.position.y;
+        Vector4 param = new Vector4(rootY, heightMax, easing, blendMode);
+        foreach (var renderer in Renderers)
+        {
+            if (renderer == null) continue;
+            renderer.GetPropertyBlock(_footLightBlock);
+            _footLightBlock.SetVector(HightLightParamId, param);
+            _footLightBlock.SetColor(HightLightColorId, lightColor);
+            renderer.SetPropertyBlock(_footLightBlock);
+        }
+    }
+
     // Renderers de la cabeza que reciben la luz de cara (ModelController.UpdateFaceLight: piel de la
     // cara, ojos, pelo, mallas alfa del pelo y props de cara/pelo). Cejas, boca y mejillas siguen
     // con la luz global.

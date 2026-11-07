@@ -329,6 +329,9 @@ namespace Gallop.Live.Cutt
 
         public event GlobalLightUpdateInfoDelegate OnUpdateGlobalLight;
 
+        // charaFootLightKeys track: per-character foot light (height gradient from the feet up).
+        public event CharaFootLightUpdateInfoDelegate OnUpdateCharaFootLight;
+
         // AdditionalLight track: the client's real stage lights (enable/position/parameters).
         public event AdditionalLightUpdateInfoDelegate OnUpdateAdditionalLight;
 
@@ -770,6 +773,8 @@ namespace Gallop.Live.Cutt
             // 此处原本连续调用两次（旧标 432-433），handler 均为覆盖式材质写
             // （Director.cs:292 MaterialPropertyBlock / StageController.cs:1227 SetColor/SetFloat），
             // 双调用=每帧双倍 renderer 遍历与冗余写，删去一次。
+            // Foot light per character (native AlterLateUpdate_CharaFootLight, before BgColor1).
+            AlterLateUpdate_CharaFootLight(camSheet, _currentFrame);
             AlterUpdate_BgColor1(camSheet, _currentFrame);
             AlterUpdate_VolumeLight(camSheet, _currentFrame);
             AlterUpdate_LightShafts(camSheet, _currentFrame);
@@ -2952,6 +2957,61 @@ namespace Gallop.Live.Cutt
                     return LightType.Point;
                 default:
                     return LightType.Spot;
+            }
+        }
+
+        // (FOOT LIGHT) charaFootLightKeys: a height gradient light rising from each character's
+        // feet up to hightMax. The client's CharacterObject.SetFootLightParameter writes
+        // _HightLightParam = (rootY, hightMax, easing, blendMode) + _HightLightColor, which is what
+        // makes the lower legs glow while the thighs stay sharp. Native:
+        // AlterLateUpdate_CharaFootLight — one update per character selected by positionFlag, with
+        // the per-character values coming from the key arrays.
+        private void AlterLateUpdate_CharaFootLight(LiveTimelineWorkSheet sheet, float currentFrame)
+        {
+            if (sheet == null || sheet.charaFootLightKeys == null || OnUpdateCharaFootLight == null)
+                return;
+
+            LiveTimelineKeyCharaFootLightDataList keys = sheet.charaFootLightKeys;
+            if (keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable) || !keys.EnablePlayModeTimeline(_playMode))
+                return;
+
+            FindTimelineKey(out var curKey, out var nextKey, keys, currentFrame);
+            if (!(curKey is LiveTimelineKeyCharaFootLightData cur))
+                return;
+
+            LiveTimelineKeyCharaFootLightData next = nextKey as LiveTimelineKeyCharaFootLightData;
+            float t = (next != null && next.interpolateType != 0)
+                ? CalculateInterpolationValue(cur, next, currentFrame)
+                : -1f;
+
+            for (int i = 0; i < 20; i++)
+            {
+                if ((((int)cur.positionFlag >> i) & 1) == 0)
+                    continue;
+                if (cur.hightMax == null || i >= cur.hightMax.Length)
+                    continue;
+                if (cur.lightColor == null || i >= cur.lightColor.Length)
+                    continue;
+
+                bool interp = t >= 0f && next != null
+                    && next.hightMax != null && i < next.hightMax.Length
+                    && next.lightColor != null && i < next.lightColor.Length;
+
+                CharaFootLightUpdateInfo updateInfo = default;
+                updateInfo.CharacterIndex = i;
+                updateInfo.hightMax = interp
+                    ? LerpWithoutClamp(cur.hightMax[i], next.hightMax[i], t)
+                    : cur.hightMax[i];
+                updateInfo.lightColor = interp
+                    ? Color.LerpUnclamped(cur.lightColor[i], next.lightColor[i], t)
+                    : cur.lightColor[i];
+                updateInfo.LightBlendMode = (cur.LightBlendModeArray != null && i < cur.LightBlendModeArray.Length)
+                    ? cur.LightBlendModeArray[i]
+                    : LiveDefine.HightLightBlendMode.Addition;
+                updateInfo.Easing = (cur.EasingArray != null && i < cur.EasingArray.Length)
+                    ? cur.EasingArray[i]
+                    : LiveDefine.Easing.Linear;
+                OnUpdateCharaFootLight.Invoke(ref updateInfo);
             }
         }
 

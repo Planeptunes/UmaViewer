@@ -636,6 +636,18 @@ namespace Gallop.Live
                 }
             };
 
+            // (FOOT LIGHT) charaFootLightKeys: per-character foot light gradient (the glow that
+            // rises from the feet up to hightMax in the client).
+            _liveTimelineControl.OnUpdateCharaFootLight += delegate (ref CharaFootLightUpdateInfo updateInfo)
+            {
+                if (updateInfo.CharacterIndex < 0 || updateInfo.CharacterIndex >= CharaContainerScript.Count)
+                    return;
+                var container = CharaContainerScript[updateInfo.CharacterIndex];
+                if (container != null)
+                    container.SetFootLightParameter(updateInfo.hightMax, updateInfo.lightColor,
+                        (int)updateInfo.LightBlendMode, (int)updateInfo.Easing);
+            };
+
             _liveTimelineControl.OnUpdateBgColor1 += delegate (ref BgColor1UpdateInfo updateInfo)
             {
                 // StageController.UpdateCharaColor1: the track NAME picks the characters

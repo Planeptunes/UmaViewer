@@ -411,6 +411,9 @@ namespace Gallop.Live.Cutt
         [SerializeField] public LiveTimelineKeyTiltShiftDataList tiltShiftKeys;
         // Main-camera simple/nonselective color correction; other modes remain unsupported.
         public List<LiveTimelineColorCorrectionData> colorCorrectionDataLists;
+        // Foot light per character (height gradient from the feet up to hightMax + fake foot
+        // shadows). Native worksheet offset 0x2F8.
+        [SerializeField] public LiveTimelineKeyCharaFootLightDataList charaFootLightKeys;
         [SerializeField] public List<LiveTimelineChromaticAberrationData> chromaticAberrationList;
         public LiveTimelineKeyPostFilmDataList postFilmKeys;
         [SerializeField] public LiveTimelineKeyPostFilmDataList postFilm2Keys;
