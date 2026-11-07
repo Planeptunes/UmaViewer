@@ -19,6 +19,10 @@ namespace Gallop.Live
         private const float AlphaStepRate = 1f / 64f;
         private const float ColorEpsilon = 1e-10f;
         private const int SortingOrderBase = 100;
+        // Draw order (user-confirmed): the ground light panels must render BEFORE the foot shadow,
+        // otherwise they cover the X. The shadow is therefore kept in the transparent range and
+        // drawn after them (the game's shader tag is "Transparent-1", under its own additive
+        // panels; ours cover it, so the X goes after).
         public const int ShadowRenderQueue = 3005;
 
         private static readonly int ShadowIntensityId = Shader.PropertyToID("_ShadowIntensity");
