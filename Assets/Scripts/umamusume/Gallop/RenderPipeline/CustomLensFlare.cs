@@ -48,19 +48,10 @@ namespace Gallop.RenderPipeline
         // recargas, asi que un campo de instancia se quedaba con el valor viejo (parecia que el
         // cambio no se aplicaba) y ademas permitia que cada foco tuviese uno distinto.
         [Header("Render (global)")]
-        [Tooltip("Fraccion de la altura de pantalla que ocupa un elemento cuyo Size es 1. Los assets " +
-                 "usan Size 3, 6 y 12. Calibrado contra la captura del juego del live 1034 (0:54): " +
-                 "0.09 es el valor que cuadra con el brillo a ~0.95. La mayor parte del quad es " +
-                 "margen negro del atlas, por eso el glow visible es mucho menor que el quad.")]
-        public static float ElementSizeScale = 0.09f;
-        [Tooltip("Escala desde la que crece un elemento mientras aparece (solo elementos Zoom).")]
-        public float zoomMinScale = 0.35f;
-        [Tooltip("1 = el elemento crece y se encoge con el brillo del flare, como describe Unity " +
-                 "(\"the size and brightness the lens flare appears\"). Calibrado en el live 1034: " +
-                 "con 0.09 y el brillo a ~0.95 (frame 3235) cuadra con el juego, y con el brillo a " +
-                 "0.65 (frame 298) el juego lo dibuja mas pequeno. La sonda midio el brillo real del " +
-                 "juego: es el angle power, 0..1.")]
-        public static float SizeFollowsBrightness = 1f;
+        [Tooltip("Escala base del tamaño del flare. La fórmula nativa es: " +
+                 "worldSize = distancia × element.Size × 0.01 × (zoom ? brillo : 1). " +
+                 "El valor 0.01 viene del binario (LensFlareManager.MakeGeometry).")]
+        public static float ElementSizeScale = 0.01f;
 
         private sealed class ElementQuad
         {
@@ -117,6 +108,14 @@ namespace Gallop.RenderPipeline
 
         private void LateUpdate()
         {
+            // Master switch of the live settings panel ("Post effects"): disables every image-chain
+            // effect including the flares, which render here on their own (not through the URP
+            // feature that ApplyLivePostEffects toggles).
+            if (Config.Instance != null && !Config.Instance.PostEffects)
+            {
+                SetAllQuadsActive(false);
+                return;
+            }
             // Per-effect switch of the live settings panel ("Lens flare").
             if (!PostEffectSelection.IsEnabled(PostEffectId.LensFlare))
             {
@@ -169,9 +168,10 @@ namespace Gallop.RenderPipeline
 
             float screenHeight = camera.pixelHeight;
             Vector2 center = new Vector2(camera.pixelWidth * 0.5f, screenHeight * 0.5f);
-            // Size 1 covers `ElementSizeScale` of the screen height; ScreenToWorldPoint wants a
-            // world size, and a pixel at that depth measures this much:
-            float worldPerScreenHeight = 2f * sourceScreen.z * Mathf.Tan(camera.fieldOfView * 0.5f * Mathf.Deg2Rad);
+            // Native LensFlareManager.MakeGeometry: worldSize = distance × element.Size × 0.01
+            // (× brightness if the element follows brightness). No FOV dependency — the quad scales
+            // with distance so it covers the same screen fraction at any depth.
+            float distance = sourceScreen.z;
             Quaternion cameraRotation = camera.transform.rotation;
             bool useLightColor = HasLightColor();
 
@@ -194,15 +194,11 @@ namespace Gallop.RenderPipeline
                 }
 
                 Vector2 elementScreen = Vector2.LerpUnclamped(sourceScreen, center, element.Position);
-                // Brightness drives BOTH the size and the intensity (Unity's Lens Flare: "the size and
-                // brightness the lens flare appears"). The measured game brightness is the angle power,
-                // 0..1, so a lamp at 0.5 draws its halo half as wide, not full width at half strength.
+                // Native MakeGeometry: the element's "zoom" flag (0x3e) controls whether the size
+                // scales with brightness. Without it the size is constant regardless of brightness.
                 float strength = tintBrightness * elementFade;
-                float sizeFromBrightness = Mathf.Lerp(1f, strength, Mathf.Clamp01(SizeFollowsBrightness));
-                float size = Mathf.Max(0f, element.Size) * ElementSizeScale * worldPerScreenHeight * sizeFromBrightness;
-                // "Zoom": the element scales up while it becomes visible.
-                if (element.Zoom)
-                    size *= Mathf.Lerp(zoomMinScale, 1f, elementFade);
+                float sizeScale = element.Zoom ? strength : 1f;
+                float size = distance * Mathf.Max(0f, element.Size) * ElementSizeScale * sizeScale;
                 if (size <= 0f)
                 {
                     SetQuadActive(quad, false);
