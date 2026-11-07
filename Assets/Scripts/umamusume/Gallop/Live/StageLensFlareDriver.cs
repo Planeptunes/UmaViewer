@@ -129,6 +129,10 @@ namespace Gallop.Live
 
         private void LateUpdate()
         {
+            // Master switch of the live settings panel ("Post effects"): the flares this driver
+            // creates (billboards for stage lights) are part of the post-effect chain.
+            if (Config.Instance != null && !Config.Instance.PostEffects) return;
+
             // 自愈：进入 live 后才挂上脚本时，可能会错过 init
             if (_ctl == null || _stage == null)
                 BindIfPossible();
