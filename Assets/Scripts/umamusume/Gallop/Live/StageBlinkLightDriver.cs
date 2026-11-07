@@ -89,14 +89,6 @@ namespace Gallop.Live
         private bool _allOffInited = false;
         private readonly List<string> _tmpKeys = new List<string>(256);
 
-        private struct GroundPick
-        {
-            public string root;
-            public int frame;
-        }
-
-        private readonly Dictionary<string, GroundPick> _groundChosen = new Dictionary<string, GroundPick>(16);
-
         private sealed class LightContainerState
         {
             public int index;
@@ -305,7 +297,6 @@ namespace Gallop.Live
             _allOffInited = false;
 
             _tmpKeys.Clear();
-            _groundChosen.Clear();
         }
 
         internal void RegisterRoot(GameObject root, string nameSuffixToken,
@@ -650,9 +641,10 @@ namespace Gallop.Live
                     }
             }
 
-            // Exclusivity must be enforced AFTER the cached timeline update:
-            // otherwise ApplyToRootCached immediately turns the losing panel on again.
-            EnforceGroundPanelExclusive();
+            // Every blinklight track drives its own controller, exactly like the game: the floor
+            // panel layers (a000 blue rings, a003 colour-cycling rings, b000 static cells) are
+            // independent and must stay drawn at once. Forcing a single panel per group hid the
+            // blue layer of song 1053 at frame 845.
         }
 
         private BlinkRootRuntime GetOrCreateRuntime(string runtimeKey)
@@ -916,55 +908,6 @@ namespace Gallop.Live
             }
 
             if (verboseLog) Debug.Log("[StageBlinkLightDriver] InitAllStageLightsOff done");
-        }
-
-        private void EnforceGroundPanelExclusive()
-        {
-            _groundChosen.Clear();
-
-            foreach (var kv in _latest)
-            {
-                string rootName = kv.Key;
-                string g = GetGroundPanelGroupBase(rootName);
-                if (g == null) continue;
-
-                var item = kv.Value;
-                if (!_groundChosen.TryGetValue(g, out var cur) || item.updatedFrame > cur.frame)
-                    _groundChosen[g] = new GroundPick { root = rootName, frame = item.updatedFrame };
-            }
-
-            if (_groundChosen.Count == 0) return;
-
-            foreach (var kv in _stage.StageObjectMap)
-            {
-                string name = kv.Key;
-                var go = kv.Value;
-                if (go == null) continue;
-
-                string g = GetGroundPanelGroupBase(name);
-                if (g == null) continue;
-
-                if (_groundChosen.TryGetValue(g, out var pick) && name != pick.root)
-                {
-                    ApplyRootOffCached(name, go);
-                    // A black MPB is not an occlusion/depth disable (and the
-                    // non-MPB path explicitly resets forceRenderingOff=false).
-                    // Keep the non-selected coplanar panel out of the depth pass.
-                    var cache = GetOrBuildRootCache(name, go);
-                    for (int i = 0; i < cache.renderers.Count; i++)
-                    {
-                        var renderer = cache.renderers[i].r;
-                        if (renderer != null) renderer.forceRenderingOff = true;
-                    }
-                }
-            }
-        }
-
-        private static string GetGroundPanelGroupBase(string rootName)
-        {
-            int i = rootName.IndexOf("_blinklight_ground_panel", StringComparison.Ordinal);
-            if (i < 0) return null;
-            return rootName.Substring(0, i + "_blinklight_ground_panel".Length);
         }
 
         private int GetRootBase(string rootName)
