@@ -333,6 +333,8 @@ namespace Gallop.Live.Cutt
 
         public event EnvironmentMirrorDelegate OnEnvironmentMirror;
 
+        public event EnvironmentStageFovShiftDelegate OnEnvironmentStageFovShift;
+
         public event BgColor1UpdateInfoDelegate OnUpdateBgColor1;
 
         public event BgColor2UpdateInfoDelegate OnUpdateBgColor2;
@@ -707,6 +709,7 @@ namespace Gallop.Live.Cutt
             AlterUpdate_GlobalLight(camSheet, _currentFrame);
             AlterUpdate_FacialToon(camSheet, _currentFrame);
             AlterUpdate_EnvironmentMirror(camSheet, _currentFrame);
+            AlterUpdate_EnvironmentStageFovShift(camSheet, _currentFrame);
             AlterUpdate_MirrorReflection(camSheet, _currentFrame);
             AlterUpdate_HdrBloom(camSheet, Mathf.RoundToInt(_currentFrame));
             AlterUpdate_PostEffect_BloomDiffusion(camSheet, Mathf.RoundToInt(_currentFrame));
@@ -2197,6 +2200,9 @@ namespace Gallop.Live.Cutt
             }
             LiveTimelineKeyCameraFovData liveTimelineKeyCameraFovData = curKey as LiveTimelineKeyCameraFovData;
             LiveTimelineKeyCameraFovData liveTimelineKeyCameraFovData2 = nextKey as LiveTimelineKeyCameraFovData;
+            // Nativo: fVar13 arranca en DAT_7ffffebac4d8 y solo se sustituye por la clave si esta es
+            // Direct o si hay interpolacion. Leido del binario (GameAssembly_dumped.dll, RVA
+            // 0x672C4D8, base 0x7FFFF8480000): esa constante vale 80.0f.
             float num = 80f;
             if (liveTimelineKeyCameraFovData2 != null && liveTimelineKeyCameraFovData2.interpolateType != 0)
             {
@@ -2455,6 +2461,38 @@ namespace Gallop.Live.Cutt
 
                 // Native AlterUpdate_Environment reads FindTimelineKeyCurrent only: no interpolation.
                 OnEnvironmentMirror.Invoke(ref info);
+            }
+        }
+
+        // Native AlterUpdate_Environment: walks every environment list (no name filter), takes the
+        // current key only (FindTimelineKeyCurrent, no interpolation) and fires OnEnvironmentStageFovShift
+        // with the authored values. StageController writes them into its StageFovShift components.
+        private void AlterUpdate_EnvironmentStageFovShift(LiveTimelineWorkSheet sheet, float currentFrame)
+        {
+            if (OnEnvironmentStageFovShift == null) return;
+            if (sheet == null || sheet.environmentDataLists == null) return;
+
+            int count = sheet.environmentDataLists.Count;
+            for (int i = 0; i < count; i++)
+            {
+                var envData = sheet.environmentDataLists[i];
+                if (envData == null || envData.keys == null) continue;
+
+                var keys = envData.keys;
+                if (keys.Count <= 0) continue;
+                if (keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable)) continue;
+                if (!keys.EnablePlayModeTimeline(_playMode)) continue;
+
+                FindTimelineKey(out var curKey, out var nextKey, keys, currentFrame);
+                var cur = curKey as LiveTimelineKeyMirrorReflectionData;
+                if (cur == null) continue;
+
+                EnvironmentStageFovShiftUpdateInfo info = default;
+                info.isValid = cur.IsValidStageFovShift;
+                info.baseFov = cur.BaseFov;
+                info.shiftPower = cur.ShiftPower;
+                info.isShiftY = cur.IsShiftY;
+                OnEnvironmentStageFovShift.Invoke(ref info);
             }
         }
 

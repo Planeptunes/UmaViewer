@@ -1375,6 +1375,9 @@ namespace Gallop.Live
             _stageParticleController?.SetPaused(!IsRecordVMD && (!_syncTime || sliderControl.is_Touched));
             _spotlightRuntime?.AlterLateUpdate();
             _stageFlares?.AlterUpdate(MainRenderCamera);
+            // StageFovShift places its own object against the camera the timeline just wrote, so it
+            // has to run last (the native one closes StageController.AlterLateUpdate).
+            _stageController?.ApplyStageFovShifts();
             if (_volumeLightController != null)
             {
                 _volumeLightController.LateUpdateSunShafts(MainRenderCamera);

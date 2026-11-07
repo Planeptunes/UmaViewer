@@ -544,6 +544,11 @@ namespace Gallop.Live
         // (e.g. the wash light beams `light00X_..._billboard`) faces the main camera.
         private readonly List<BillboardController> _billboardControllers = new List<BillboardController>();
 
+        // StageController._stageFovShiftArray: the stage components that place themselves in front of
+        // the live camera (native StartStageObject: GetComponentsInChildren<StageFovShift> over the
+        // stage, includeInactive false). Collected once, like the billboard controllers.
+        private readonly List<StageFovShift> _stageFovShifts = new List<StageFovShift>();
+
         private void CollectBillboardController()
         {
             _billboardControllers.Clear();
@@ -569,6 +574,28 @@ namespace Gallop.Live
                 if (billboard == null) continue;
                 billboard.TargetCameraTransform = cameraTransform;
                 billboard.AlterLateUpdate();
+            }
+        }
+
+        private void CollectStageFovShift()
+        {
+            _stageFovShifts.Clear();
+            // Native passes includeInactive = false: only components on active objects are collected.
+            foreach (var shift in GetComponentsInChildren<StageFovShift>(false))
+                if (shift != null) _stageFovShifts.Add(shift);
+        }
+
+        // Applied by Director.ApplyTimelineLateUpdate, after the timeline has written the camera
+        // position and FOV for this frame: the shift is a per-frame placement, so it must run after
+        // those writes or it is lost (or applied twice).
+        internal void ApplyStageFovShifts()
+        {
+            for (int i = 0; i < _stageFovShifts.Count; i++)
+            {
+                var shift = _stageFovShifts[i];
+                // Native: a null slot ends the loop (it is an array there).
+                if (shift == null) break;
+                shift.AlterLateUpdate();
             }
         }
 
@@ -620,6 +647,7 @@ namespace Gallop.Live
             ctl.OnUpdateBgColor1 -= UpdateBgColor1;
             ctl.OnUpdateBgColor2 -= UpdateBgColor2;
             ctl.OnEnvironmentMirror -= UpdateEnvironemntMirror;
+            ctl.OnEnvironmentStageFovShift -= UpdateEnvironemntStageFovShift;
             ctl.OnUpdateMirrorReflection -= UpdateMirrorReflection;
             ctl.OnUpdateLaser -= UpdateLaser;
             ctl.OnUpdateAnimation -= UpdateAnimation;
@@ -629,6 +657,7 @@ namespace Gallop.Live
             ctl.OnUpdateBgColor1 += UpdateBgColor1;
             ctl.OnUpdateBgColor2 += UpdateBgColor2;
             ctl.OnEnvironmentMirror += UpdateEnvironemntMirror;
+            ctl.OnEnvironmentStageFovShift += UpdateEnvironemntStageFovShift;
             ctl.OnUpdateMirrorReflection += UpdateMirrorReflection;
             ctl.OnUpdateLaser += UpdateLaser;
             ctl.OnUpdateAnimation += UpdateAnimation;
@@ -1212,6 +1241,7 @@ namespace Gallop.Live
             ctl.OnUpdateBgColor1 -= UpdateBgColor1;
             ctl.OnUpdateBgColor2 -= UpdateBgColor2;
             ctl.OnEnvironmentMirror -= UpdateEnvironemntMirror;
+            ctl.OnEnvironmentStageFovShift -= UpdateEnvironemntStageFovShift;
             ctl.OnUpdateMirrorReflection -= UpdateMirrorReflection;
             ctl.OnUpdateLaser -= UpdateLaser;
             ctl.OnUpdateAnimation -= UpdateAnimation;
@@ -1618,6 +1648,26 @@ namespace Gallop.Live
             }
         }
 
+        // Native StageController.UpdateEnvironemntStageFovShift: only while the key is valid, and it
+        // overwrites the three authored values on every component of _stageFovShiftArray, so the cutt
+        // Environment track wins over what the prefab serialized.
+        private void UpdateEnvironemntStageFovShift(ref EnvironmentStageFovShiftUpdateInfo updateInfo)
+        {
+            if (!updateInfo.isValid)
+                return;
+
+            for (int i = 0; i < _stageFovShifts.Count; i++)
+            {
+                var shift = _stageFovShifts[i];
+                if (shift == null)
+                    break;
+
+                shift.BaseFov = updateInfo.baseFov;
+                shift.ShiftPower = updateInfo.shiftPower;
+                shift.IsShiftY = updateInfo.isShiftY;
+            }
+        }
+
         private void UpdateMirrorReflection(in LiveTimelineControl.MirrorReflectionUpdateInfo updateInfo)
         {
             if (!_enableMirrorReflectionSpecificUpdate)
@@ -1737,6 +1787,7 @@ namespace Gallop.Live
                 }
 
             CollectBillboardController();
+            CollectStageFovShift();
             AutoAttachMirrorReflectionComponents();
             var washBeams = GetComponent<StageWashBeamDriver>();
             if (washBeams == null) washBeams = gameObject.AddComponent<StageWashBeamDriver>();

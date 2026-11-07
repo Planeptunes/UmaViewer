@@ -32,6 +32,14 @@ namespace Gallop.Live.Cutt
         public LiveCharaPositionFlag CharacterMirrorExpandFaceBounds;
         public float mirrorReflectionRate = 1f;
 
+        // Environment track: stage FOV shift. Serialized with these exact names (native
+        // LiveTimelineKeyStageEnvironmentData 0x78..0x84): the values go to the stage's
+        // StageFovShift components while IsValidStageFovShift is set.
+        public bool IsValidStageFovShift;
+        public float BaseFov;
+        public float ShiftPower;
+        public bool IsShiftY;
+
         // Backing/export helper fields sometimes present in JSON
         public bool _isValidMirror;
         public int _mirror;
