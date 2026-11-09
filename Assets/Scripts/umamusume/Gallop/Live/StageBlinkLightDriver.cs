@@ -192,6 +192,10 @@ namespace Gallop.Live
             public bool isLightAdd1;
             public bool isLightBlinkBlend;
             public bool hasColorPowerMultiply;
+            // Shaders with `_BlinkLightColor` but no `_ColorPower` (StageTrasparentAlphaAdditiveWave:
+            // the pool "reflection" glow under each ball, the LED/fountain additive waves). The game
+            // drives them with the same weighted colour; they used to stay black.
+            public bool isBlinkColorOnly;
             public bool wantsMpb;
 
             // 官方 RendererData 层
@@ -747,7 +751,9 @@ namespace Gallop.Live
                         isLightAdd1 = isLightAdd1,
                         isLightBlinkBlend = isLightBlinkBlend,
                         hasColorPowerMultiply = hasColorPowerMultiply,
-                        wantsMpb = (isBlinkSimple || isUvAlphaMask || isLightAdd1),
+                        isBlinkColorOnly = IsBlinkColorOnly(r, isBlinkSimple, isUvAlphaMask, isLightAdd1),
+                        wantsMpb = (isBlinkSimple || isUvAlphaMask || isLightAdd1 ||
+                                    IsBlinkColorOnly(r, isBlinkSimple, isUvAlphaMask, isLightAdd1)),
                         beamColorPower = GetBeamColorPower(r),
 
                         washLightController = wash,
@@ -977,7 +983,8 @@ namespace Gallop.Live
                     e.isLightAdd1 = isLightAdd1;
                     e.isLightBlinkBlend = isLightBlinkBlend;
                     e.hasColorPowerMultiply = hasColorPowerMultiply;
-                    e.wantsMpb = (isBlinkSimple || isUvAlphaMask || isLightAdd1);
+                    e.isBlinkColorOnly = IsBlinkColorOnly(r, isBlinkSimple, isUvAlphaMask, isLightAdd1);
+                    e.wantsMpb = (isBlinkSimple || isUvAlphaMask || isLightAdd1 || e.isBlinkColorOnly);
                     e.beamColorPower = GetBeamColorPower(r);
                     e.blendConfigured = false;
                     e.blendConfiguredMode = int.MinValue;
@@ -1039,7 +1046,7 @@ namespace Gallop.Live
                     ApplyMpbToRenderer(
                         r, currentColor, p, rt.liveTime,
                         e.isBlinkSimple, e.isUvAlphaMask, e.isLightAdd1, e.hasColorPowerMultiply,
-                        e.beamColorPower);
+                        e.beamColorPower, e.isBlinkColorOnly);
                 }
                 else
                 {
@@ -1419,6 +1426,10 @@ namespace Gallop.Live
                         _mpb.SetFloat("_ColorPower", GetAuthoredColorPower(r));
                         _mpb.SetFloat("_UseNormalCorrection", blinkSimpleUseNormalCorrection);
                     }
+                    else if (e.isBlinkColorOnly)
+                    {
+                        _mpb.SetColor("_BlinkLightColor", new Color(0f, 0f, 0f, 0f));
+                    }
 
                     r.SetPropertyBlock(_mpb);
                 }
@@ -1610,7 +1621,8 @@ namespace Gallop.Live
             bool isUvAlphaMask,
             bool isLightAdd1,
             bool hasColorPowerMultiply,
-            float beamColorPower)
+            float beamColorPower,
+            bool isBlinkColorOnly = false)
         {
             r.GetPropertyBlock(_mpb);
 
@@ -1655,31 +1667,19 @@ namespace Gallop.Live
                 _mpb.SetFloat("_ColorPower", GetAuthoredColorPower(r));
                 _mpb.SetFloat("_UseNormalCorrection", blinkSimpleUseNormalCorrection);
             }
+            else if (isBlinkColorOnly)
+            {
+                // JP probe, live 1053 @1329: the 6 pool "reflection" glows carry their container's
+                // colour (e.g. (0.318,0.161,0.260,0)) and the LED/fountain waves (0.365,0.761,1.0,0):
+                // rgb * weight, alpha 0, no other property written.
+                float weight = p * emissionBoost;
+                _mpb.SetColor("_BlinkLightColor",
+                    new Color(currentColor.r * weight, currentColor.g * weight, currentColor.b * weight, 0f));
+            }
 
             r.SetPropertyBlock(_mpb);
         }
 
-        // El juego no reescribe _ColorPowerMultiply: el shader usa el del material (10 en los
-        // glows, 4,5 en los conos, 5 en las proyecciones de suelo). Como un MaterialPropertyBlock no
-        // permite quitar una sola propiedad, se escribe ese mismo valor.
-        private static float GetAuthoredColorPowerMultiply(Renderer r)
-        {
-            Material m = r != null ? r.sharedMaterial : null;
-            return m != null && m.HasProperty("_ColorPowerMultiply") ? m.GetFloat("_ColorPowerMultiply") : 1f;
-        }
-
-        private static float GetBeamColorPower(Renderer r)
-        {
-            Material m = r != null ? r.sharedMaterial : null;
-            if (m == null || m.shader == null) return -1f;
-            if (!m.shader.name.StartsWith("Gallop/3D/Live/Stage/StageBeamLight", StringComparison.Ordinal)) return -1f;
-            return m.HasProperty("_ColorPower") ? m.GetFloat("_ColorPower") : 1f;
-        }
-
-        private void DetectType(
-            Renderer r,
-            out bool isBlinkSimple,
-            out bool isUvAlphaMask,
         // Renderers whose material has `_BlinkLightColor` but not `_ColorPower` and that no other
         // branch of the driver handles (see RendererEntry.isBlinkColorOnly).
         private static bool IsBlinkColorOnly(Renderer r, bool isBlinkSimple, bool isUvAlphaMask, bool isLightAdd1)
@@ -1703,6 +1703,27 @@ namespace Gallop.Live
             return m != null && m.HasProperty("_ColorPower") ? m.GetFloat("_ColorPower") : 1f;
         }
 
+        // El juego no reescribe _ColorPowerMultiply: el shader usa el del material (10 en los
+        // glows, 4,5 en los conos, 5 en las proyecciones de suelo). Como un MaterialPropertyBlock no
+        // permite quitar una sola propiedad, se escribe ese mismo valor.
+        private static float GetAuthoredColorPowerMultiply(Renderer r)
+        {
+            Material m = r != null ? r.sharedMaterial : null;
+            return m != null && m.HasProperty("_ColorPowerMultiply") ? m.GetFloat("_ColorPowerMultiply") : 1f;
+        }
+
+        private static float GetBeamColorPower(Renderer r)
+        {
+            Material m = r != null ? r.sharedMaterial : null;
+            if (m == null || m.shader == null) return -1f;
+            if (!m.shader.name.StartsWith("Gallop/3D/Live/Stage/StageBeamLight", StringComparison.Ordinal)) return -1f;
+            return m.HasProperty("_ColorPower") ? m.GetFloat("_ColorPower") : 1f;
+        }
+
+        private void DetectType(
+            Renderer r,
+            out bool isBlinkSimple,
+            out bool isUvAlphaMask,
             out bool isLightAdd1,
             out bool hasColorPowerMultiply,
             out bool isLightBlinkBlend)
