@@ -1412,8 +1412,11 @@ namespace Gallop.Live
                     }
                     else if (e.isBlinkSimple)
                     {
-                        _mpb.SetColor("_BlinkLightColor", Color.black);
-                        _mpb.SetFloat("_ColorPower", 0f);
+                        // Game convention (JP probe, live 1053): the weight lives inside the colour
+                        // (rgb * weight, alpha 0) and `_ColorPower` keeps the material's authored
+                        // value (1.0): "off" is therefore a zero colour, not a zero power.
+                        _mpb.SetColor("_BlinkLightColor", new Color(0f, 0f, 0f, 0f));
+                        _mpb.SetFloat("_ColorPower", GetAuthoredColorPower(r));
                         _mpb.SetFloat("_UseNormalCorrection", blinkSimpleUseNormalCorrection);
                     }
 
@@ -1639,8 +1642,17 @@ namespace Gallop.Live
             }
             else if (isBlinkSimple)
             {
-                _mpb.SetColor("_BlinkLightColor", currentColor);
-                _mpb.SetFloat("_ColorPower", p * emissionBoost);
+                // Game convention (BlinkLightController.Update, verified with the JP probe on live
+                // 1053 @1330: all 206 LightBlinkSimple materials show `_ColorPower` = 1.0 and
+                // `_BlinkLightColor` = rgb * weight with alpha 0): the weight is folded into the
+                // colour and `_ColorPower` is never rewritten, so it keeps its authored value.
+                // The flare controller reads this same `_ColorPower` (x2) on top of the weighted
+                // colour; writing the weight here too applied it twice (p^2) and made the flares
+                // too dim and size-inconsistent.
+                float weight = p * emissionBoost;
+                _mpb.SetColor("_BlinkLightColor",
+                    new Color(currentColor.r * weight, currentColor.g * weight, currentColor.b * weight, 0f));
+                _mpb.SetFloat("_ColorPower", GetAuthoredColorPower(r));
                 _mpb.SetFloat("_UseNormalCorrection", blinkSimpleUseNormalCorrection);
             }
 
@@ -1668,6 +1680,29 @@ namespace Gallop.Live
             Renderer r,
             out bool isBlinkSimple,
             out bool isUvAlphaMask,
+        // Renderers whose material has `_BlinkLightColor` but not `_ColorPower` and that no other
+        // branch of the driver handles (see RendererEntry.isBlinkColorOnly).
+        private static bool IsBlinkColorOnly(Renderer r, bool isBlinkSimple, bool isUvAlphaMask, bool isLightAdd1)
+        {
+            if (isBlinkSimple || isUvAlphaMask || isLightAdd1) return false;
+            var mats = r != null ? r.sharedMaterials : null;
+            if (mats == null) return false;
+            for (int i = 0; i < mats.Length; i++)
+            {
+                var m = mats[i];
+                if (m != null && m.HasProperty("_BlinkLightColor") && !m.HasProperty("_ColorPower")) return true;
+            }
+            return false;
+        }
+
+        // The material's own `_ColorPower` (1.0 on LightBlinkSimple). A MaterialPropertyBlock cannot
+        // drop a single property, so the authored value is written back instead.
+        private static float GetAuthoredColorPower(Renderer r)
+        {
+            Material m = r != null ? r.sharedMaterial : null;
+            return m != null && m.HasProperty("_ColorPower") ? m.GetFloat("_ColorPower") : 1f;
+        }
+
             out bool isLightAdd1,
             out bool hasColorPowerMultiply,
             out bool isLightBlinkBlend)
