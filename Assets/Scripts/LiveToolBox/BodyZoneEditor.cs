@@ -28,6 +28,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 using System.Collections.Generic;
+using System.IO;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
@@ -55,8 +56,17 @@ public class BodyZoneEditor : MonoBehaviour
     [Tooltip("Parte de la malla a editar: -1 = todas, si no el índice de parte (material).")]
     public int paintPart = -1;
 
-    [Tooltip("Las telas alpha (materiales *_Alpha*) no tapan: se puede marcar lo que hay detrás.")]
-    public bool alphaDoesNotOcclude = true;
+    [Tooltip("Si se activa, las telas alpha (materiales *_Alpha*) se atraviesan y se puede marcar lo que hay detrás. Apagado = lo que se ve es lo que se marca.")]
+    public bool alphaDoesNotOcclude = false;
+
+    [Tooltip("Alt+clic: una pieza conectada de hasta este nº de caras se toma entera; si es mayor (p. ej. un vestido fundido en una malla) se toma la isla UV.")]
+    [Range(200, 8000)] public int autoPieceMax = 1600;
+
+    [Tooltip("Alt+Mayús+clic: solape mínimo de altura entre caras vecinas para ser la misma capa (fila).")]
+    [Range(0.2f, 0.8f)] public float rowOverlap = 0.5f;
+
+    [Tooltip("Al seleccionar, incluir también la capa gemela (copia por detrás de la tela de doble cara o capa Alpha duplicada).")]
+    public bool selectTwins = true;
 
     [Header("Vista (solo modo Vértices)")]
     [Range(0.03f, 1.00f)] public float sampleRatio = 0.15f;
@@ -77,9 +87,95 @@ public class BodyZoneEditor : MonoBehaviour
     // recortada, la base siga siendo la original y "Restaurar" funcione.
     static readonly Dictionary<string, Mesh> _pristine = new Dictionary<string, Mesh>();
 
-    SkinnedMeshRenderer _sm;
-    Mesh _baseMesh;
+    // The "body" is several renderers: M_Body plus its M_Body_Alpha* cloth layers
+    // (skirt, frills...). All of them share one face/vertex index space so picking
+    // and occlusion work across them.
+    class BodyTarget
+    {
+        public SkinnedMeshRenderer sm;
+        public Mesh baseMesh;
+        public Vector3[] verts;
+        public Vector2[] uvs;
+        public BoneWeight[] weights;
+        public Matrix4x4[] bind;
+        public int vertOffset, subOffset, subCount, faceOffset, faceCount;
+        public bool live = true;
+        public bool wasEnabled = true;
+    }
+
+    SkinnedMeshRenderer _sm;                     // primary renderer (M_Body)
+    readonly List<BodyTarget> _targets = new List<BodyTarget>();
     int _baseTriCount;
+    int _vertCount;
+    int[] _faceTarget;               // target of each face
+    int[] _vertTarget;               // target of each vertex
+    int[] _weld;                     // vertices at the same position (UV/normal seams) share one id
+    int[] _uvWeld;                   // vertices at the same position AND uv share one id
+    int[] _uvParent;                 // union-find over _uvWeld ids (UV islands)
+    int[] _faceUvIsland;             // UV island (piece unwrapped as one chart in the atlas) of each face
+    int[] _facePiece;                // edge-connected piece of each face
+    int[] _pieceSize;                // faces per piece
+    Dictionary<int, int> _uvIslandSize = new Dictionary<int, int>();
+    float[] _faceY0, _faceY1;        // bind-pose height range of each face
+    int[][] _faceTwins;              // coincident faces (back-face copy / duplicate alpha layer)
+    const float TwinDistance = 0.0015f;   // metres; the inner shell was measured at 0.4 mm
+
+    // ── saved presets (per character + outfit) ──────────────────────────────
+    [System.Serializable]
+    public class PresetTargetCut
+    {
+        public string target;                         // renderer name (M_Body, M_Body_Alpha0...)
+        public int faceCount;                         // validation: faces of that renderer
+        public List<int> ranges = new List<int>();    // inclusive [start, end] pairs of removed local faces
+    }
+
+    [System.Serializable]
+    public class ZonePreset
+    {
+        public string name;
+        public string saved;
+        public List<PresetTargetCut> targets = new List<PresetTargetCut>();
+    }
+
+    [System.Serializable]
+    public class ZonePresetFile
+    {
+        public int version = 1;
+        public string key;
+        public List<ZonePreset> presets = new List<ZonePreset>();
+    }
+
+    const string DefaultPresetName = "default";
+    ZonePresetFile _presetFile = new ZonePresetFile();
+    string _presetKey = "";
+    string _currentPreset = DefaultPresetName;
+    bool _presetDirty;
+    bool _presetListOpen;
+    string _presetName = "";
+    Vector2 _presetScroll;
+    Vector2 _panelScroll;
+    bool _typing;                    // a text field of the panel has keyboard focus
+    bool _hideApplied;
+
+    // Body / cloth classification. The game has no per-vertex "cloth" tag: cloth that
+    // moves is skinned to CySpring bones. A vertex is cloth when enough of its skin
+    // weight sits on spring bones; every vertex of an *_Alpha* layer is cloth too.
+    [Header("Cuerpo / ropa")]
+    [Tooltip("No se puede seleccionar nada que no sea ropa (ropa = pesos en huesos con física o capas alpha).")]
+    public bool lockBody = false;
+    [Tooltip("Peso mínimo en huesos con física para que un vértice cuente como ropa.")]
+    [Range(0.1f, 1f)] public float clothWeight = 0.5f;
+
+    bool[] _vertCloth;
+    bool[] _faceCloth;
+    int _clothFaces, _bodyFaces, _springBoneCount;
+
+    // TEMPFILE-INI1  Temporary check of the body/cloth classification: hides one of the
+    // two groups so the user can see whether they are identified correctly. Remove once
+    // the classification is validated.
+    bool[] _previewHide;
+    int _previewMode;   // 0 = all, 1 = only cloth, 2 = only body
+    // TEMPFILE-FIN2
 
     int[] _faces;                    // triángulos de TODOS los submeshes (3 índices por cara)
     int[] _faceSub;                  // submesh (material) de cada cara
@@ -139,9 +235,20 @@ public class BodyZoneEditor : MonoBehaviour
     bool _dirty = true;
 
     // ── UI ───────────────────────────────────────────────────────────────────
-    Rect _panelRect = new Rect(238f, 60f, 350f, 380f);
+    const float PanelWidth = 350f;
+    const float PanelHeight = 790f;
+    const float TitleHeight = 26f;
+
+    Rect _panelRect = new Rect(238f, 60f, PanelWidth, PanelHeight);
     bool _overPanel;
+    bool _draggingPanel;
+    Vector2 _dragOffset;
     string _status = "";
+
+    // Invisible uGUI blocker that follows the IMGUI panel so the viewer's own
+    // uGUI buttons behind it do not receive hover/clicks/scroll.
+    GameObject _blockerGo;
+    RectTransform _blockerRt;
 
     // ═════════════════════════════════════════════════════════════════════════
     void Awake()
@@ -155,6 +262,7 @@ public class BodyZoneEditor : MonoBehaviour
 
         if (_pointsGo != null) Destroy(_pointsGo);
         if (_facesGo != null) Destroy(_facesGo);
+        if (_blockerGo != null) Destroy(_blockerGo);
         if (_mat != null) Destroy(_mat);
         if (_pointsMesh != null) Destroy(_pointsMesh);
         if (_facesMesh != null) Destroy(_facesMesh);
@@ -162,63 +270,57 @@ public class BodyZoneEditor : MonoBehaviour
 
     public void Initialize()
     {
-        if (_sm == null)
-        {
-            Transform t = transform.Find(bodyChildName);
-            if (t != null) _sm = t.GetComponent<SkinnedMeshRenderer>();
+        if (_targets.Count == 0) FindTargets();
 
-            if (_sm == null)
-            {
-                SkinnedMeshRenderer[] all = GetComponentsInChildren<SkinnedMeshRenderer>(true);
-                for (int i = 0; i < all.Length; i++)
-                {
-                    if (all[i].sharedMesh != null && all[i].sharedMesh.name == bodyChildName)
-                    {
-                        _sm = all[i];
-                        break;
-                    }
-                }
-            }
-        }
-
-        if (_sm == null || _sm.sharedMesh == null)
+        if (_sm == null || _targets.Count == 0)
         {
             Debug.LogWarning("[BodyZoneEditor] No encuentro la malla " + bodyChildName + " en " + name);
             enabled = false;
             return;
         }
 
-        Mesh current = _sm.sharedMesh;
-        string key = BodyKey();
-        Mesh cached;
-        if (_pristine.TryGetValue(key, out cached) && cached != null)
+        _baseTriCount = 0;
+        for (int i = 0; i < _targets.Count; i++)
         {
-            _baseMesh = cached;
-            if (current != cached) Debug.Log("[BodyZoneEditor] Malla actual recortada (" + current.name +
-                                             "); uso la base prístina cacheada de " + key + ".");
-        }
-        else
-        {
-            _baseMesh = current;
-            _pristine[key] = current;
-        }
+            BodyTarget t = _targets[i];
+            Mesh current = t.sm.sharedMesh;
+            string key = BodyKey() + "/" + t.sm.name;
+            Mesh cached;
+            if (_pristine.TryGetValue(key, out cached) && cached != null)
+            {
+                t.baseMesh = cached;
+                if (current != cached) Debug.Log("[BodyZoneEditor] Malla actual recortada (" + current.name +
+                                                 "); uso la base prístina cacheada de " + key + ".");
+            }
+            else
+            {
+                t.baseMesh = current;
+                _pristine[key] = current;
+            }
 
-        _baseTriCount = CountTriangles(_baseMesh);
+            t.verts = t.baseMesh.vertices;
+            t.weights = t.baseMesh.boneWeights;
+            t.bind = t.baseMesh.bindposes;
+            t.uvs = t.baseMesh.uv;
+            if (t.uvs == null || t.uvs.Length != t.verts.Length) t.uvs = new Vector2[t.verts.Length];
+            _baseTriCount += CountTriangles(t.baseMesh);
 
-        Debug.Log("[BodyZoneEditor] Base: " + _baseTriCount + " caras / " + _baseMesh.vertexCount +
-                  " vértices (mesh '" + _baseMesh.name + "', id " + _baseMesh.GetInstanceID() + ")");
+            Debug.Log("[BodyZoneEditor] Base " + t.sm.name + ": " + CountTriangles(t.baseMesh) + " caras / " +
+                      t.baseMesh.vertexCount + " vértices (mesh '" + t.baseMesh.name + "')");
 
-        if (_baseMesh.name.EndsWith("_cut"))
-        {
-            Debug.LogError("[BodyZoneEditor] La malla base ya es un corte (" + _baseMesh.name +
-                           "). Restaura o recarga el personaje antes de usar la herramienta.");
+            if (t.baseMesh.name.EndsWith("_cut"))
+            {
+                Debug.LogError("[BodyZoneEditor] La malla base ya es un corte (" + t.baseMesh.name +
+                               "). Restaura o recarga el personaje antes de usar la herramienta.");
+            }
         }
 
         BuildTopology();
+        BuildUnits();
         BuildAtlasColors();
         BuildSamples();
 
-        int n = _baseMesh.vertexCount;
+        int n = _vertCount;
         _selectedFaces = new bool[_faceCount];
         _selectedVerts = new bool[n];
         _cutFaces = new bool[_faceCount];
@@ -235,13 +337,189 @@ public class BodyZoneEditor : MonoBehaviour
 
         _status = "Base: " + _baseTriCount + " caras / " + n + " vértices";
 
-        int subs = _baseMesh.subMeshCount;
+        int subs = _subGroup.Length;
         string partList = "[BodyZoneEditor] Partes (" + _partNames.Count + " de " + subs + " submeshes):";
         for (int p = 0; p < _partNames.Count; p++)
             partList += " " + p + "=" + _partNames[p] + (_partIsAlpha[p] ? "(alpha)" : "") + ";";
 
+        _presetKey = PresetKey();
+        LoadPresetFile();
+
         Debug.Log("[BodyZoneEditor] " + _status + " · islas: " + IslandCount +
-                  " · islas de cara: " + FaceIslandCount + " · " + partList);
+                  " · islas de cara: " + FaceIslandCount + " · islas UV: " + UvIslandCount +
+                  " · preset key: " + _presetKey + " · " + partList);
+    }
+
+    /// <summary>Collects M_Body and its M_Body_* layers (alpha cloth) as editable targets.</summary>
+    void FindTargets()
+    {
+        _targets.Clear();
+        _sm = null;
+
+        SkinnedMeshRenderer[] all = GetComponentsInChildren<SkinnedMeshRenderer>(true);
+
+        // primary first
+        for (int i = 0; i < all.Length; i++)
+        {
+            SkinnedMeshRenderer sm = all[i];
+            if (sm.sharedMesh == null) continue;
+            if (sm.name != bodyChildName && sm.sharedMesh.name != bodyChildName) continue;
+
+            _sm = sm;
+            _targets.Add(new BodyTarget { sm = sm });
+            break;
+        }
+
+        if (_sm == null) return;
+
+        for (int i = 0; i < all.Length; i++)
+        {
+            SkinnedMeshRenderer sm = all[i];
+            if (sm == _sm || sm.sharedMesh == null) continue;
+            if (!sm.name.StartsWith(bodyChildName + "_")) continue;
+
+            _targets.Add(new BodyTarget { sm = sm });
+        }
+    }
+
+    /// <summary>Which renderers are really on screen (viewer toggles materials/layers).</summary>
+    void RefreshLive()
+    {
+        for (int i = 0; i < _targets.Count; i++)
+        {
+            BodyTarget t = _targets[i];
+            t.live = t.sm != null && t.sm.gameObject.activeInHierarchy && (t.sm.enabled || _hideApplied);
+        }
+    }
+
+    bool FaceLive(int f)
+    {
+        if (_previewHide != null && _previewHide[f]) return false;   // TEMPFILE-INI1/FIN2 preview
+        return _targets[_faceTarget[f]].live;
+    }
+
+    bool FaceLocked(int f)
+    {
+        return lockBody && _faceCloth != null && !_faceCloth[f];
+    }
+
+    /// <summary>Classifies every vertex/face as cloth or body (see the field comment).</summary>
+    void BuildClothClassification()
+    {
+        HashSet<Transform> spring = new HashSet<Transform>();
+        Gallop.CySpringController ctrl = GetComponentInChildren<Gallop.CySpringController>(true);
+        if (ctrl != null)
+        {
+            foreach (Gallop.CySpringBoneBase b in ctrl.FindAllCySpringBones())
+                if (b != null && b.Transform != null) spring.Add(b.Transform);
+        }
+        _springBoneCount = spring.Count;
+
+        _vertCloth = new bool[_vertCount];
+        _faceCloth = new bool[_faceCount];
+
+        for (int ti = 0; ti < _targets.Count; ti++)
+        {
+            BodyTarget t = _targets[ti];
+            bool alphaLayer = t.sm.name.IndexOf("Alpha", System.StringComparison.OrdinalIgnoreCase) >= 0;
+
+            Transform[] bones = t.sm.bones;
+            bool[] isSpring = new bool[bones.Length];
+            for (int b = 0; b < bones.Length; b++) isSpring[b] = bones[b] != null && spring.Contains(bones[b]);
+
+            for (int i = 0; i < t.verts.Length; i++)
+            {
+                bool cloth = alphaLayer;
+                if (!cloth && i < t.weights.Length)
+                {
+                    BoneWeight w = t.weights[i];
+                    float sum = 0f;
+                    if (w.boneIndex0 < isSpring.Length && isSpring[w.boneIndex0]) sum += w.weight0;
+                    if (w.boneIndex1 < isSpring.Length && isSpring[w.boneIndex1]) sum += w.weight1;
+                    if (w.boneIndex2 < isSpring.Length && isSpring[w.boneIndex2]) sum += w.weight2;
+                    if (w.boneIndex3 < isSpring.Length && isSpring[w.boneIndex3]) sum += w.weight3;
+                    cloth = sum >= clothWeight;
+                }
+                _vertCloth[t.vertOffset + i] = cloth;
+            }
+        }
+
+        _clothFaces = 0;
+        _bodyFaces = 0;
+        for (int f = 0; f < _faceCount; f++)
+        {
+            int c = 0;
+            for (int k = 0; k < 3; k++) if (_vertCloth[_faces[f * 3 + k]]) c++;
+
+            bool cloth = c >= 2 || _partIsAlpha[_subGroup[_faceSub[f]]];
+            _faceCloth[f] = cloth;
+            if (cloth) _clothFaces++; else _bodyFaces++;
+        }
+
+        Debug.Log("[BodyZoneEditor] Clasificación: ropa " + _clothFaces + " caras · cuerpo " + _bodyFaces +
+                  " caras · huesos con física: " + _springBoneCount);
+    }
+
+    // TEMPFILE-INI1  Preview buttons (see _previewHide)
+    void SetPreview(int mode)
+    {
+        _previewMode = mode;
+
+        if (mode == 0 || _faceCloth == null)
+        {
+            _previewHide = null;
+            _previewMode = 0;
+        }
+        else
+        {
+            _previewHide = new bool[_faceCount];
+            for (int f = 0; f < _faceCount; f++)
+                _previewHide[f] = mode == 1 ? !_faceCloth[f] : _faceCloth[f];
+        }
+
+        _selectedFaces = new bool[_faceCount];
+        _selectedVerts = new bool[_vertCount];
+        RebuildMeshes();
+        _dirty = true;
+    }
+    // TEMPFILE-FIN2
+
+    bool VertLive(int v)
+    {
+        return _targets[_vertTarget[v]].live;
+    }
+
+    /// <summary>
+    /// True for faces of alpha cloth that must be ignored (seen through) because
+    /// "alpha no tapan" is on. The alpha part being edited never passes through.
+    /// </summary>
+    bool IsAlphaPassThrough(int f)
+    {
+        if (!alphaDoesNotOcclude) return false;
+        int g = _subGroup[_faceSub[f]];
+        return _partIsAlpha[g] && g != paintPart;
+    }
+
+    void ApplyHide()
+    {
+        if (hideBody == _hideApplied) return;
+        _hideApplied = hideBody;
+
+        for (int i = 0; i < _targets.Count; i++)
+        {
+            BodyTarget t = _targets[i];
+            if (t.sm == null) continue;
+
+            if (hideBody)
+            {
+                t.wasEnabled = t.sm.enabled;
+                t.sm.enabled = false;
+            }
+            else
+            {
+                t.sm.enabled = t.wasEnabled;
+            }
+        }
     }
 
     public int BaseTriangleCount { get { return _baseTriCount; } }
@@ -265,20 +543,51 @@ public class BodyZoneEditor : MonoBehaviour
     }
 
     /// <summary>Asigna malla al renderer destruyendo la copia anterior (evita fugas).</summary>
-    void SetMesh(Mesh mesh)
+    void SetMesh(BodyTarget t, Mesh mesh)
     {
-        if (_sm == null) return;
+        if (t == null || t.sm == null) return;
 
-        Mesh previous = _sm.sharedMesh;
-        _sm.sharedMesh = mesh;
+        Mesh previous = t.sm.sharedMesh;
+        t.sm.sharedMesh = mesh;
 
-        if (previous != null && previous != mesh && previous != _baseMesh)
+        if (previous != null && previous != mesh && previous != t.baseMesh)
             Destroy(previous);
+    }
+
+    /// <summary>Rebuilds every target mesh from the current cut mask.</summary>
+    void RebuildMeshes()
+    {
+        // real cuts + (temporary) preview hiding
+        bool[] mask = _cutFaces;
+        if (_previewHide != null)   // TEMPFILE-INI1/FIN2
+        {
+            mask = new bool[_faceCount];
+            for (int f = 0; f < _faceCount; f++) mask[f] = _cutFaces[f] || _previewHide[f];
+        }
+
+        for (int i = 0; i < _targets.Count; i++)
+        {
+            BodyTarget t = _targets[i];
+
+            bool any = false;
+            for (int f = t.faceOffset; f < t.faceOffset + t.faceCount; f++)
+            {
+                if (mask[f]) { any = true; break; }
+            }
+
+            SetMesh(t, any ? BuildCutMesh(t, mask) : t.baseMesh);
+        }
     }
 
     public int CurrentTriangleCount
     {
-        get { return _sm != null && _sm.sharedMesh != null ? CountTriangles(_sm.sharedMesh) : 0; }
+        get
+        {
+            int total = 0;
+            for (int i = 0; i < _targets.Count; i++)
+                if (_targets[i].sm != null) total += CountTriangles(_targets[i].sm.sharedMesh);
+            return total;
+        }
     }
 
     static int CountTriangles(Mesh mesh)
@@ -302,6 +611,16 @@ public class BodyZoneEditor : MonoBehaviour
         }
     }
 
+    int UvIslandCount
+    {
+        get
+        {
+            HashSet<int> ids = new HashSet<int>();
+            for (int i = 0; i < _faceUvIsland.Length; i++) ids.Add(_faceUvIsland[i]);
+            return ids.Count;
+        }
+    }
+
     int FaceIslandCount
     {
         get
@@ -315,79 +634,182 @@ public class BodyZoneEditor : MonoBehaviour
     // ── topología ────────────────────────────────────────────────────────────
     void BuildTopology()
     {
-        int n = _baseMesh.vertexCount;
+        // global index space over all targets
+        int totalSubs = 0;
+        _vertCount = 0;
+        for (int ti = 0; ti < _targets.Count; ti++)
+        {
+            BodyTarget t = _targets[ti];
+            t.vertOffset = _vertCount;
+            t.subOffset = totalSubs;
+            t.subCount = t.baseMesh.subMeshCount;
+            _vertCount += t.baseMesh.vertexCount;
+            totalSubs += t.subCount;
+        }
+
+        int n = _vertCount;
         _island = new int[n];
         _neighbors = new List<int>[n];
+        _weld = new int[n];
+        _vertTarget = new int[n];
         for (int i = 0; i < n; i++)
         {
             _island[i] = i;
             _neighbors[i] = new List<int>(4);
         }
 
-        int subCount = _baseMesh.subMeshCount;
-        _subGroup = new int[subCount];
+        // Weld vertices that sit at the same position (UV / hard-normal seams duplicate
+        // them). Without this a "piece" is split along every seam.
+        Dictionary<Vector3Int, int> weldMap = new Dictionary<Vector3Int, int>();
+        for (int ti = 0; ti < _targets.Count; ti++)
+        {
+            BodyTarget t = _targets[ti];
+            weldMap.Clear();
+
+            for (int i = 0; i < t.verts.Length; i++)
+            {
+                Vector3 p = t.verts[i];
+                Vector3Int key = new Vector3Int(
+                    Mathf.RoundToInt(p.x * 10000f),
+                    Mathf.RoundToInt(p.y * 10000f),
+                    Mathf.RoundToInt(p.z * 10000f));
+
+                int g = t.vertOffset + i;
+                int w;
+                if (!weldMap.TryGetValue(key, out w))
+                {
+                    w = g;
+                    weldMap[key] = w;
+                }
+
+                _weld[g] = w;
+                _vertTarget[g] = ti;
+            }
+        }
+
+        // Same weld but ALSO by UV: vertices that share position and UV belong to the same
+        // chart of the texture atlas. Connecting faces through these gives UV islands,
+        // which is how the artist unwrapped each layer / piece of cloth.
+        _uvWeld = new int[n];
+        _uvParent = new int[n];
+        Dictionary<(int, int, int, int, int), int> uvWeldMap = new Dictionary<(int, int, int, int, int), int>();
+        for (int ti = 0; ti < _targets.Count; ti++)
+        {
+            BodyTarget t = _targets[ti];
+            uvWeldMap.Clear();
+
+            for (int i = 0; i < t.verts.Length; i++)
+            {
+                Vector3 p = t.verts[i];
+                Vector2 uv = t.uvs[i];
+                var key = (Mathf.RoundToInt(p.x * 10000f), Mathf.RoundToInt(p.y * 10000f),
+                           Mathf.RoundToInt(p.z * 10000f), Mathf.RoundToInt(uv.x * 10000f),
+                           Mathf.RoundToInt(uv.y * 10000f));
+
+                int g = t.vertOffset + i;
+                int w;
+                if (!uvWeldMap.TryGetValue(key, out w))
+                {
+                    w = g;
+                    uvWeldMap[key] = w;
+                }
+
+                _uvWeld[g] = w;
+            }
+        }
+        for (int i = 0; i < n; i++) _uvParent[i] = i;
+
+        _subGroup = new int[totalSubs];
         _partNames.Clear();
         _partIsAlpha.Clear();
-
-        List<int[]> subTris = new List<int[]>(subCount);
-        for (int s = 0; s < subCount; s++) subTris.Add(_baseMesh.GetTriangles(s));
-
-        // agrupa submeshes con los mismos triángulos (doble cara del mismo material)
-        for (int s = 0; s < subCount; s++)
-        {
-            int group = -1;
-            for (int prev = 0; prev < s; prev++)
-            {
-                if (!SameTriangles(subTris[s], subTris[prev])) continue;
-                group = _subGroup[prev];
-                break;
-            }
-
-            if (group < 0)
-            {
-                group = _partNames.Count;
-
-                Material m = _sm.sharedMaterials != null && s < _sm.sharedMaterials.Length ? _sm.sharedMaterials[s] : null;
-                string mn = m != null ? m.name : ("Parte " + s);
-
-                _partNames.Add(mn);
-                _partIsAlpha.Add(mn.IndexOf("Alpha", System.StringComparison.OrdinalIgnoreCase) >= 0);
-            }
-
-            _subGroup[s] = group;
-        }
 
         List<int> faceIdx = new List<int>(16384);
         List<int> faceSub = new List<int>(16384);
         List<int> faceTri = new List<int>(16384);
+        List<int> faceTarget = new List<int>(16384);
 
-        for (int s = 0; s < subCount; s++)
+        for (int ti = 0; ti < _targets.Count; ti++)
         {
-            int[] tris = subTris[s];
-            for (int t = 0; t < tris.Length; t += 3)
+            BodyTarget bt = _targets[ti];
+            int subCount = bt.subCount;
+
+            List<int[]> subTris = new List<int[]>(subCount);
+            for (int s = 0; s < subCount; s++) subTris.Add(bt.baseMesh.GetTriangles(s));
+
+            Material[] mats = bt.sm.sharedMaterials;
+
+            // agrupa submeshes con los mismos triángulos (doble cara del mismo material)
+            for (int s = 0; s < subCount; s++)
             {
-                int a = tris[t], b = tris[t + 1], c = tris[t + 2];
+                int group = -1;
+                for (int prev = 0; prev < s; prev++)
+                {
+                    if (!SameTriangles(subTris[s], subTris[prev])) continue;
+                    group = _subGroup[bt.subOffset + prev];
+                    break;
+                }
 
-                faceIdx.Add(a); faceIdx.Add(b); faceIdx.Add(c);
-                faceSub.Add(s);
-                faceTri.Add(t / 3);
+                if (group < 0)
+                {
+                    group = _partNames.Count;
 
-                Link(a, b); Link(b, c); Link(c, a);
-                Union(a, b);
+                    Material m = mats != null && s < mats.Length ? mats[s] : null;
+                    string mn = m != null ? m.name : (bt.sm.name + " #" + s);
+
+                    _partNames.Add(mn);
+                    _partIsAlpha.Add(mn.IndexOf("Alpha", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                     bt.sm.name.IndexOf("Alpha", System.StringComparison.OrdinalIgnoreCase) >= 0);
+                }
+
+                _subGroup[bt.subOffset + s] = group;
             }
+
+            bt.faceOffset = faceSub.Count;
+
+            for (int s = 0; s < subCount; s++)
+            {
+                int[] tris = subTris[s];
+                for (int t = 0; t < tris.Length; t += 3)
+                {
+                    int a = tris[t] + bt.vertOffset;
+                    int b = tris[t + 1] + bt.vertOffset;
+                    int c = tris[t + 2] + bt.vertOffset;
+
+                    faceIdx.Add(a); faceIdx.Add(b); faceIdx.Add(c);
+                    faceSub.Add(bt.subOffset + s);
+                    faceTri.Add(t / 3);
+                    faceTarget.Add(ti);
+
+                    Link(a, b); Link(b, c); Link(c, a);
+
+                    // all three corners belong to the same piece (the old code only joined a-b,
+                    // leaving lone corners as one-vertex islands)
+                    Union(_weld[a], _weld[b]);
+                    Union(_weld[b], _weld[c]);
+
+                    UnionUv(_uvWeld[a], _uvWeld[b]);
+                    UnionUv(_uvWeld[b], _uvWeld[c]);
+                }
+            }
+
+            bt.faceCount = faceSub.Count - bt.faceOffset;
         }
 
         _faces = faceIdx.ToArray();
         _faceSub = faceSub.ToArray();
         _faceTri = faceTri.ToArray();
+        _faceTarget = faceTarget.ToArray();
         _faceCount = _faceSub.Length;
+
+        _faceUvIsland = new int[_faceCount];
+        for (int f = 0; f < _faceCount; f++) _faceUvIsland[f] = FindUv(_uvWeld[_faces[f * 3]]);
 
         // compactar ids de isla de vértice
         Dictionary<int, int> map = new Dictionary<int, int>();
         int next = 0;
         for (int v = 0; v < n; v++)
         {
-            int root = Find(v);
+            int root = Find(_weld[v]);
             int id;
             if (!map.TryGetValue(root, out id))
             {
@@ -397,12 +819,13 @@ public class BodyZoneEditor : MonoBehaviour
             _island[v] = id;
         }
 
-        // isla por cara + adyacencia cara-cara dentro del mismo material
+        // isla por cara + adyacencia cara-cara (por aristas soldadas) dentro del mismo material
         _faceIsland = new int[_faceCount];
         _faceNeighbors = new List<int>[_faceCount];
 
-        List<Dictionary<long, int>> edgeMaps = new List<Dictionary<long, int>>(subCount);
-        for (int s = 0; s < subCount; s++) edgeMaps.Add(new Dictionary<long, int>(4096));
+        int groupCount = _partNames.Count;
+        List<Dictionary<long, int>> edgeMaps = new List<Dictionary<long, int>>(groupCount);
+        for (int g = 0; g < groupCount; g++) edgeMaps.Add(new Dictionary<long, int>(4096));
 
         for (int f = 0; f < _faceCount; f++)
         {
@@ -412,12 +835,13 @@ public class BodyZoneEditor : MonoBehaviour
 
         for (int f = 0; f < _faceCount; f++)
         {
-            Dictionary<long, int> edgeFace = edgeMaps[_faceSub[f]];
+            Dictionary<long, int> edgeFace = edgeMaps[_subGroup[_faceSub[f]]];
 
             for (int k = 0; k < 3; k++)
             {
-                int a = _faces[f * 3 + k];
-                int b = _faces[f * 3 + (k + 1) % 3];
+                int a = _weld[_faces[f * 3 + k]];
+                int b = _weld[_faces[f * 3 + (k + 1) % 3]];
+                if (a == b) continue;
                 long key = EdgeKey(a, b);
 
                 int other;
@@ -467,6 +891,22 @@ public class BodyZoneEditor : MonoBehaviour
         if (ra != rb) _island[ra] = rb;
     }
 
+    int FindUv(int x)
+    {
+        while (_uvParent[x] != x)
+        {
+            _uvParent[x] = _uvParent[_uvParent[x]];
+            x = _uvParent[x];
+        }
+        return x;
+    }
+
+    void UnionUv(int a, int b)
+    {
+        int ra = FindUv(a), rb = FindUv(b);
+        if (ra != rb) _uvParent[ra] = rb;
+    }
+
     void Link(int a, int b)
     {
         if (!_neighbors[a].Contains(b)) _neighbors[a].Add(b);
@@ -476,36 +916,36 @@ public class BodyZoneEditor : MonoBehaviour
     // ── color del atlas por vértice (solo modo Vértices) ─────────────────────
     void BuildAtlasColors()
     {
-        int n = _baseMesh.vertexCount;
-        _vertColor = new Color[n];
-        Vector2[] uvs = _baseMesh.uv;
-
-        Texture2D tex = null;
-        if (_sm.sharedMaterials != null && _sm.sharedMaterials.Length > 0 && _sm.sharedMaterials[0] != null)
-            tex = _sm.sharedMaterials[0].mainTexture as Texture2D;
-
+        _vertColor = new Color[_vertCount];
         Color fallback = new Color(0.75f, 0.75f, 0.8f, 1f);
-        if (tex == null || uvs == null || uvs.Length < n)
-        {
-            for (int i = 0; i < n; i++) _vertColor[i] = fallback;
-            return;
-        }
 
-        Color[] px = ReadTexturePixels(tex);
-        if (px == null)
+        for (int ti = 0; ti < _targets.Count; ti++)
         {
-            for (int i = 0; i < n; i++) _vertColor[i] = fallback;
-            return;
-        }
+            BodyTarget bt = _targets[ti];
+            int n = bt.baseMesh.vertexCount;
+            Vector2[] uvs = bt.baseMesh.uv;
 
-        int w = tex.width, h = tex.height;
-        for (int i = 0; i < n; i++)
-        {
-            int x = Mathf.Clamp(Mathf.RoundToInt(uvs[i].x * (w - 1)), 0, w - 1);
-            int y = Mathf.Clamp(Mathf.RoundToInt(uvs[i].y * (h - 1)), 0, h - 1);
-            Color c = px[y * w + x];
-            c.a = 1f;
-            _vertColor[i] = c;
+            Texture2D tex = null;
+            Material[] mats = bt.sm.sharedMaterials;
+            if (mats != null && mats.Length > 0 && mats[0] != null)
+                tex = mats[0].mainTexture as Texture2D;
+
+            Color[] px = (tex == null || uvs == null || uvs.Length < n) ? null : ReadTexturePixels(tex);
+            if (px == null)
+            {
+                for (int i = 0; i < n; i++) _vertColor[bt.vertOffset + i] = fallback;
+                continue;
+            }
+
+            int w = tex.width, h = tex.height;
+            for (int i = 0; i < n; i++)
+            {
+                int x = Mathf.Clamp(Mathf.RoundToInt(uvs[i].x * (w - 1)), 0, w - 1);
+                int y = Mathf.Clamp(Mathf.RoundToInt(uvs[i].y * (h - 1)), 0, h - 1);
+                Color c = px[y * w + x];
+                c.a = 1f;
+                _vertColor[bt.vertOffset + i] = c;
+            }
         }
     }
 
@@ -592,44 +1032,50 @@ public class BodyZoneEditor : MonoBehaviour
 
     void SkinPose()
     {
-        Transform[] bones = _sm.bones;
-        Matrix4x4[] bind = _baseMesh.bindposes;
-        Vector3[] verts = _baseMesh.vertices;
-        BoneWeight[] bw = _baseMesh.boneWeights;
-
-        Matrix4x4[] mats = new Matrix4x4[bones.Length];
-        for (int i = 0; i < bones.Length; i++)
-            mats[i] = bones[i] != null ? bones[i].localToWorldMatrix * bind[i] : Matrix4x4.identity;
-
-        for (int i = 0; i < verts.Length; i++)
+        for (int ti = 0; ti < _targets.Count; ti++)
         {
-            BoneWeight w = bw[i];
-            Vector3 p = Vector3.zero;
-            float total = 0f;
+            BodyTarget t = _targets[ti];
+            if (t.sm == null) continue;
 
-            if (w.boneIndex0 >= 0 && w.boneIndex0 < mats.Length && w.weight0 > 0f)
-            {
-                p += mats[w.boneIndex0].MultiplyPoint3x4(verts[i]) * w.weight0;
-                total += w.weight0;
-            }
-            if (w.boneIndex1 >= 0 && w.boneIndex1 < mats.Length && w.weight1 > 0f)
-            {
-                p += mats[w.boneIndex1].MultiplyPoint3x4(verts[i]) * w.weight1;
-                total += w.weight1;
-            }
-            if (w.boneIndex2 >= 0 && w.boneIndex2 < mats.Length && w.weight2 > 0f)
-            {
-                p += mats[w.boneIndex2].MultiplyPoint3x4(verts[i]) * w.weight2;
-                total += w.weight2;
-            }
-            if (w.boneIndex3 >= 0 && w.boneIndex3 < mats.Length && w.weight3 > 0f)
-            {
-                p += mats[w.boneIndex3].MultiplyPoint3x4(verts[i]) * w.weight3;
-                total += w.weight3;
-            }
+            Transform[] bones = t.sm.bones;
+            Matrix4x4[] bind = t.bind;
+            Vector3[] verts = t.verts;
+            BoneWeight[] bw = t.weights;
 
-            if (total < 0.0001f) p = verts[i];
-            _posed[i] = p;
+            Matrix4x4[] mats = new Matrix4x4[bones.Length];
+            for (int i = 0; i < bones.Length; i++)
+                mats[i] = bones[i] != null && i < bind.Length ? bones[i].localToWorldMatrix * bind[i] : Matrix4x4.identity;
+
+            for (int i = 0; i < verts.Length; i++)
+            {
+                BoneWeight w = i < bw.Length ? bw[i] : default(BoneWeight);
+                Vector3 p = Vector3.zero;
+                float total = 0f;
+
+                if (w.boneIndex0 >= 0 && w.boneIndex0 < mats.Length && w.weight0 > 0f)
+                {
+                    p += mats[w.boneIndex0].MultiplyPoint3x4(verts[i]) * w.weight0;
+                    total += w.weight0;
+                }
+                if (w.boneIndex1 >= 0 && w.boneIndex1 < mats.Length && w.weight1 > 0f)
+                {
+                    p += mats[w.boneIndex1].MultiplyPoint3x4(verts[i]) * w.weight1;
+                    total += w.weight1;
+                }
+                if (w.boneIndex2 >= 0 && w.boneIndex2 < mats.Length && w.weight2 > 0f)
+                {
+                    p += mats[w.boneIndex2].MultiplyPoint3x4(verts[i]) * w.weight2;
+                    total += w.weight2;
+                }
+                if (w.boneIndex3 >= 0 && w.boneIndex3 < mats.Length && w.weight3 > 0f)
+                {
+                    p += mats[w.boneIndex3].MultiplyPoint3x4(verts[i]) * w.weight3;
+                    total += w.weight3;
+                }
+
+                if (total < 0.0001f) p = verts[i];
+                _posed[t.vertOffset + i] = p;
+            }
         }
 
         _gridBuiltAt = -100f;   // la rejilla queda obsoleta al cambiar la pose
@@ -724,18 +1170,39 @@ public class BodyZoneEditor : MonoBehaviour
     // ═════════════════════════════════════════════════════════════════════════
     void Update()
     {
+        // The character was destroyed/reloaded: without this guard SkinPose throws
+        // every frame and aborts Update before HandleCamera, freezing the camera.
+        if (_sm == null || _targets.Count == 0)
+        {
+            if (editMode) SetEditMode(false);
+            UpdateBlocker();
+            return;
+        }
+
         if (Input.GetKeyDown(toggleKey)) SetEditMode(!editMode);
 
+        UpdateBlocker();
         if (!editMode) return;
-        if (_cam == null) _cam = Camera.main;
+
+        // The scene may swap its main camera (Version2 has several): rebind.
+        if (_cam == null || !_cam.isActiveAndEnabled)
+        {
+            Camera main = Camera.main;
+            if (main != _cam) BindCamera();
+        }
         if (_cam == null) return;
 
-        if (Input.GetKeyDown(modeKey))
+        // Nothing else must fight our camera while editing.
+        if (_orbit != null && _orbit.enabled) _orbit.enabled = false;
+
+        if (Input.GetKeyDown(modeKey) && !_typing)
         {
             mode = mode == Mode.Caras ? Mode.Vertices : Mode.Caras;
             if (mode == Mode.Vertices) showPoints = true;
             _dirty = true;
         }
+
+        RefreshLive();
 
         if (Time.unscaledTime - _posedStamp > 0.08f)
         {
@@ -748,7 +1215,7 @@ public class BodyZoneEditor : MonoBehaviour
 
         HandleCamera();
         HandlePaint();
-        HandleKeys();
+        if (!_typing) HandleKeys();
 
         if (_dirty)
         {
@@ -799,10 +1266,11 @@ public class BodyZoneEditor : MonoBehaviour
 
         bool alt = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
         bool ctrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+        bool shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
 
         if (Input.GetMouseButtonDown(0))
         {
-            PaintAt(Input.mousePosition, alt, ctrl, false);
+            PaintAt(Input.mousePosition, alt, ctrl, false, shift);
             _painting = !alt;
         }
         else if (Input.GetMouseButton(0) && _painting)
@@ -813,7 +1281,7 @@ public class BodyZoneEditor : MonoBehaviour
         if (Input.GetMouseButtonUp(0)) _painting = false;
     }
 
-    void PaintAt(Vector2 screenPos, bool island, bool deselect, bool continuous)
+    void PaintAt(Vector2 screenPos, bool island, bool deselect, bool continuous, bool byRow = false)
     {
         Vector3 hit;
         int face;
@@ -821,7 +1289,12 @@ public class BodyZoneEditor : MonoBehaviour
 
         if (mode == Mode.Caras)
         {
-            if (island) SelectFaceIsland(face);
+            if (island)
+            {
+                // Alt = unit (piece / UV island) · Alt+Shift = row (tier) by height
+                if (byRow) SelectFaceRow(face, deselect);
+                else SelectFaceUnit(face, deselect);
+            }
             else SelectFacesSphere(hit, brushRadius, deselect);
         }
         else
@@ -841,35 +1314,90 @@ public class BodyZoneEditor : MonoBehaviour
 
         if (on)
         {
-            _cam = Camera.main;
-            if (_cam != null)
-            {
-                _orbit = _cam.GetComponent<CameraOrbit>();
-                if (_orbit != null)
-                {
-                    _orbitWasEnabled = _orbit.enabled;
-                    _orbit.enabled = false;
-                }
+            BindCamera();
+            BuildClothClassification();
+            LoadPresetFile();   // pick up edits made on disk
 
-                Bounds b = _sm.bounds;
-                _focus = b.center;
-                Vector3 d = _cam.transform.position - _focus;
-                _dist = Mathf.Max(0.4f, d.magnitude);
-                _yaw = _cam.transform.eulerAngles.y;
-                _pitch = _cam.transform.eulerAngles.x;
-            }
+            // Keyboard focus on a uGUI button would make Enter "click" it.
+            if (EventSystem.current != null) EventSystem.current.SetSelectedGameObject(null);
 
             SkinPose();
             _dirty = true;
         }
         else
         {
+            _draggingPanel = false;
+            _camDragging = false;
+            _painting = false;
+            if (_previewHide != null) SetPreview(0);   // TEMPFILE-INI1/FIN2
             RestoreOrbit();
             hideBody = false;
-            if (_sm != null) _sm.enabled = true;
+            ApplyHide();
             if (_pointsGo != null) _pointsGo.SetActive(false);
             if (_facesGo != null) _facesGo.SetActive(false);
         }
+    }
+
+    /// <summary>Takes control of the current main camera (disables its CameraOrbit).</summary>
+    void BindCamera()
+    {
+        RestoreOrbit();
+
+        _cam = Camera.main;
+        if (_cam == null) return;
+
+        _orbit = _cam.GetComponent<CameraOrbit>();
+        if (_orbit != null)
+        {
+            _orbitWasEnabled = _orbit.enabled;
+            _orbit.enabled = false;
+        }
+
+        Bounds b = _sm.bounds;
+        _focus = b.center;
+        Vector3 d = _cam.transform.position - _focus;
+        _dist = Mathf.Max(0.4f, d.magnitude);
+        _yaw = _cam.transform.eulerAngles.y;
+        _pitch = _cam.transform.eulerAngles.x;
+    }
+
+    /// <summary>Keeps the invisible uGUI blocker over the IMGUI panel.</summary>
+    void UpdateBlocker()
+    {
+        bool show = editMode;
+
+        if (show && _blockerGo == null)
+        {
+            _blockerGo = new GameObject("BodyZoneUIBlocker");
+            _blockerGo.hideFlags = HideFlags.DontSave;
+
+            Canvas canvas = _blockerGo.AddComponent<Canvas>();
+            canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+            canvas.sortingOrder = short.MaxValue;
+            _blockerGo.AddComponent<GraphicRaycaster>();
+
+            GameObject img = new GameObject("Blocker");
+            img.hideFlags = HideFlags.DontSave;
+            img.transform.SetParent(_blockerGo.transform, false);
+
+            Image image = img.AddComponent<Image>();
+            image.color = new Color(0f, 0f, 0f, 0f);
+            image.raycastTarget = true;
+
+            _blockerRt = img.GetComponent<RectTransform>();
+            _blockerRt.anchorMin = Vector2.zero;
+            _blockerRt.anchorMax = Vector2.zero;
+            _blockerRt.pivot = Vector2.zero;
+        }
+
+        if (_blockerGo == null) return;
+
+        if (_blockerGo.activeSelf != show) _blockerGo.SetActive(show);
+        if (!show) return;
+
+        // IMGUI rect has its origin top-left; uGUI overlay has it bottom-left.
+        _blockerRt.anchoredPosition = new Vector2(_panelRect.x, Screen.height - _panelRect.yMax);
+        _blockerRt.sizeDelta = new Vector2(_panelRect.width, _panelRect.height);
     }
 
     void RestoreOrbit()
@@ -882,20 +1410,29 @@ public class BodyZoneEditor : MonoBehaviour
     {
         if (_cam == null) return;
 
-        if (!_overPanel && !PointerBlockedByUI())
+        bool blocked = _overPanel || _draggingPanel || PointerBlockedByUI();
+
+        // A drag starts only on a free area, and once started it keeps going even if
+        // the cursor later crosses UI (previously it was re-evaluated every frame and
+        // used a stale _lastMouse, which made the rotation get "stuck").
+        if (Input.GetMouseButtonDown(1) && !blocked)
         {
-            if (Input.GetMouseButtonDown(1)) { _camDragging = true; _lastMouse = Input.mousePosition; }
-            if (Input.GetMouseButtonUp(1)) _camDragging = false;
+            _camDragging = true;
+            _lastMouse = Input.mousePosition;
+        }
+        if (!Input.GetMouseButton(1)) _camDragging = false;
 
-            if (Input.GetMouseButton(1))
-            {
-                Vector3 delta = Input.mousePosition - _lastMouse;
-                _lastMouse = Input.mousePosition;
-                _yaw += delta.x * 0.25f;
-                _pitch -= delta.y * 0.25f;
-                _pitch = Mathf.Clamp(_pitch, -80f, 80f);
-            }
+        if (_camDragging)
+        {
+            Vector3 delta = Input.mousePosition - _lastMouse;
+            _lastMouse = Input.mousePosition;
+            _yaw += delta.x * 0.25f;
+            _pitch -= delta.y * 0.25f;
+            _pitch = Mathf.Clamp(_pitch, -80f, 80f);
+        }
 
+        if (!blocked)
+        {
             float scroll = Input.mouseScrollDelta.y;
             if (Mathf.Abs(scroll) > 0.01f) _dist = Mathf.Clamp(_dist * (1f - scroll * 0.1f), 0.3f, 20f);
         }
@@ -918,8 +1455,9 @@ public class BodyZoneEditor : MonoBehaviour
 
         for (int f = 0; f < _faceCount; f++)
         {
-            if (_cutFaces[f]) continue;
+            if (_cutFaces[f] || !FaceLive(f)) continue;
             if (paintPart >= 0 && _subGroup[_faceSub[f]] != paintPart) continue;
+            if (IsAlphaPassThrough(f) || FaceLocked(f)) continue;
 
             Vector3 a = _posed[_faces[f * 3]];
             Vector3 b = _posed[_faces[f * 3 + 1]];
@@ -981,7 +1519,7 @@ public class BodyZoneEditor : MonoBehaviour
         Vector3 max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
         for (int f = 0; f < _faceCount; f++)
         {
-            if (_cutFaces[f]) continue;
+            if (_cutFaces[f] || !FaceLive(f)) continue;
             for (int k = 0; k < 3; k++)
             {
                 Vector3 p = _posed[_faces[f * 3 + k]];
@@ -997,7 +1535,7 @@ public class BodyZoneEditor : MonoBehaviour
 
         for (int f = 0; f < _faceCount; f++)
         {
-            if (_cutFaces[f]) continue;
+            if (_cutFaces[f] || !FaceLive(f)) continue;
 
             // Se registra en TODAS las celdas de su caja, no solo en las de sus
             // vértices: si no, un rayo puede atravesar un triángulo grande sin
@@ -1087,7 +1625,7 @@ public class BodyZoneEditor : MonoBehaviour
             for (int i = 0; i < _bigFaces.Count; i++)
             {
                 int f = _bigFaces[i];
-                if (alphaDoesNotOcclude && _partIsAlpha[_subGroup[_faceSub[f]]]) continue;
+                if (IsAlphaPassThrough(f)) continue;
                 _faceStamp[f] = id;
 
                 float d;
@@ -1112,7 +1650,7 @@ public class BodyZoneEditor : MonoBehaviour
                 int f = bucket[i];
                 if (_faceStamp[f] == id) continue;
                 _faceStamp[f] = id;
-                if (alphaDoesNotOcclude && _partIsAlpha[_subGroup[_faceSub[f]]]) continue;
+                if (IsAlphaPassThrough(f)) continue;
 
                 float d;
                 if (RayTriangle(ray,
@@ -1129,30 +1667,36 @@ public class BodyZoneEditor : MonoBehaviour
     }
 
     // ── selección: caras ─────────────────────────────────────────────────────
+    /// <summary>Prepares the occlusion grid / visibility cache (no-op with X-ray on).</summary>
+    void PrepareVisibility()
+    {
+        if (xRay || _cam == null) return;
+
+        EnsureGrid();
+        if ((_visCamPos - _cam.transform.position).sqrMagnitude > 0.0001f)
+        {
+            _visCamPos = _cam.transform.position;
+            _visEpoch++;
+        }
+    }
+
     void SelectFacesSphere(Vector3 center, float radius, bool deselect)
     {
-        if (!xRay)
-        {
-            EnsureGrid();
-            if ((_visCamPos - _cam.transform.position).sqrMagnitude > 0.0001f)
-            {
-                _visCamPos = _cam.transform.position;
-                _visEpoch++;
-            }
-        }
+        PrepareVisibility();
 
         float r2 = radius * radius;
         for (int f = 0; f < _faceCount; f++)
         {
-            if (_cutFaces[f]) continue;
+            if (_cutFaces[f] || !FaceLive(f)) continue;
             if (paintPart >= 0 && _subGroup[_faceSub[f]] != paintPart) continue;
+            if (IsAlphaPassThrough(f) || FaceLocked(f)) continue;
 
             Vector3 c = FaceCenter(f);
             if ((c - center).sqrMagnitude > r2) continue;
 
             if (!xRay && !IsFaceVisible(f)) continue;   // tapada por otra parte de la malla
 
-            _selectedFaces[f] = !deselect;
+            SetSelected(f, !deselect);
         }
         _dirty = true;
     }
@@ -1167,41 +1711,272 @@ public class BodyZoneEditor : MonoBehaviour
         return v;
     }
 
-    void SelectFaceIsland(int face)
+    // ── unidades (Alt+clic) ──────────────────────────────────────────────────
+    /// <summary>Can this face be taken by a bulk selection (unit / row)?</summary>
+    bool CanTakeFace(int f)
+    {
+        if (_cutFaces[f] || !FaceLive(f)) return false;
+        if (paintPart >= 0 && _subGroup[_faceSub[f]] != paintPart) return false;
+        if (IsAlphaPassThrough(f) || FaceLocked(f)) return false;
+        return true;
+    }
+
+    /// <summary>
+    /// Selects/deselects a face and, when "gemelas" is on, its coincident twins (the
+    /// back-face copy of double-sided cloth, or the duplicate Alpha0/Alpha1 layer).
+    /// </summary>
+    void SetSelected(int f, bool value)
+    {
+        _selectedFaces[f] = value;
+
+        if (!selectTwins || _faceTwins == null) return;
+        int[] tw = _faceTwins[f];
+        if (tw == null) return;
+
+        for (int i = 0; i < tw.Length; i++)
+        {
+            int g = tw[i];
+            if (_cutFaces[g] || !FaceLive(g) || FaceLocked(g)) continue;
+            if (paintPart >= 0 && _subGroup[_faceSub[g]] != paintPart) continue;
+            _selectedFaces[g] = value;
+        }
+    }
+
+    /// <summary>
+    /// Alt+click. The unit is the edge-connected piece when it is small (a ribbon ring,
+    /// a bow...) and the UV island when the piece is huge (a whole dress fused in one
+    /// mesh). Twin layers that mostly overlap the unit are adopted whole.
+    /// </summary>
+    void SelectFaceUnit(int face, bool deselect)
     {
         if (face < 0 || face >= _faceCount) return;
 
-        int id = _faceIsland[face];
-        int group = _subGroup[_faceSub[face]];
+        bool usePiece = _pieceSize[_facePiece[face]] <= autoPieceMax;
+        int[] ids = usePiece ? _facePiece : _faceUvIsland;
+        int id = ids[face];
+
+        int count = 0;
+        Dictionary<int, int> twinHits = new Dictionary<int, int>();
 
         for (int f = 0; f < _faceCount; f++)
         {
-            if (_cutFaces[f] || _faceIsland[f] != id) continue;
-            if (paintPart >= 0 && _subGroup[_faceSub[f]] != group) continue;
-            _selectedFaces[f] = true;
+            if (ids[f] != id || !CanTakeFace(f)) continue;
+
+            SetSelected(f, !deselect);
+            count++;
+
+            int[] tw = _faceTwins != null ? _faceTwins[f] : null;
+            if (tw == null || !selectTwins) continue;
+
+            for (int i = 0; i < tw.Length; i++)
+            {
+                int u = ids[tw[i]];
+                if (u == id) continue;
+
+                int hits;
+                twinHits.TryGetValue(u, out hits);
+                twinHits[u] = hits + 1;
+            }
+        }
+
+        // adopt whole twin units (e.g. the inner shell, which has extra faces of its own)
+        int adopted = 0;
+        foreach (KeyValuePair<int, int> kv in twinHits)
+        {
+            int size = usePiece ? _pieceSize[kv.Key] : _uvIslandSize[kv.Key];
+            if (kv.Value < size * 0.6f) continue;
+
+            adopted++;
+            for (int f = 0; f < _faceCount; f++)
+            {
+                if (ids[f] != kv.Key || !CanTakeFace(f)) continue;
+                SetSelected(f, !deselect);
+                count++;
+            }
         }
 
         _dirty = true;
-        _status = "Isla " + id + " seleccionada (" + SelectionLabel() + ")";
+        _status = (usePiece ? "Pieza: " : "Isla UV: ") + count + " caras" +
+                  (adopted > 0 ? " (+" + adopted + " capa gemela)" : string.Empty) + " · " + SelectionLabel();
+    }
+
+    /// <summary>
+    /// Alt+Shift+click: one "row" (tier) of a stacked cloth: grows over edges while the
+    /// height ranges (bind pose) of neighbouring faces overlap enough. It splits tulle
+    /// skirts into their tiers.
+    /// </summary>
+    void SelectFaceRow(int face, bool deselect)
+    {
+        if (face < 0 || face >= _faceCount) return;
+
+        bool[] seen = new bool[_faceCount];
+        Queue<int> queue = new Queue<int>(256);
+        queue.Enqueue(face);
+        seen[face] = true;
+
+        int count = 0;
+        while (queue.Count > 0)
+        {
+            int f = queue.Dequeue();
+            SetSelected(f, !deselect);
+            count++;
+
+            List<int> nb = _faceNeighbors[f];
+            for (int i = 0; i < nb.Count; i++)
+            {
+                int o = nb[i];
+                if (seen[o] || !CanTakeFace(o)) continue;
+
+                float overlap = Mathf.Min(_faceY1[f], _faceY1[o]) - Mathf.Max(_faceY0[f], _faceY0[o]);
+                float smaller = Mathf.Min(_faceY1[f] - _faceY0[f], _faceY1[o] - _faceY0[o]);
+
+                if (smaller <= 0.000001f)
+                {
+                    if (overlap < -0.001f) continue;      // flat face: must touch the other range
+                }
+                else if (overlap / smaller < rowOverlap) continue;
+
+                seen[o] = true;
+                queue.Enqueue(o);
+            }
+        }
+
+        _dirty = true;
+        _status = "Capa por altura: " + count + " caras · " + SelectionLabel();
+    }
+
+    /// <summary>
+    /// Pieces (edge connected), UV island sizes, bind-pose heights and coincident twins.
+    /// </summary>
+    void BuildUnits()
+    {
+        // edge-connected pieces
+        _facePiece = new int[_faceCount];
+        for (int f = 0; f < _faceCount; f++) _facePiece[f] = -1;
+
+        List<int> sizes = new List<int>();
+        Stack<int> stack = new Stack<int>();
+        for (int s = 0; s < _faceCount; s++)
+        {
+            if (_facePiece[s] >= 0) continue;
+
+            int id = sizes.Count;
+            int n = 0;
+            _facePiece[s] = id;
+            stack.Push(s);
+
+            while (stack.Count > 0)
+            {
+                int f = stack.Pop();
+                n++;
+
+                List<int> nb = _faceNeighbors[f];
+                for (int i = 0; i < nb.Count; i++)
+                {
+                    int o = nb[i];
+                    if (_facePiece[o] >= 0) continue;
+                    _facePiece[o] = id;
+                    stack.Push(o);
+                }
+            }
+
+            sizes.Add(n);
+        }
+        _pieceSize = sizes.ToArray();
+
+        _uvIslandSize = new Dictionary<int, int>();
+        for (int f = 0; f < _faceCount; f++)
+        {
+            int hits;
+            _uvIslandSize.TryGetValue(_faceUvIsland[f], out hits);
+            _uvIslandSize[_faceUvIsland[f]] = hits + 1;
+        }
+
+        // bind-pose centroid / normal / height range of each face
+        Vector3[] center = new Vector3[_faceCount];
+        Vector3[] normal = new Vector3[_faceCount];
+        _faceY0 = new float[_faceCount];
+        _faceY1 = new float[_faceCount];
+
+        for (int f = 0; f < _faceCount; f++)
+        {
+            BodyTarget t = _targets[_faceTarget[f]];
+            Vector3 a = t.verts[_faces[f * 3] - t.vertOffset];
+            Vector3 b = t.verts[_faces[f * 3 + 1] - t.vertOffset];
+            Vector3 c = t.verts[_faces[f * 3 + 2] - t.vertOffset];
+
+            center[f] = (a + b + c) / 3f;
+            normal[f] = Vector3.Cross(b - a, c - a).normalized;
+            _faceY0[f] = Mathf.Min(a.y, Mathf.Min(b.y, c.y));
+            _faceY1[f] = Mathf.Max(a.y, Mathf.Max(b.y, c.y));
+        }
+
+        // coincident twins: centroids closer than TwinDistance with (anti)parallel normals.
+        // The inner shell of double-sided cloth sits ~0.4 mm from the outer one.
+        float cell = TwinDistance * 2f;
+        Dictionary<long, List<int>> grid = new Dictionary<long, List<int>>(_faceCount);
+        for (int f = 0; f < _faceCount; f++)
+        {
+            long key = PackCell(Mathf.FloorToInt(center[f].x / cell), Mathf.FloorToInt(center[f].y / cell), Mathf.FloorToInt(center[f].z / cell));
+            List<int> bucket;
+            if (!grid.TryGetValue(key, out bucket))
+            {
+                bucket = new List<int>(2);
+                grid[key] = bucket;
+            }
+            bucket.Add(f);
+        }
+
+        List<int>[] tmp = new List<int>[_faceCount];
+        int pairs = 0;
+        float maxSq = TwinDistance * TwinDistance;
+
+        for (int f = 0; f < _faceCount; f++)
+        {
+            int cx = Mathf.FloorToInt(center[f].x / cell);
+            int cy = Mathf.FloorToInt(center[f].y / cell);
+            int cz = Mathf.FloorToInt(center[f].z / cell);
+
+            for (int dx = -1; dx <= 1; dx++)
+            for (int dy = -1; dy <= 1; dy++)
+            for (int dz = -1; dz <= 1; dz++)
+            {
+                List<int> bucket;
+                if (!grid.TryGetValue(PackCell(cx + dx, cy + dy, cz + dz), out bucket)) continue;
+
+                for (int i = 0; i < bucket.Count; i++)
+                {
+                    int g = bucket[i];
+                    if (g <= f) continue;
+                    if ((center[g] - center[f]).sqrMagnitude > maxSq) continue;
+                    if (Mathf.Abs(Vector3.Dot(normal[f], normal[g])) < 0.7f) continue;
+
+                    if (tmp[f] == null) tmp[f] = new List<int>(2);
+                    if (tmp[g] == null) tmp[g] = new List<int>(2);
+                    tmp[f].Add(g);
+                    tmp[g].Add(f);
+                    pairs++;
+                }
+            }
+        }
+
+        _faceTwins = new int[_faceCount][];
+        for (int f = 0; f < _faceCount; f++) if (tmp[f] != null) _faceTwins[f] = tmp[f].ToArray();
+
+        Debug.Log("[BodyZoneEditor] Unidades: " + _pieceSize.Length + " piezas · " + _uvIslandSize.Count +
+                  " islas UV · " + pairs + " pares de caras gemelas");
     }
 
     // ── selección: vértices ──────────────────────────────────────────────────
     void SelectVertsSphere(Vector3 center, float radius, bool deselect)
     {
-        if (!xRay)
-        {
-            EnsureGrid();
-            if ((_visCamPos - _cam.transform.position).sqrMagnitude > 0.0001f)
-            {
-                _visCamPos = _cam.transform.position;
-                _visEpoch++;
-            }
-        }
+        PrepareVisibility();
 
         float r2 = radius * radius;
         for (int v = 0; v < _selectedVerts.Length; v++)
         {
-            if (_cutVerts[v]) continue;
+            if (_cutVerts[v] || !VertLive(v)) continue;
+            if (lockBody && _vertCloth != null && !_vertCloth[v]) continue;
             if ((_posed[v] - center).sqrMagnitude > r2) continue;
             if (!xRay && !IsVertexVisible(v)) continue;
 
@@ -1265,7 +2040,7 @@ public class BodyZoneEditor : MonoBehaviour
     public void ClearSelection()
     {
         _selectedFaces = new bool[_faceCount];
-        _selectedVerts = new bool[_baseMesh.vertexCount];
+        _selectedVerts = new bool[_vertCount];
         _dirty = true;
         _status = "Selección vacía";
     }
@@ -1313,7 +2088,7 @@ public class BodyZoneEditor : MonoBehaviour
 
     void RebuildCutVerts()
     {
-        _cutVerts = new bool[_baseMesh.vertexCount];
+        _cutVerts = new bool[_vertCount];
         for (int f = 0; f < _faceCount; f++)
         {
             if (!_cutFaces[f]) continue;
@@ -1323,19 +2098,20 @@ public class BodyZoneEditor : MonoBehaviour
         }
     }
 
-    Mesh BuildCutMesh(bool[] facesMask)
+    Mesh BuildCutMesh(BodyTarget bt, bool[] facesMask)
     {
-        Mesh mesh = Instantiate(_baseMesh);
-        mesh.name = "M_Body_cut";
+        Mesh mesh = Instantiate(bt.baseMesh);
+        mesh.name = bt.baseMesh.name + "_cut";
 
         for (int s = 0; s < mesh.subMeshCount; s++)
         {
-            int[] tris = _baseMesh.GetTriangles(s);
+            int[] tris = bt.baseMesh.GetTriangles(s);
             List<int> keep = new List<int>(tris.Length);
+            int globalSub = bt.subOffset + s;
 
-            for (int f = 0; f < _faceCount; f++)
+            for (int f = bt.faceOffset; f < bt.faceOffset + bt.faceCount; f++)
             {
-                if (_faceSub[f] != s || facesMask[f]) continue;
+                if (_faceSub[f] != globalSub || facesMask[f]) continue;
 
                 int t = _faceTri[f] * 3;
                 if (t + 2 >= tris.Length) continue;
@@ -1368,12 +2144,13 @@ public class BodyZoneEditor : MonoBehaviour
         RebuildCutVerts();
         _applied.Add((bool[])mask.Clone());
 
-        SetMesh(BuildCutMesh(mask));
+        RebuildMeshes();
 
         _selectedFaces = new bool[_faceCount];
-        _selectedVerts = new bool[_baseMesh.vertexCount];
+        _selectedVerts = new bool[_vertCount];
         _dirty = true;
 
+        _presetDirty = true;
         _status = "Corte " + _applied.Count + " · caras restantes: " + CurrentTriangleCount + " / " + _baseTriCount;
         Debug.Log("[BodyZoneEditor] " + _status);
     }
@@ -1388,21 +2165,16 @@ public class BodyZoneEditor : MonoBehaviour
 
         _applied.RemoveAt(_applied.Count - 1);
 
-        if (_applied.Count == 0)
-        {
-            _cutFaces = new bool[_faceCount];
-            SetMesh(_baseMesh);
-        }
-        else
-        {
-            _cutFaces = (bool[])_applied[_applied.Count - 1].Clone();
-            SetMesh(BuildCutMesh(_cutFaces));
-        }
+        if (_applied.Count == 0) _cutFaces = new bool[_faceCount];
+        else _cutFaces = (bool[])_applied[_applied.Count - 1].Clone();
+
+        RebuildMeshes();
 
         RebuildCutVerts();
         _selectedFaces = new bool[_faceCount];
-        _selectedVerts = new bool[_baseMesh.vertexCount];
+        _selectedVerts = new bool[_vertCount];
         _dirty = true;
+        _presetDirty = true;
         _status = "Deshecho · caras: " + CurrentTriangleCount + " / " + _baseTriCount;
     }
 
@@ -1410,12 +2182,237 @@ public class BodyZoneEditor : MonoBehaviour
     {
         _applied.Clear();
         _cutFaces = new bool[_faceCount];
-        _cutVerts = new bool[_baseMesh.vertexCount];
-        SetMesh(_baseMesh);
+        _cutVerts = new bool[_vertCount];
+        RebuildMeshes();
         _selectedFaces = new bool[_faceCount];
-        _selectedVerts = new bool[_baseMesh.vertexCount];
+        _selectedVerts = new bool[_vertCount];
         _dirty = true;
+        _currentPreset = DefaultPresetName;
+        _presetDirty = false;
         _status = "Malla original restaurada · caras: " + CurrentTriangleCount + " / " + _baseTriCount;
+    }
+
+    // ── presets guardados (por personaje + traje) ────────────────────────────
+    /// <summary>Key = character id + outfit id, so presets never leak between outfits.</summary>
+    string PresetKey()
+    {
+        UmaContainerCharacter c = GetComponent<UmaContainerCharacter>();
+
+        string chara = c != null && c.CharaEntry != null
+            ? c.CharaEntry.Id.ToString()
+            : name.Replace("(Clone)", string.Empty);
+
+        string dress = c != null ? c.VarCostumeIdLong : null;
+        if (string.IsNullOrEmpty(dress)) dress = BodyKey();
+
+        string key = chara + "_" + dress;
+        foreach (char bad in Path.GetInvalidFileNameChars()) key = key.Replace(bad, '-');
+        return key;
+    }
+
+    string PresetPath()
+    {
+        // same convention as Poses/ and Screenshots/: next to Assets/ (project root)
+        return Path.GetFullPath(Path.Combine(Application.dataPath, "..", "BodyZonePresets", _presetKey + ".json"));
+    }
+
+    void LoadPresetFile()
+    {
+        _presetFile = new ZonePresetFile { key = _presetKey };
+
+        try
+        {
+            string path = PresetPath();
+            if (File.Exists(path))
+            {
+                ZonePresetFile loaded = JsonUtility.FromJson<ZonePresetFile>(File.ReadAllText(path));
+                if (loaded != null && loaded.presets != null) _presetFile = loaded;
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Debug.LogWarning("[BodyZoneEditor] No se pudieron leer los presets: " + ex.Message);
+        }
+    }
+
+    void SavePresetFile()
+    {
+        try
+        {
+            string path = PresetPath();
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            _presetFile.key = _presetKey;
+            File.WriteAllText(path, JsonUtility.ToJson(_presetFile, true));
+        }
+        catch (System.Exception ex)
+        {
+            _status = "Error al guardar: " + ex.Message;
+            Debug.LogError("[BodyZoneEditor] " + _status);
+        }
+    }
+
+    ZonePreset FindPreset(string presetName)
+    {
+        for (int i = 0; i < _presetFile.presets.Count; i++)
+            if (string.Equals(_presetFile.presets[i].name, presetName, System.StringComparison.OrdinalIgnoreCase))
+                return _presetFile.presets[i];
+        return null;
+    }
+
+    public void SavePreset(string presetName)
+    {
+        presetName = (presetName ?? string.Empty).Trim();
+
+        if (presetName.Length == 0) { _status = "Escribe un nombre para el preset"; return; }
+        if (string.Equals(presetName, DefaultPresetName, System.StringComparison.OrdinalIgnoreCase))
+        {
+            _status = "\"default\" es el traje sin modificar: usa otro nombre";
+            return;
+        }
+
+        bool any = false;
+        for (int f = 0; f < _faceCount; f++) if (_cutFaces[f]) { any = true; break; }
+        if (!any) { _status = "Nada que guardar: no hay caras quitadas"; return; }
+
+        ZonePreset preset = new ZonePreset
+        {
+            name = presetName,
+            saved = System.DateTime.Now.ToString("yyyy-MM-dd HH:mm")
+        };
+
+        for (int i = 0; i < _targets.Count; i++)
+        {
+            BodyTarget t = _targets[i];
+            PresetTargetCut tc = new PresetTargetCut { target = t.sm.name, faceCount = t.faceCount };
+
+            int start = -1;
+            for (int k = 0; k <= t.faceCount; k++)
+            {
+                bool cut = k < t.faceCount && _cutFaces[t.faceOffset + k];
+                if (cut && start < 0) start = k;
+                if (!cut && start >= 0)
+                {
+                    tc.ranges.Add(start);
+                    tc.ranges.Add(k - 1);
+                    start = -1;
+                }
+            }
+
+            preset.targets.Add(tc);
+        }
+
+        ZonePreset existing = FindPreset(presetName);
+        if (existing != null) _presetFile.presets.Remove(existing);
+        _presetFile.presets.Add(preset);
+        SavePresetFile();
+
+        _currentPreset = preset.name;
+        _presetDirty = false;
+        _status = "Preset \"" + preset.name + "\" guardado (" + _presetKey + ")";
+    }
+
+    public void ApplyPreset(ZonePreset preset)
+    {
+        if (preset == null) return;
+
+        bool[] mask = new bool[_faceCount];
+        for (int i = 0; i < _targets.Count; i++)
+        {
+            BodyTarget t = _targets[i];
+
+            PresetTargetCut tc = null;
+            for (int k = 0; k < preset.targets.Count; k++)
+                if (preset.targets[k].target == t.sm.name) { tc = preset.targets[k]; break; }
+
+            if (tc == null) continue;
+
+            if (tc.faceCount != t.faceCount)
+            {
+                _status = "Preset incompatible con " + t.sm.name + " (" + tc.faceCount + " vs " + t.faceCount + " caras)";
+                Debug.LogWarning("[BodyZoneEditor] " + _status);
+                return;
+            }
+
+            for (int r = 0; r + 1 < tc.ranges.Count; r += 2)
+            {
+                int a = Mathf.Max(0, tc.ranges[r]);
+                int b = Mathf.Min(t.faceCount - 1, tc.ranges[r + 1]);
+                for (int k = a; k <= b; k++) mask[t.faceOffset + k] = true;
+            }
+        }
+
+        _applied.Clear();
+        _cutFaces = mask;
+        _applied.Add((bool[])mask.Clone());
+        RebuildCutVerts();
+        RebuildMeshes();
+
+        _selectedFaces = new bool[_faceCount];
+        _selectedVerts = new bool[_vertCount];
+        _dirty = true;
+
+        _currentPreset = preset.name;
+        _presetDirty = false;
+        _status = "Preset \"" + preset.name + "\" aplicado · caras: " + CurrentTriangleCount + " / " + _baseTriCount;
+    }
+
+    public void DeletePreset(string presetName)
+    {
+        ZonePreset p = FindPreset(presetName);
+        if (p == null) { _status = "Selecciona un preset guardado para borrarlo"; return; }
+
+        _presetFile.presets.Remove(p);
+        SavePresetFile();
+
+        if (string.Equals(_currentPreset, presetName, System.StringComparison.OrdinalIgnoreCase))
+            _currentPreset = DefaultPresetName;
+
+        _status = "Preset \"" + presetName + "\" borrado";
+    }
+
+    void DrawPresetUI()
+    {
+        GUILayout.Label("Traje: " + _presetKey);
+
+        string current = _currentPreset + (_presetDirty ? "  (modificado)" : string.Empty);
+        if (GUILayout.Button((_presetListOpen ? "^  " : "v  ") + current))
+            _presetListOpen = !_presetListOpen;
+
+        if (_presetListOpen)
+        {
+            int rows = _presetFile.presets.Count + 1;
+            _presetScroll = GUILayout.BeginScrollView(_presetScroll, GUILayout.Height(Mathf.Min(150f, rows * 24f + 4f)));
+
+            if (GUILayout.Button(DefaultPresetName + "  (sin modificar)"))
+            {
+                RestoreAll();
+                _presetListOpen = false;
+            }
+
+            ZonePreset toApply = null;
+            for (int i = 0; i < _presetFile.presets.Count; i++)
+            {
+                ZonePreset p = _presetFile.presets[i];
+                if (GUILayout.Button(p.name + "   ·   " + p.saved)) toApply = p;
+            }
+
+            GUILayout.EndScrollView();
+
+            if (toApply != null)
+            {
+                ApplyPreset(toApply);
+                _presetListOpen = false;
+            }
+        }
+
+        GUILayout.BeginHorizontal();
+        GUI.SetNextControlName("PresetName");
+        _presetName = GUILayout.TextField(_presetName, 40);
+        if (GUILayout.Button("Guardar", GUILayout.Width(70f))) SavePreset(_presetName);
+        if (GUILayout.Button("Borrar", GUILayout.Width(60f))) DeletePreset(_currentPreset);
+        GUILayout.EndHorizontal();
+
+        GUILayout.Space(4);
     }
 
     string PartLabel(int p)
@@ -1447,12 +2444,12 @@ public class BodyZoneEditor : MonoBehaviour
                 float best = float.MaxValue;
                 for (int f = 0; f < _faceCount; f++)
                 {
-                    if (_cutFaces[f]) continue;
+                    if (_cutFaces[f] || !FaceLive(f)) continue;
                     if (paintPart >= 0 && _subGroup[_faceSub[f]] != paintPart) continue;
                     float d = Vector3.Distance(FaceCenter(f), worldPoint);
                     if (d < best) { best = d; bestFace = f; }
                 }
-                if (bestFace >= 0) SelectFaceIsland(bestFace);
+                if (bestFace >= 0) SelectFaceUnit(bestFace, false);
             }
             else SelectFacesSphere(worldPoint, radius, false);
         }
@@ -1470,15 +2467,62 @@ public class BodyZoneEditor : MonoBehaviour
     {
         if (!editMode) return;
 
-        // a la derecha de la lista de personajes, a la izquierda del modelo
-        _panelRect = new Rect(238f, 60f, 350f, 600f);
+        Event e = Event.current;
 
-        GUI.color = new Color(0f, 0f, 0f, 0.88f);
+        _panelRect.width = PanelWidth;
+        _panelRect.height = Mathf.Min(PanelHeight, Screen.height - 10f);
+
+        Rect titleRect = new Rect(_panelRect.x, _panelRect.y, _panelRect.width, TitleHeight);
+        Rect closeRect = new Rect(titleRect.xMax - 28f, titleRect.y + 3f, 24f, TitleHeight - 6f);
+
+        // arrastrar el panel desde la barra de título (excluyendo el botón X)
+        if (e.type == EventType.MouseDown && e.button == 0 &&
+            titleRect.Contains(e.mousePosition) && !closeRect.Contains(e.mousePosition))
+        {
+            _draggingPanel = true;
+            _dragOffset = e.mousePosition - new Vector2(_panelRect.x, _panelRect.y);
+            e.Use();
+        }
+        else if (_draggingPanel && e.type == EventType.MouseDrag)
+        {
+            _panelRect.x = Mathf.Clamp(e.mousePosition.x - _dragOffset.x, -_panelRect.width + 80f, Screen.width - 80f);
+            _panelRect.y = Mathf.Clamp(e.mousePosition.y - _dragOffset.y, 0f, Screen.height - TitleHeight);
+            e.Use();
+        }
+        else if (e.type == EventType.MouseUp && e.button == 0)
+        {
+            _draggingPanel = false;
+        }
+
+        // clicking outside the panel releases the keyboard focus of the name field
+        if (e.type == EventType.MouseDown && !_panelRect.Contains(e.mousePosition))
+            GUI.FocusControl(null);
+
+        // fondo sólido
+        GUI.color = new Color(0f, 0f, 0f, 0.92f);
         GUI.DrawTexture(_panelRect, Texture2D.whiteTexture);
+        GUI.color = new Color(0.18f, 0.18f, 0.22f, 1f);
+        GUI.DrawTexture(titleRect, Texture2D.whiteTexture);
         GUI.color = Color.white;
 
-        GUILayout.BeginArea(_panelRect, GUI.skin.box);
-        GUILayout.Label("EDITOR DE ZONAS · " + bodyChildName);
+        GUI.Label(new Rect(titleRect.x + 8f, titleRect.y + 3f, titleRect.width - 40f, TitleHeight - 4f),
+            "EDITOR DE ZONAS · " + bodyChildName + "   (arrastra para mover)");
+
+        if (GUI.Button(closeRect, "X"))
+        {
+            SetEditMode(false);
+            return;
+        }
+
+        // clicking the panel drops any uGUI keyboard focus (so Enter never "clicks" a button behind)
+        if (e.isMouse && _panelRect.Contains(e.mousePosition) && e.type == EventType.MouseDown)
+            if (EventSystem.current != null) EventSystem.current.SetSelectedGameObject(null);
+
+        Rect bodyRect = new Rect(_panelRect.x, _panelRect.y + TitleHeight, _panelRect.width, _panelRect.height - TitleHeight);
+        GUILayout.BeginArea(bodyRect, GUI.skin.box);
+        _panelScroll = GUILayout.BeginScrollView(_panelScroll);
+
+        DrawPresetUI();
 
         GUILayout.BeginHorizontal();
         if (GUILayout.Toggle(mode == Mode.Caras, " Caras", GUI.skin.button) && mode != Mode.Caras)
@@ -1495,7 +2539,7 @@ public class BodyZoneEditor : MonoBehaviour
         GUILayout.EndHorizontal();
 
         GUILayout.Label(mode == Mode.Caras
-            ? "Clic = pintar caras · Alt+clic = pieza · Ctrl+clic = quitar"
+            ? "Clic = pintar · Alt+clic = pieza/isla · Alt+Mayús+clic = capa por altura · Ctrl = quitar de la selección"
             : "Clic = pintar vértices · Alt+clic = pieza · Ctrl+clic = quitar");
         GUILayout.Label("Intro = borrar · Retroceso = deshacer · R = restaurar");
 
@@ -1511,7 +2555,7 @@ public class BodyZoneEditor : MonoBehaviour
         }
 
         if (_partIsAlpha.Count > 0)
-            alphaDoesNotOcclude = GUILayout.Toggle(alphaDoesNotOcclude, " Las telas alpha no tapan");
+            alphaDoesNotOcclude = GUILayout.Toggle(alphaDoesNotOcclude, " Atravesar telas alpha (elige su parte para editarlas)");
 
         GUILayout.Space(4);
         GUILayout.Label("Radio del pincel: " + (brushRadius * 100f).ToString("F1") + " cm");
@@ -1519,6 +2563,14 @@ public class BodyZoneEditor : MonoBehaviour
 
         GUILayout.Label("Engordar borde: " + growRings + " anillo(s) de caras");
         growRings = Mathf.RoundToInt(GUILayout.HorizontalSlider(growRings, 0, 4));
+
+        selectTwins = GUILayout.Toggle(selectTwins, " Seleccionar capa gemela (doble cara / Alpha duplicada)");
+
+        GUILayout.Label("Pieza máx. para Alt+clic: " + autoPieceMax + " caras (mayor = isla UV)");
+        autoPieceMax = Mathf.RoundToInt(GUILayout.HorizontalSlider(autoPieceMax, 200, 8000));
+
+        GUILayout.Label("Solape de capa (Alt+Mayús+clic): " + rowOverlap.ToString("F2"));
+        rowOverlap = GUILayout.HorizontalSlider(rowOverlap, 0.2f, 0.8f);
 
         if (mode == Mode.Vertices)
         {
@@ -1537,6 +2589,27 @@ public class BodyZoneEditor : MonoBehaviour
         hideBody = GUILayout.Toggle(hideBody, " Ocultar malla de fondo");
 
         GUILayout.Space(4);
+        lockBody = GUILayout.Toggle(lockBody, " Bloquear cuerpo (solo se puede marcar ropa)");
+        GUILayout.Label("Ropa: " + _clothFaces + " caras · Cuerpo: " + _bodyFaces + " caras · huesos con física: " + _springBoneCount);
+
+        float newCloth = GUILayout.HorizontalSlider(clothWeight, 0.1f, 1f);
+        if (Mathf.Abs(newCloth - clothWeight) > 0.001f)
+        {
+            clothWeight = newCloth;
+            BuildClothClassification();
+            if (_previewMode != 0) SetPreview(_previewMode);
+        }
+        GUILayout.Label("Peso mínimo en huesos con física: " + clothWeight.ToString("F2"));
+
+        // TEMPFILE-INI1  temporary classification check
+        GUILayout.BeginHorizontal();
+        if (GUILayout.Toggle(_previewMode == 0, " Ver todo", GUI.skin.button) && _previewMode != 0) SetPreview(0);
+        if (GUILayout.Toggle(_previewMode == 1, " Solo ropa", GUI.skin.button) && _previewMode != 1) SetPreview(1);
+        if (GUILayout.Toggle(_previewMode == 2, " Solo cuerpo", GUI.skin.button) && _previewMode != 2) SetPreview(2);
+        GUILayout.EndHorizontal();
+        // TEMPFILE-FIN2
+
+        GUILayout.Space(4);
         GUILayout.BeginHorizontal();
         if (GUILayout.Button("Quitar zona")) ApplySelection();
         if (GUILayout.Button("Deshacer")) Undo();
@@ -1552,8 +2625,12 @@ public class BodyZoneEditor : MonoBehaviour
         GUILayout.Label("Caras: " + CurrentTriangleCount + " / " + _baseTriCount);
         GUILayout.Label(_status);
 
+        GUILayout.EndScrollView();
         GUILayout.EndArea();
 
-        if (_sm != null) _sm.enabled = !hideBody;
+        // keyboard shortcuts (Enter/Backspace/R/Delete/M) must not fire while typing a name
+        _typing = GUI.GetNameOfFocusedControl() == "PresetName";
+
+        ApplyHide();
     }
 }
