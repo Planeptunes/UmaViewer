@@ -223,7 +223,10 @@ namespace Gallop.RenderPipeline
                 quadTransform.SetPositionAndRotation(
                     camera.ScreenToWorldPoint(new Vector3(elementScreen.x, elementScreen.y, biasedDepth)),
                     rotation);
-                quadTransform.localScale = new Vector3(size, size, 1f);
+                // `size` is a HALF extent: the game's flare shader (Gallop/3D/Bg/LensFlare, vertex
+                // program) places the four corners at +-size around the centre, so the quad side
+                // is 2 x size. Our quad mesh spans +-0.5, hence the factor 2.
+                quadTransform.localScale = new Vector3(size * 2f, size * 2f, 1f);
 
                 Color elementColor = element.Color;
                 float lightR = 1f, lightG = 1f, lightB = 1f;
@@ -237,11 +240,26 @@ namespace Gallop.RenderPipeline
                     lightB = _light.color.b;
                 }
 
-                Color finalColor = new Color(
-                    elementColor.r * tintR * lightR * strength,
-                    elementColor.g * tintG * lightG * strength,
-                    elementColor.b * tintB * lightB * strength,
-                    1f);
+                // Native MakeGeometry: the brightness goes through Mathf.LinearToGammaSpace before
+                // tinting. UseLightColor elements take light colour x element colour and apply that
+                // brightness only with the Fade flag; the others are element colour x brightness.
+                // Every channel is clamped to [0,1].
+                float gammaStrength = Mathf.LinearToGammaSpace(strength);
+                float r, g, b;
+                if (element.UseLightColor)
+                {
+                    float k = element.Fade ? gammaStrength : 1f;
+                    r = elementColor.r * tintR * lightR * k;
+                    g = elementColor.g * tintG * lightG * k;
+                    b = elementColor.b * tintB * lightB * k;
+                }
+                else
+                {
+                    r = elementColor.r * gammaStrength;
+                    g = elementColor.g * gammaStrength;
+                    b = elementColor.b * gammaStrength;
+                }
+                Color finalColor = new Color(Mathf.Clamp01(r), Mathf.Clamp01(g), Mathf.Clamp01(b), 1f);
 
                 quad.Renderer.GetPropertyBlock(quad.Properties);
                 quad.Properties.SetColor(sColorId, finalColor);
