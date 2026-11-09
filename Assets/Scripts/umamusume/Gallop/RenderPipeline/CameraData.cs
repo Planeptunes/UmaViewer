@@ -32,12 +32,13 @@ namespace Gallop.RenderPipeline
 
         public void UpdateImageEffectParameter()
         {
-            // Native RVA 0x1a0da30; recomputed again before each render.
-            // Strict > (not >=): when DofFocalSize equals DofMaxFocalSize the native game still
-            // renders DOF (song 1053 frame 360: forcalSize=30, maxForcalSize=30, DOF visible).
+            // Native CameraData.UpdateImageEffectParameter (JP RVA 0x523A6B0, verified in Ghidra):
+            // IsDisableDofTemporary = IsEnableDofAutoDisable && DofMaxFocalSize <= DofFocalSize,
+            // i.e. >= (inclusive). A key whose focal size reaches the max (e.g. song 1053:
+            // forcalSize 30 = maxForcalSize 30) turns the DOF off, so the far stage stays sharp.
             ref var dof = ref Parameter.DofDiffuionBloomOverlay;
             dof.IsDisableDofTemporary = dof.IsEnableDofAutoDisable &&
-                dof.DofFocalSize > dof.DofMaxFocalSize;
+                dof.DofFocalSize >= dof.DofMaxFocalSize;
             // Per-effect switch of the live settings panel (Bloom/Diffusion/PostFilm are masked
             // inside DecideDrawType, which reads this parameter's own flags).
             dof.DecideDrawType(
