@@ -3,14 +3,19 @@
 // malla, una por elemento), así que el shader sólo compone la textura con el tinte del elemento.
 //
 // Blend One One: es un flare aditivo, el fondo del atlas es negro y la forma la da el propio atlas.
-// ZTest LEqual: el quad se coloca a la profundidad de la luz de origen, así que la geometría opaca
-// que esté más cerca de la cámara (personajes, decorado) lo tapa, como hacía el flare nativo.
+// ZTest Always (propiedad _ZTest, por defecto 8): es lo que declara el shader nativo del flare; el
+// juego no recorta el flare contra el buffer de profundidad. Con LEqual el halo de las esferas del
+// escenario salía cortado por la mitad contra la geometría cercana.
 Shader "Hidden/UmaViewer/LensFlareAdditive"
 {
     Properties
     {
         _MainTex ("Texture", 2D) = "white" {}
         _Color ("Tint", Color) = (1,1,1,1)
+        // Depth test of the flare quads (UnityEngine.Rendering.CompareFunction): 8 = Always (default,
+        // what the native Gallop/3D/Bg/LensFlare shader declares; verified in the game binary),
+        // 4 = LEqual (old behaviour, clipped the halo of the balls against neighbouring geometry).
+        [Enum(UnityEngine.Rendering.CompareFunction)] _ZTest ("ZTest", Float) = 8
     }
 
     SubShader
@@ -25,11 +30,11 @@ Shader "Hidden/UmaViewer/LensFlareAdditive"
 
         Blend One One
         ZWrite Off
-        // ZTest LEqual matches the native LensFlareRenderPass (URP pass at AfterRenderingTransparents):
-        // flares are occluded by opaque geometry in front of the light source. The small depth bias
-        // in CustomLensFlare.LateUpdate (offsetting the quad toward the camera) prevents z-fighting
-        // with the light fixture mesh at the same depth.
-        ZTest LEqual
+        // The native flare shader is `ZTest Always`: the game does not clip a flare against the depth
+        // buffer (occlusion is a CPU test, see CustomLensFlare.RuntimeOcclusion / IgnoreLayers). With
+        // LEqual and the small depth bias of CustomLensFlare.LateUpdate the halo of the stage balls
+        // was cut in half against neighbouring geometry.
+        ZTest [_ZTest]
         Cull Off
         Lighting Off
 
