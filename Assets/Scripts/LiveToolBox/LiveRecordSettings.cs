@@ -75,8 +75,13 @@ public class LiveRecordSettings
     public string ResolvedName
         => string.IsNullOrWhiteSpace(fileName) ? "Live" : SanitizeFileName(fileName.Trim());
 
+    //Only the video goes to the folder the user picked. The recorder's own files live under the
+    //default Recordings folder: the audio mixdown (scratch, deleted once muxed) and the diagnostic
+    //profiles (kept, one pair per recording).
+    public static string WorkFolder => Path.Combine(DefaultFolder, "Temp");
+    public static string ProfileFolder => Path.Combine(DefaultFolder, "Profiles");
+
     public string VideoPath => Path.Combine(ResolvedFolder, ResolvedName + ".mp4");
-    public string AudioPath => Path.Combine(ResolvedFolder, ResolvedName + ".wav");
     //Máster sin pérdida (solo si 'masterMode'): FFV1 en Matroska, con el audio PCM dentro.
     public string MasterPath => Path.Combine(ResolvedFolder, ResolvedName + ".master.mkv");
 

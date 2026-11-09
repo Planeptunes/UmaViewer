@@ -65,6 +65,7 @@ public class LiveRecordDirector : MonoBehaviour
     private string _ffmpeg;
     private string _tempVideoPath;
     private string _videoError;
+    private string _runName;   //output name + timestamp (work and profile files)
 
     private int _totalFrames;
     private int _frameScheduled;   //frames de timeline ya fijados en el Director
@@ -112,22 +113,41 @@ public class LiveRecordDirector : MonoBehaviour
     //se graba (ver 'BeginWhenReady').
     private bool _asyncReadback;
     private bool _asyncFailed;
-    private bool _readbackPending;
-    private AsyncGPUReadbackRequest _pendingReadback;
     private UniversalRenderPipelineAsset _savedPipeline;
     private float _savedRenderScale = 1f;
 
-    //Tiempos de la lectura asíncrona (su callback cae en otro frame, así que se acumulan aparte).
-    private double _asyncCopyMs, _asyncWriteMs;
-    private int _asyncFrames;
+    //Asynchronous readback timings (frames are handed to FFmpeg a few frames later, so they are
+    //accumulated separately).
+    private double _asyncWriteMs, _slotWaitMs;
+    private int _asyncFrames, _slotWaits, _asyncDropped, _maxInFlightSeen;
 
-    //Búferes nativos para la lectura asíncrona sin copias: la GPU escribe en uno y el hilo escritor lo
-    //manda a FFmpeg tal cual. Varios búferes para que siempre haya uno libre.
+    //Native buffers for the zero-copy asynchronous readback. Each slot goes FREE -> GPU (readback in
+    //flight) -> WRITER (queued to FFmpeg; the writer thread copies it to stdin) -> FREE. Several
+    //readbacks stay in flight at once, so the main thread no longer waits for the previous frame's
+    //GPU work (WaitForCompletion every frame) and never copies the frame itself.
+    private const int SlotFree = 0, SlotGpu = 1, SlotWriter = 2;
+    private const long AsyncBufferBudgetBytes = 512L << 20;
+    private const int MaxReadbacksInFlight = 3;
     private NativeArray<byte>[] _asyncBuffers;
-    private bool[] _asyncBusy;
+    private int[] _slotState;
     private int _asyncCursor;
     private int _asyncBufferBytes;
-    private int _pendingIndex = -1;
+    private int _maxInFlight;
+    private Action<int> _releaseSlot;
+    private readonly AutoResetEvent _slotReleased = new AutoResetEvent(false);
+
+    private struct InFlightReadback
+    {
+        public AsyncGPUReadbackRequest Request;
+        public int Slot;
+    }
+    //FIFO: frames are handed to FFmpeg strictly in the order they were requested.
+    private readonly System.Collections.Generic.Queue<InFlightReadback> _inFlight =
+        new System.Collections.Generic.Queue<InFlightReadback>();
+
+    //Frames of the Recording phase already captured (readback requested). Separate from
+    //'_frameWritten' (handed to FFmpeg), which lags behind by the readbacks in flight.
+    private int _frameCaptured;
 
     //Tamaño del frame que va a la CPU (tamaño de salida) y tiempo de la reducción en GPU.
     private int _captureW, _captureH;
@@ -150,6 +170,7 @@ public class LiveRecordDirector : MonoBehaviour
     private GameObject _coverCanvas;
     private Text _lyricsText;
     private Text _lyricsSource;
+    private bool _lyricsNeedsRender;
 
     //Estado a restaurar al terminar.
     private bool _savedEnableRendering;
@@ -226,6 +247,14 @@ public class LiveRecordDirector : MonoBehaviour
         PostEffectSelection.PopOverride();
         //Diagnóstico: si se sale del Play Mode a mitad de grabación, deja igualmente lo medido hasta ahí.
         LiveRecordProfile.Dump();
+        //Torn down without Restore() (e.g. leaving Play Mode mid-recording): stop FFmpeg and free the
+        //native readback buffers that are no longer in use.
+        if (_phase != Phase.Done)
+        {
+            try { _pipe?.Dispose(); } catch { }
+            try { DisposeAsyncBuffers(); } catch { }
+        }
+        try { _slotReleased.Close(); } catch { }
         if (Instance == this) Instance = null;
     }
 
@@ -328,6 +357,10 @@ public class LiveRecordDirector : MonoBehaviour
             }
         }
 
+        //CPU marker window (a few seconds in the middle of the recording): per-frame cost of every
+        //engine/script marker. Its frames are tagged 'm' so they do not skew the 'c' figures.
+        if (_phase == Phase.Recording) LiveRecordProfile.TickMarkers(_frameScheduled);
+
         _frameStartMs = now;
         _markMs = now;
         _submitEndMs = 0;
@@ -362,9 +395,14 @@ public class LiveRecordDirector : MonoBehaviour
             _probeDrainFrame = _frameScheduled % _probeDrainEvery == 0;
             _curPhase = _probeDrainFrame ? 'q' : 'p';
         }
+        else if (_phase == Phase.ProbeRead)
+        {
+            _curPhase = 'b';
+        }
         else
         {
-            _curPhase = _phase == Phase.ProbeRead ? 'b' : 'c';
+            //'_frameScheduled' was already advanced: the frame rendered now is the previous index.
+            _curPhase = LiveRecordProfile.InMarkerWindow(_frameScheduled - 1) ? 'm' : 'c';
         }
     }
 
@@ -435,7 +473,13 @@ public class LiveRecordDirector : MonoBehaviour
         try { Directory.CreateDirectory(folder); }
         catch (Exception e) { Abort("Cannot create the output folder: " + e.Message); return; }
 
-        _audioPath = Path.Combine(folder, name + ".wav");
+        //The audio mixdown is scratch: it goes to the recorder's work folder (never next to the video)
+        //and is deleted once muxed. A timestamp keeps recordings with the same name apart.
+        _runName = name + "_" + DateTime.Now.ToString("yyMMdd_HHmmss");
+        string workFolder = LiveRecordSettings.WorkFolder;
+        try { PrepareWorkFolder(workFolder, folder); }
+        catch (Exception e) { Abort("Cannot create the work folder: " + e.Message); return; }
+        _audioPath = Path.Combine(workFolder, _runName + ".wav");
         //Nombre provisional: si la grabación se interrumpe (p. ej. se sale del Play Mode) queda este
         //fichero a medias en lugar de un MP4 incompleto con el nombre bueno. Con máster, el contenedor
         //es Matroska (FFV1 no va en MP4).
@@ -493,11 +537,14 @@ public class LiveRecordDirector : MonoBehaviour
         _asyncReadback = SystemInfo.supportsAsyncGPUReadback;
         if (_asyncReadback)
         {
-            //Cuatro búferes persistentes del tamaño de SALIDA. La GPU escribe en uno; el callback copia
-            //a un búfer de RAM (2-3 ms) y lo libera al instante, así que nunca escasean.
+            //Persistent buffers at OUTPUT size: up to 8 within a 512 MB budget (8 at 4K), never fewer
+            //than 4. Up to 3 readbacks in flight, the rest covers the frames queued to FFmpeg.
             _asyncBufferBytes = _captureW * _captureH * 4;
-            _asyncBuffers = new NativeArray<byte>[4];
-            _asyncBusy = new bool[4];
+            int slots = (int)Math.Max(4L, Math.Min(8L, AsyncBufferBudgetBytes / Math.Max(1, _asyncBufferBytes)));
+            _maxInFlight = Mathf.Min(MaxReadbacksInFlight, slots - 1);
+            _asyncBuffers = new NativeArray<byte>[slots];
+            _slotState = new int[slots];
+            _releaseSlot = ReleaseSlot;
             for (int i = 0; i < _asyncBuffers.Length; i++)
                 _asyncBuffers[i] = new NativeArray<byte>(_asyncBufferBytes, Allocator.Persistent,
                                                          NativeArrayOptions.UninitializedMemory);
@@ -505,7 +552,8 @@ public class LiveRecordDirector : MonoBehaviour
 
         //Diagnóstico del bucle (opcional): perfil por frame y sondas antes de grabar.
         //Ver LiveRecordProfile.cs; con el perfil apagado no cuesta nada.
-        LiveRecordProfile.Configure(folder, name);
+        //Profiles always go to Recordings/Profiles, whatever folder the video goes to.
+        LiveRecordProfile.Configure(LiveRecordSettings.ProfileFolder, _runName);
         _profile = LiveRecordProfile.Resolve();
         if (_profile)
         {
@@ -620,8 +668,9 @@ public class LiveRecordDirector : MonoBehaviour
                       " (nivel " + _settings.qualityLevel + ")"));
                 LiveRecordProfile.Note("entrega: " + LiveFfmpeg.EncoderLabel(_settings.qualityLevel,
                     nvencH264, nvencHevc, nvencHevc444, nvencHevc44410));
-                LiveRecordProfile.Note(string.Format("frame a la CPU: {0}x{1} ({2:0.0} MB)",
-                    _captureW, _captureH, _asyncBufferBytes / 1048576.0));
+                LiveRecordProfile.Note(string.Format("frame a la CPU: {0}x{1} ({2:0.0} MB); búferes nativos {3}, lecturas en vuelo máx. {4}",
+                    _captureW, _captureH, _asyncBufferBytes / 1048576.0,
+                    _asyncBuffers != null ? _asyncBuffers.Length : 0, _maxInFlight));
             }
         }
         catch (Exception e) { Abort("Could not start FFmpeg: " + e.Message); return; }
@@ -671,8 +720,10 @@ public class LiveRecordDirector : MonoBehaviour
     {
         _frameScheduled = 0;
         _frameWritten = 0;
+        _frameCaptured = 0;
         _startRealtime = Time.realtimeSinceStartupAsDouble;
         _phase = Phase.Recording;
+        if (_profile) LiveRecordProfile.PlanMarkerWindow(_totalFrames, _settings.fps);
     }
 
     //Asigna el RenderTexture a la cámara que presenta el show en este frame (la que cambia según el
@@ -712,6 +763,8 @@ public class LiveRecordDirector : MonoBehaviour
     {
         if (cam == null || _rt == null) return;
 
+        if (cam == _lyricsCamera) _lyricsNeedsRender = false;   //the lyrics RT is up to date
+
         var director = Director.instance;
         if (cam == _frameCamera || (director != null && director.IsPresentationCamera(cam)))
             _showRenderedFrame = Time.frameCount;
@@ -727,7 +780,11 @@ public class LiveRecordDirector : MonoBehaviour
         {
             yield return new WaitForEndOfFrame();
 
-            bool recording = _phase == Phase.Recording;
+            //The last timeline frame is scheduled in the same Update that switches to 'Draining', so a
+            //frame still counts as recording while it has been scheduled but not captured yet (before,
+            //that last frame was dropped: 15599 of 15600).
+            bool recording = (_phase == Phase.Recording || _phase == Phase.Draining) &&
+                             _frameCaptured < _frameScheduled;
             bool probeRead = _phase == Phase.ProbeRead;
             bool probeRender = _phase == Phase.ProbeRender;
             if (!recording && !probeRead && !probeRender) continue;
@@ -739,7 +796,8 @@ public class LiveRecordDirector : MonoBehaviour
             //'_probeDrainEvery' frames (para vaciar la GPU de vez en cuando y que el bucle no
             //se mida "adelantando" trabajo). Ni una ni otra envían nada a FFmpeg.
             bool read = recording || probeRead || (probeRender && _probeDrainFrame);
-            if (recording && _frameWritten >= _totalFrames) continue;
+            if (recording && _frameCaptured >= _totalFrames) continue;
+            if (recording) _frameCaptured++;
 
             if (_profile)
             {
@@ -786,11 +844,14 @@ public class LiveRecordDirector : MonoBehaviour
 
             if (_asyncReadback)
             {
-                //La GPU entrega el frame por el callback, sin bloquear este hilo.
+                //The GPU delivers the frame a few frames later, without blocking this thread.
                 RequestAsyncReadback(target);
                 return;
             }
 
+            //Synchronous path (no async support, or it failed): earlier asynchronous frames still in
+            //flight must reach FFmpeg first to keep the order.
+            FlushReadback();
             ReadBackSync(target);
             if (_profile) MarkStage(ref _curReadMs);
             SendReadbackTexture(_readback.GetRawTextureData<byte>(), true);
@@ -852,127 +913,191 @@ public class LiveRecordDirector : MonoBehaviour
         _readback = new Texture2D(_captureW, _captureH, TextureFormat.RGBA32, false);
     }
 
-    //Pide la lectura asíncrona del frame, directamente a un búfer nativo. Si la anterior aún no ha
-    //llegado se espera: saltarse un frame rompería la secuencia del vídeo.
+    //Requests the asynchronous readback of this frame straight into a free native buffer. Up to
+    //'_maxInFlight' readbacks stay pending, so the CPU keeps preparing the next frames while the GPU
+    //finishes the previous ones; the main thread only waits when it gets that far ahead, or when every
+    //buffer is still queued to FFmpeg (real encoder backpressure). No frame is ever skipped.
     private void RequestAsyncReadback(RenderTexture source)
     {
-        if (_readbackPending)
-        {
-            try { _pendingReadback.WaitForCompletion(); } catch { _readbackPending = false; }
-        }
+        //Hand to FFmpeg whatever the GPU has already delivered (in order).
+        DrainReadbacks(false);
 
-        int index = PickFreeAsyncBuffer();
-        if (index < 0)
+        //Too far ahead of the GPU: wait for the oldest readback only.
+        while (_inFlight.Count >= _maxInFlight) CompleteOldestReadback();
+
+        int slot = AcquireFreeSlot();
+        if (slot < 0)
         {
-            //No debería ocurrir: el búfer se libera en cuanto se copia (2-3 ms), no al escribir. Si
-            //pasara, se espera a lo pendiente y se reintenta; el camino síncrono queda como último
-            //recurso y se cuenta, para verlo en el perfil si alguna vez se usa.
+            //Last resort (the writer did not release any buffer in time): synchronous read, counted
+            //in the profile. Earlier frames go first to keep the order.
             _fallbacks++;
-            try { _pendingReadback.WaitForCompletion(); } catch { }
-            _readbackPending = false;
-            index = PickFreeAsyncBuffer();
-
-            if (index < 0)
-            {
-                ReadBackSync(source);
-                if (_profile) MarkStage(ref _curReadMs);
-                SendReadbackTexture(_readback.GetRawTextureData<byte>(), true);
-                return;
-            }
+            FlushReadback();
+            ReadBackSync(source);
+            if (_profile) MarkStage(ref _curReadMs);
+            SendReadbackTexture(_readback.GetRawTextureData<byte>(), true);
+            return;
         }
 
-        _asyncBusy[index] = true;
-        _pendingIndex = index;
-        _readbackPending = true;
-        _pendingReadback = AsyncGPUReadback.RequestIntoNativeArray(ref _asyncBuffers[index], source, 0,
-                                                                  TextureFormat.RGBA32, OnAsyncReadback);
+        Volatile.Write(ref _slotState[slot], SlotGpu);
+        var request = AsyncGPUReadback.RequestIntoNativeArray(ref _asyncBuffers[slot], source, 0,
+                                                             TextureFormat.RGBA32);
+        _inFlight.Enqueue(new InFlightReadback { Request = request, Slot = slot });
+        if (_inFlight.Count > _maxInFlightSeen) _maxInFlightSeen = _inFlight.Count;
         if (_profile) MarkStage(ref _curReadMs);
     }
 
-    //Busca un búfer nativo que el hilo escritor haya terminado de usar.
-    private int PickFreeAsyncBuffer()
+    //Returns a FREE slot, waiting for the GPU or for the FFmpeg writer if none is free. -1 only if
+    //nothing is released for a long time (or the pipe is gone).
+    private int AcquireFreeSlot()
+    {
+        double waitStart = -1;
+        double deadline = Time.realtimeSinceStartupAsDouble + 15.0;
+        try
+        {
+            while (true)
+            {
+                int slot = PickFreeSlot();
+                if (slot >= 0) return slot;
+
+                if (waitStart < 0)
+                {
+                    waitStart = LiveRecordProfile.NowMs;
+                    _slotWaits++;
+                }
+
+                //A finished readback moves to the writer; it does not free a slot by itself, but it
+                //lets the writer progress towards releasing one.
+                if (_inFlight.Count > 0) { CompleteOldestReadback(); continue; }
+
+                if (_pipe == null || Time.realtimeSinceStartupAsDouble > deadline) return -1;
+                _slotReleased.WaitOne(50);
+            }
+        }
+        finally
+        {
+            if (waitStart >= 0)
+            {
+                double waited = LiveRecordProfile.NowMs - waitStart;
+                _slotWaitMs += waited;
+                if (_profile) _curWriteMs += waited;
+            }
+        }
+    }
+
+    private int PickFreeSlot()
     {
         if (_asyncBuffers == null) return -1;
         for (int k = 1; k <= _asyncBuffers.Length; k++)
         {
             int i = (_asyncCursor + k) % _asyncBuffers.Length;
-            if (!_asyncBusy[i]) { _asyncCursor = i; return i; }
+            if (Volatile.Read(ref _slotState[i]) == SlotFree) { _asyncCursor = i; return i; }
         }
         return -1;
     }
 
-    //Callback de la lectura asíncrona (se ejecuta en el hilo principal). Aquí se copia el frame a RAM y
-    //se libera el búfer de GPU ENSEGUIDA: así el siguiente frame nunca se queda sin sitio aunque el
-    //hilo escritor vaya con retraso (era lo que hacía caer medio bucle al camino síncrono).
-    private void OnAsyncReadback(AsyncGPUReadbackRequest request)
+    //Called by the FFmpeg writer thread once a native frame is in stdin (or dropped on failure).
+    private void ReleaseSlot(int slot)
     {
-        _readbackPending = false;
-        int index = _pendingIndex;
-        _pendingIndex = -1;
-        if (index < 0) return;
+        var states = _slotState;
+        if (states == null || slot < 0 || slot >= states.Length) return;
+        Volatile.Write(ref states[slot], SlotFree);
+        try { _slotReleased.Set(); } catch { }
+    }
 
-        if (request.hasError)
+    //Hands finished readbacks to FFmpeg in request order. With 'wait' it blocks until all are done.
+    private void DrainReadbacks(bool wait)
+    {
+        while (_inFlight.Count > 0)
         {
-            _asyncBusy[index] = false;
+            var head = _inFlight.Peek();
+            if (!head.Request.done)
+            {
+                if (!wait) break;
+                try { head.Request.WaitForCompletion(); } catch { }
+            }
+            _inFlight.Dequeue();
+            HandOffReadback(head);
+        }
+    }
+
+    private void CompleteOldestReadback()
+    {
+        if (_inFlight.Count == 0) return;
+        var head = _inFlight.Dequeue();
+        if (!head.Request.done)
+        {
+            try { head.Request.WaitForCompletion(); } catch { }
+        }
+        HandOffReadback(head);
+    }
+
+    //A finished readback: its native buffer goes straight to the FFmpeg writer thread, which copies it
+    //to stdin and releases the slot (no 32 MB copy on the main thread any more).
+    private void HandOffReadback(InFlightReadback item)
+    {
+        int slot = item.Slot;
+        if (item.Request.hasError)
+        {
+            ReleaseSlot(slot);
+            _asyncDropped++;
+            _videoError = "asynchronous readback failed";
             if (!_asyncFailed)
             {
                 _asyncFailed = true;
                 _asyncReadback = false;
-                Debug.LogWarning("[LiveRecord] The asynchronous pixel readback failed; switching to the synchronous one.");
+                Debug.LogWarning("[LiveRecord] The asynchronous pixel readback failed (a frame was lost); switching to the synchronous one.");
             }
+            return;
+        }
+
+        if (_pipe == null)
+        {
+            ReleaseSlot(slot);
             return;
         }
 
         try
         {
-            int length = _asyncBufferBytes;
-            var buffer = _pipe.Rent();
-            if (buffer.Length != length) buffer = new byte[length];
-
-            double t0 = _profile ? LiveRecordProfile.NowMs : 0;
-            _asyncBuffers[index].CopyTo(buffer);
-            _asyncBusy[index] = false;   //el búfer de GPU ya está libre
-            double t1 = _profile ? LiveRecordProfile.NowMs : 0;
-
-            _pipe.Write(buffer, length);
-            double t2 = _profile ? LiveRecordProfile.NowMs : 0;
-
-            if (_profile)
-            {
-                _asyncCopyMs += t1 - t0;
-                _asyncWriteMs += t2 - t1;
-                _asyncFrames++;
-                _curPending = _pipe.Pending;
-            }
+            double t0 = LiveRecordProfile.NowMs;
+            Volatile.Write(ref _slotState[slot], SlotWriter);
+            _pipe.WriteNative(_asyncBuffers[slot], _asyncBufferBytes, slot, _releaseSlot);
+            _asyncWriteMs += LiveRecordProfile.NowMs - t0;
+            _asyncFrames++;
+            if (_profile) _curPending = _pipe.Pending;
             _frameWritten++;
         }
         catch (Exception e)
         {
-            _asyncBusy[index] = false;
+            ReleaseSlot(slot);
             _videoError = e.Message;
             Debug.LogError("[LiveRecord] Failed to send the asynchronous frame: " + e);
         }
     }
 
-    //Libera los búferes nativos. Se llama al restaurar, DESPUÉS de cerrar la tubería (su hilo escritor
-    //podría estar usándolos).
+    //Disposes the native buffers. Called on restore, AFTER the pipe is closed. A buffer still held by
+    //the GPU or by a writer thread that did not stop is left alone (leaked) rather than freed under it.
     private void DisposeAsyncBuffers()
     {
         if (_asyncBuffers == null) return;
+        int leaked = 0;
         for (int i = 0; i < _asyncBuffers.Length; i++)
-            if (_asyncBuffers[i].IsCreated) _asyncBuffers[i].Dispose();
+        {
+            if (!_asyncBuffers[i].IsCreated) continue;
+            if (_slotState != null && Volatile.Read(ref _slotState[i]) != SlotFree) { leaked++; continue; }
+            _asyncBuffers[i].Dispose();
+        }
+        if (leaked > 0)
+            Debug.LogWarning("[LiveRecord] " + leaked + " readback buffer(s) were still in use and could not be released.");
         _asyncBuffers = null;
-        _asyncBusy = null;
-        _pendingIndex = -1;
+        _slotState = null;
+        _inFlight.Clear();
     }
 
-    //Espera a que la última lectura asíncrona llegue antes de cerrar la tubería (si no se perdería el
-    //último frame).
+    //Waits for every pending readback and hands it to FFmpeg, in order (otherwise the last frames of
+    //the recording would be lost).
     private void FlushReadback()
     {
-        if (!_readbackPending) return;
-        try { _pendingReadback.WaitForCompletion(); } catch { }
-        _readbackPending = false;
+        DrainReadbacks(true);
     }
 
     private void MarkStage(ref double slot)
@@ -1387,13 +1512,26 @@ public class LiveRecordDirector : MonoBehaviour
                 sourceScaler != null ? sourceScaler.referenceResolution.y : -1f,
                 _lyricsText.fontSize, rect.sizeDelta.x, rect.sizeDelta.y));
 
+        _lyricsNeedsRender = true;   //first image of the RT, even if the text starts empty
         UpdateLyricsCanvas();
     }
 
+    //The lyrics camera only renders on the frames where the text changes: its RenderTexture keeps the
+    //last image while the camera is disabled, and the capture composites that RT every frame, so the
+    //video is identical while a whole URP camera render per frame is saved.
     private void UpdateLyricsCanvas()
     {
         if (_lyricsText == null) return;
-        _lyricsText.text = _lyricsSource != null ? _lyricsSource.text : "";
+        string text = _lyricsSource != null ? _lyricsSource.text : "";
+        if (text == null) text = "";
+
+        bool changed = !string.Equals(_lyricsText.text, text, StringComparison.Ordinal);
+        if (changed) _lyricsText.text = text;
+        if (changed || (_lyricsRT != null && !_lyricsRT.IsCreated())) _lyricsNeedsRender = true;
+
+        //The request is only cleared once the camera has really rendered (see OnCameraRendered).
+        bool render = _lyricsNeedsRender;
+        if (_lyricsCamera != null && _lyricsCamera.enabled != render) _lyricsCamera.enabled = render;
     }
 
     //Sube la jerarquía a mano en vez de usar GetComponentInParent: el HUD del live está apagado
@@ -1480,8 +1618,12 @@ public class LiveRecordDirector : MonoBehaviour
 
             if (_asyncFrames > 0)
                 LiveRecordProfile.Note(string.Format(
-                    "lectura asíncrona: {0} frames; copia {1:0.0} ms + envío {2:0.0} ms por frame (hilo principal); lecturas síncronas por falta de búfer: {3}",
-                    _asyncFrames, _asyncCopyMs / _asyncFrames, _asyncWriteMs / _asyncFrames, _fallbacks));
+                    "lectura asíncrona: {0} frames; envío {1:0.00} ms por frame (hilo principal, sin copia); lecturas en vuelo máx. {2}; " +
+                    "esperas por búfer {3} ({4:0.0} s en total); lecturas síncronas de reserva {5}; frames perdidos {6}",
+                    _asyncFrames, _asyncWriteMs / _asyncFrames, _maxInFlightSeen, _slotWaits, _slotWaitMs / 1000.0,
+                    _fallbacks, _asyncDropped));
+            LiveRecordProfile.Note(string.Format("frames: {0} programados, {1} capturados, {2} enviados a FFmpeg",
+                _frameScheduled, _frameCaptured, _frameWritten));
         }
 
         StartCoroutine(FinalizeRoutine());
@@ -1535,6 +1677,7 @@ public class LiveRecordDirector : MonoBehaviour
         string finalPath = master ? _settings.MasterPath : _settings.VideoPath;
         bool hasAudio = !string.IsNullOrEmpty(_audioPath) && File.Exists(_audioPath);
         bool muxed = false;
+        bool keepAudio = false;
 
         //------------------------------------------------------------------------
         // 2) Mux del audio (con el máster se COPIA el PCM: son varios GB de lectura/escritura).
@@ -1569,11 +1712,23 @@ public class LiveRecordDirector : MonoBehaviour
                 }
 
                 muxed = _jobOk;
-                if (!muxed) Debug.LogError("[LiveRecord] Could not mux the audio: " + _jobError);
+                if (!muxed)
+                {
+                    Debug.LogError("[LiveRecord] Could not mux the audio: " + _jobError);
+                    //The user still gets the video (without sound) under its final name; the mixed WAV
+                    //is kept in the work folder so it can be muxed by hand.
+                    if (MoveReplacing(_tempVideoPath, finalPath))
+                    {
+                        muxed = true;
+                        keepAudio = true;
+                        Debug.LogWarning("[LiveRecord] The video was saved WITHOUT sound: " + finalPath +
+                                         ". The mixed audio is kept at " + _audioPath);
+                    }
+                }
             }
             else
             {
-                try { File.Move(_tempVideoPath, finalPath); muxed = true; } catch { }
+                muxed = MoveReplacing(_tempVideoPath, finalPath);
             }
         }
 
@@ -1581,6 +1736,9 @@ public class LiveRecordDirector : MonoBehaviour
         {
             try { if (File.Exists(_tempVideoPath)) File.Delete(_tempVideoPath); } catch { }
         }
+
+        //The audio mixdown is never left behind once it has been muxed (or there is no video to mux).
+        if (!keepAudio) DeleteQuietly(_audioPath);
 
         //------------------------------------------------------------------------
         // 3) Reencode de entrega desde el máster (High o superior). Es lo más largo después del
@@ -1684,10 +1842,57 @@ public class LiveRecordDirector : MonoBehaviour
         }
     }
 
+    //Creates the recorder's work folder and empties it: whatever is left there comes from earlier
+    //recordings that were interrupted (or kept a WAV after a failed mux). It is never emptied if the
+    //user picked that same folder for the video.
+    private static void PrepareWorkFolder(string workFolder, string outputFolder)
+    {
+        Directory.CreateDirectory(workFolder);
+        if (SamePath(workFolder, outputFolder)) return;
+
+        foreach (string file in Directory.GetFiles(workFolder))
+            DeleteQuietly(file);
+    }
+
+    private static bool SamePath(string a, string b)
+    {
+        try
+        {
+            string fa = Path.GetFullPath(a).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string fb = Path.GetFullPath(b).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return string.Equals(fa, fb, StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
+    }
+
+    //Renames the finished video to its final name, replacing a previous recording with that name (the
+    //mux step already overwrites with -y; a plain File.Move would fail instead).
+    private static bool MoveReplacing(string source, string destination)
+    {
+        try
+        {
+            if (!File.Exists(source)) return false;
+            if (File.Exists(destination)) File.Delete(destination);
+            File.Move(source, destination);
+            return true;
+        }
+        catch (Exception e)
+        {
+            Debug.LogError("[LiveRecord] Could not move the video to " + destination + ": " + e.Message);
+            return false;
+        }
+    }
+
+    private static void DeleteQuietly(string path)
+    {
+        try { if (!string.IsNullOrEmpty(path) && File.Exists(path)) File.Delete(path); } catch { }
+    }
+
     private void Abort(string message)
     {
         Debug.LogError("[LiveRecord] " + message);
         LiveRecordProfile.Dump();   //diagnóstico: deja el perfil de lo medido hasta aquí
+        DeleteQuietly(_audioPath);  //scratch; if the mixdown thread still holds it, the next recording purges it
         if (UmaViewerUI.Instance != null)
             UmaViewerUI.Instance.ShowMessage("Recording: " + message, UIMessageType.Error);
         _phase = Phase.Done;

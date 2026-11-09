@@ -1427,8 +1427,12 @@ public class UmaContainerCharacter : UmaContainer
         if (IsMini)
             return;
 
-        AlterLateUpdateRuntime();
-        AlterLateUpdatePostRuntime();
+        using (LiveRecordMarkers.CharacterLateUpdate.Auto())
+        {
+            AlterLateUpdateRuntime();
+            using (LiveRecordMarkers.CharacterPostRuntime.Auto())
+                AlterLateUpdatePostRuntime();
+        }
     }
 
     public void SetShaderParameterRuntime()
@@ -1520,6 +1524,7 @@ public class UmaContainerCharacter : UmaContainer
         // quieta: la restriccion de longitud + la rigidez devuelven la cadena a la pose de
         // reposo y la tela/pelo se queda RIGIDA (medido: huesos con localRotation constante).
         if (EnablePhysics && _cySpringLoaded && _cySpringController != null)
+        using (LiveRecordMarkers.CharacterCySpring.Auto())
         {
             float dt = Time.deltaTime;
             if (dt <= 0.0f)

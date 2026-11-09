@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Threading;
+using Unity.Collections;
 using UnityEngine;
 using Debug = UnityEngine.Debug;
 
@@ -286,11 +287,22 @@ public sealed class LiveFfmpegVideoPipe : IDisposable
     private readonly int _frameBytes;
     private readonly StringBuilder _stderr = new StringBuilder();
 
+    //A queued frame: either a managed buffer (synchronous readback path, returned to the pool) or a
+    //native buffer owned by the recorder (asynchronous readback path, handed back through 'Release'
+    //once its bytes are in FFmpeg's stdin).
     private struct Frame
     {
         public byte[] Buffer;
+        public NativeArray<byte> Native;
+        public int Slot;
+        public Action<int> Release;
         public int Length;
     }
+
+    //Native frames are copied to stdin in chunks through this writer-thread-only buffer, so the main
+    //thread never copies the 32 MB (4K) frame itself.
+    private const int NativeChunkBytes = 4 << 20;
+    private byte[] _chunk;
 
     //Diagnóstico (ver LiveRecordProfile.cs): cola pendiente, frames ya entregados al codificador y
     //tiempo de espera por contrapresión del propio FFmpeg.
@@ -358,8 +370,8 @@ public sealed class LiveFfmpegVideoPipe : IDisposable
         };
         _process.BeginErrorReadLine();
 
-        //Sólo se pre-reservan dos búferes: la lectura asíncrona (la normal al grabar) no copia nada y
-        //no usa el pool; el resto se crean bajo demanda.
+        //Only two buffers are pre-allocated: the asynchronous readback (the normal path) queues native
+        //buffers and never uses the pool; the rest are created on demand.
         for (int i = 0; i < Mathf.Min(poolSize, 2); i++) _pool.Enqueue(new byte[_frameBytes]);
 
         _writer = new Thread(WriteLoop) { IsBackground = true, Name = "LiveFfmpegWriter" };
@@ -372,8 +384,8 @@ public sealed class LiveFfmpegVideoPipe : IDisposable
         return _pool.TryDequeue(out var buffer) ? buffer : new byte[_frameBytes];
     }
 
-    //Encola un frame que ya está en memoria (la lectura asíncrona copia a un búfer de RAM y libera el
-    //de GPU al instante, así que aquí siempre entra un byte[]).
+    //Queues a frame held in a managed buffer (synchronous readback path; the asynchronous one uses
+    //WriteNative and skips the main-thread copy).
     public void Write(byte[] buffer, int length)
     {
         long start = Stopwatch.GetTimestamp();
@@ -381,6 +393,48 @@ public sealed class LiveFfmpegVideoPipe : IDisposable
         try { _queue.Add(new Frame { Buffer = buffer, Length = length }); }
         catch (InvalidOperationException) { _pool.Enqueue(buffer); }
         CountWrite(start);
+    }
+
+    //Queues a frame that lives in a native buffer (asynchronous GPU readback). The writer thread copies
+    //it to stdin and then calls 'release(slot)' from that thread; the buffer must not be touched or
+    //disposed by the caller until then. 'release' is always called, also when the pipe has failed.
+    public void WriteNative(NativeArray<byte> buffer, int length, int slot, Action<int> release)
+    {
+        long start = Stopwatch.GetTimestamp();
+        var frame = new Frame { Native = buffer, Slot = slot, Release = release, Length = length };
+        if (HasFailed || _queue.IsAddingCompleted) { ReleaseFrame(frame); CountWrite(start); return; }
+        try { _queue.Add(frame); }
+        catch (InvalidOperationException) { ReleaseFrame(frame); }
+        CountWrite(start);
+    }
+
+    private void ReleaseFrame(Frame frame)
+    {
+        if (frame.Buffer != null)
+        {
+            _pool.Enqueue(frame.Buffer);
+            return;
+        }
+        try { frame.Release?.Invoke(frame.Slot); } catch { }
+    }
+
+    private void WriteFrame(Frame frame)
+    {
+        if (frame.Buffer != null)
+        {
+            _stdin.Write(frame.Buffer, 0, frame.Length);
+            return;
+        }
+
+        if (_chunk == null) _chunk = new byte[Math.Min(Math.Max(frame.Length, 1), NativeChunkBytes)];
+        int offset = 0;
+        while (offset < frame.Length)
+        {
+            int count = Math.Min(_chunk.Length, frame.Length - offset);
+            NativeArray<byte>.Copy(frame.Native, offset, _chunk, 0, count);
+            _stdin.Write(_chunk, 0, count);
+            offset += count;
+        }
     }
 
     private void CountWrite(long start)
@@ -398,15 +452,15 @@ public sealed class LiveFfmpegVideoPipe : IDisposable
         {
             foreach (var frame in _queue.GetConsumingEnumerable())
             {
-                if (HasFailed) { _pool.Enqueue(frame.Buffer); continue; }
+                if (HasFailed) { ReleaseFrame(frame); continue; }
                 try
                 {
-                    _stdin.Write(frame.Buffer, 0, frame.Length);
+                    WriteFrame(frame);
                     _framesWritten++;
                 }
-                catch (ThreadAbortException) { return; }   //cierre abrupto (salir del Play Mode)
+                catch (ThreadAbortException) { ReleaseFrame(frame); return; }   //cierre abrupto (salir del Play Mode)
                 catch (Exception e) { Fail(e.Message); }
-                _pool.Enqueue(frame.Buffer);
+                ReleaseFrame(frame);
             }
         }
         catch (ThreadAbortException) { }   //idem: la tubería muere con el proceso, no es un fallo del vídeo
@@ -450,6 +504,14 @@ public sealed class LiveFfmpegVideoPipe : IDisposable
         //Espera a que el hilo escritor suelte el frame que tuviera entre manos: los búferes nativos los
         //libera el grabador después y no pueden liberarse mientras se están escribiendo.
         try { _writer?.Join(2000); } catch { }
+        //Frames the writer never reached still hold native buffers of the recorder: hand them back so
+        //they can be disposed. Only safe once the writer has stopped.
+        try
+        {
+            if (_writer == null || !_writer.IsAlive)
+                while (_queue.TryTake(out var left)) ReleaseFrame(left);
+        }
+        catch { }
         try { _process?.Dispose(); } catch { }
     }
 }

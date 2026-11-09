@@ -1372,10 +1372,12 @@ namespace Gallop.Live
                 }
                 _effectLastTimelineTime = _liveCurrentTime;
             }
-            _liveTimelineControl.AlterUpdate(_liveCurrentTime);
+            using (LiveRecordMarkers.TimelineUpdate.Auto())
+                _liveTimelineControl.AlterUpdate(_liveCurrentTime);
             if (!_soloMode)
             {
-                UmaViewerAudio.AlterUpdate(_liveCurrentTime, partInfo, liveVocal, sliderControl.is_Outed, _capSameVoice, _maxSameVoice);
+                using (LiveRecordMarkers.AudioUpdate.Auto())
+                    UmaViewerAudio.AlterUpdate(_liveCurrentTime, partInfo, liveVocal, sliderControl.is_Outed, _capSameVoice, _maxSameVoice);
             }
         }
 
@@ -1384,27 +1386,38 @@ namespace Gallop.Live
             if (_lateTimelineAppliedThisFrame || _liveTimelineControl == null)
                 return;
 
-            _liveTimelineControl.AlterLateUpdate();
-            _livePropsController?.Evaluate(_liveTimelineControl.data.worksheetList,
-                _liveTimelineControl.currentLiveTime * 60f, _liveTimelineControl.PlayMode);
-            _liveMiniCharaController?.Evaluate(_liveTimelineControl.data.worksheetList,
-                _liveTimelineControl.currentLiveTime * 60f, _liveTimelineControl.PlayMode);
-            _footLightRuntime?.AlterLateUpdate();
+            using (LiveRecordMarkers.TimelineLateUpdate.Auto())
+                _liveTimelineControl.AlterLateUpdate();
+            using (LiveRecordMarkers.Props.Auto())
+                _livePropsController?.Evaluate(_liveTimelineControl.data.worksheetList,
+                    _liveTimelineControl.currentLiveTime * 60f, _liveTimelineControl.PlayMode);
+            using (LiveRecordMarkers.MiniChara.Auto())
+                _liveMiniCharaController?.Evaluate(_liveTimelineControl.data.worksheetList,
+                    _liveTimelineControl.currentLiveTime * 60f, _liveTimelineControl.PlayMode);
+            using (LiveRecordMarkers.FootLight.Auto())
+                _footLightRuntime?.AlterLateUpdate();
             _effectController?.Pause(!IsRecordVMD && (!_syncTime || sliderControl.is_Touched));
             _stageParticleController?.SetPaused(!IsRecordVMD && (!_syncTime || sliderControl.is_Touched));
-            _spotlightRuntime?.AlterLateUpdate();
-            _stageFlares?.AlterUpdate(MainRenderCamera);
+            using (LiveRecordMarkers.Spotlights.Auto())
+                _spotlightRuntime?.AlterLateUpdate();
+            using (LiveRecordMarkers.StageFlares.Auto())
+                _stageFlares?.AlterUpdate(MainRenderCamera);
             // StageFovShift places its own object against the camera the timeline just wrote, so it
             // has to run last (the native one closes StageController.AlterLateUpdate).
-            _stageController?.ApplyStageFovShifts();
+            using (LiveRecordMarkers.StageFovShift.Auto())
+                _stageController?.ApplyStageFovShifts();
             if (_volumeLightController != null)
             {
-                _volumeLightController.LateUpdateSunShafts(MainRenderCamera);
-                var parameter = Gallop.RenderPipeline.PostImageEffectFeature.RuntimeParameter;
-                parameter.SunShafts = _volumeLightController.SunShafts;
-                parameter.LightShafts = _volumeLightController.LightShafts;
+                using (LiveRecordMarkers.VolumeLight.Auto())
+                {
+                    _volumeLightController.LateUpdateSunShafts(MainRenderCamera);
+                    var parameter = Gallop.RenderPipeline.PostImageEffectFeature.RuntimeParameter;
+                    parameter.SunShafts = _volumeLightController.SunShafts;
+                    parameter.LightShafts = _volumeLightController.LightShafts;
+                }
             }
-            UpdateDofMaxFocalSize();
+            using (LiveRecordMarkers.DofFocal.Auto())
+                UpdateDofMaxFocalSize();
             _lateTimelineAppliedThisFrame = true;
         }
 
@@ -1543,7 +1556,8 @@ namespace Gallop.Live
                 // 时间轴和主相机都更新完后再同步 Laser Renderer/朝向。
                 // 这样既不会读取上一帧 LaserUpdateInfo，也不会读取上一帧相机姿态。
                 if (_stageController != null)
-                    _stageController.AlterUpdateLaserControllers();
+                    using (LiveRecordMarkers.Lasers.Auto())
+                        _stageController.AlterUpdateLaserControllers();
 
                 // Refresca las etiquetas de tiempo del live (tiempo actual / duracion total).
                 if (UI != null)
@@ -1553,7 +1567,8 @@ namespace Gallop.Live
                 // las pistas de audio se acaban de crear).
                 ApplyVideoSpeedIfChanged();
 
-                LiveRuntimeDiagnostics.RecordFrame(this);
+                using (LiveRecordMarkers.RuntimeDiagnostics.Auto())
+                    LiveRuntimeDiagnostics.RecordFrame(this);
             }
         }
 
@@ -1565,11 +1580,13 @@ namespace Gallop.Live
             }
 
             // Colas de render de las piezas alpha de los personajes (por profundidad, como el juego).
-            LiveModelRenderQueue.Update(this);
+            using (LiveRecordMarkers.ModelRenderQueue.Auto())
+                LiveModelRenderQueue.Update(this);
 
             if (_enableMirrorReflection && _mirrorRenderInLateUpdate)
             {
-                UpdateMirrorReflections();
+                using (LiveRecordMarkers.MirrorReflections.Auto())
+                    UpdateMirrorReflections();
             }
         }
 

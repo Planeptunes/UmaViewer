@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
+using Unity.Profiling;
+using Unity.Profiling.LowLevel.Unsafe;
 using UnityEngine;
 
 //(Grabación del live · diagnóstico) Perfil del bucle de grabación offline.
@@ -26,8 +28,17 @@ using UnityEngine;
 //  · fichero `record-profile.enable` en la carpeta de grabaciones (o junto al ejecutable/proyecto), o
 //  · `LiveRecordProfile.Enabled = true` desde código.
 //
-//La salida son dos ficheros junto al vídeo: `<nombre>.profile.csv` (una fila por frame) y
-//`<nombre>.profile.txt` (resumen). Ver LiveRecordDirector.cs.
+//The output is two files in Recordings/Profiles (never next to the video): `<name>_<yyMMdd_HHmmss>.profile.csv`
+//(one row per frame) and `<name>_<yyMMdd_HHmmss>.profile.txt` (summary). See LiveRecordDirector.cs.
+//
+//CPU MARKER WINDOW
+//-----------------
+//The recording loop is CPU-bound (render time barely changes from 1080p to 8K), so the profile also
+//breaks the frame down by profiler marker: for a few seconds in the middle of the recording (frames
+//tagged 'm') a ProfilerRecorder is attached to every timing marker the engine has registered (player
+//loop stages, URP cameras and passes, animation, particles, GC...) plus the 'LiveRecord.*' markers
+//placed in the live's own update code (see LiveRecordMarkers). The summary lists the most expensive
+//ones per frame. It only runs with the profile enabled.
 public static class LiveRecordProfile
 {
     public const string MarkerFileName = "record-profile.enable";
@@ -72,6 +83,16 @@ public static class LiveRecordProfile
         Samples.Clear();
         Notes.Clear();
         _dumped = false;
+        ResetMarkers();
+    }
+
+    private static void ResetMarkers()
+    {
+        StopMarkers(false);
+        _markerStart = -1;
+        _markerDone = false;
+        _markerFrames = 0;
+        _markerReport = null;
     }
 
     //Decide si el perfil está activo. Se llama una vez al empezar la grabación.
@@ -112,6 +133,7 @@ public static class LiveRecordProfile
         Samples.Clear();
         Notes.Clear();
         _dumped = false;
+        ResetMarkers();
     }
 
     public static void Note(string line)
@@ -123,6 +145,197 @@ public static class LiveRecordProfile
     public static void Push(Sample sample)
     {
         if (Samples.Count < MaxSamples) Samples.Add(sample);
+    }
+
+    //======================================================================
+    // CPU marker window
+    //======================================================================
+
+    private sealed class MarkerStat
+    {
+        public string Name;
+        public string Category;
+        public ProfilerRecorder Recorder;
+        public double SumNs;
+        public double MaxNs;
+        public int ActiveFrames;
+    }
+
+    //Categories left out: loading/IO/network noise and subsystems the live does not use.
+    private static readonly HashSet<string> SkippedCategories = new HashSet<string>
+    {
+        "Loading", "FileIO", "Network", "Build Interface", "Vr", "Virtual Texturing", "Physics2D"
+    };
+
+    private const int MarkerReportTop = 50;
+
+    private static int _markerStart = -1;
+    private static int _markerLength;
+    private static bool _markerRunning;
+    private static bool _markerDone;
+    private static int _markerFrames;
+    private static int _markerFirstFrame;
+    private static double _markerSetupMs;
+    private static List<MarkerStat> _markers;
+    private static string _markerReport;
+
+    //Places the window (2 s of video, 60-240 frames) in the middle of the recording, where the show
+    //is usually busier than in the intro. Called when the real recording starts.
+    public static void PlanMarkerWindow(int totalFrames, int fps)
+    {
+        StopMarkers(false);
+        _markerDone = false;
+        _markerFrames = 0;
+        _markerReport = null;
+        _markerStart = -1;
+        if (!Enabled || totalFrames < 3) return;
+
+        int length = Mathf.Clamp(fps * 2, 60, 240);
+        length = Math.Max(1, Math.Min(length, totalFrames / 3));
+        _markerLength = length;
+        _markerStart = Math.Max(0, (totalFrames - length) / 2);
+    }
+
+    public static bool InMarkerWindow(int frame)
+    {
+        return Enabled && _markerStart >= 0 && _markerRunning &&
+               frame >= _markerStart && frame < _markerStart + _markerLength;
+    }
+
+    //Called at the start of every recording Update with the index of the frame about to be rendered.
+    //The recorders' LastValue then holds the previous (complete) frame.
+    public static void TickMarkers(int frame)
+    {
+        if (!Enabled || _markerStart < 0 || _markerDone) return;
+
+        if (!_markerRunning)
+        {
+            if (frame >= _markerStart && frame < _markerStart + _markerLength) StartMarkers(frame);
+            return;
+        }
+
+        if (_markers != null)
+        {
+            foreach (var stat in _markers)
+            {
+                double ns = stat.Recorder.LastValue;
+                if (ns <= 0) continue;
+                stat.SumNs += ns;
+                if (ns > stat.MaxNs) stat.MaxNs = ns;
+                stat.ActiveFrames++;
+            }
+        }
+        _markerFrames++;
+
+        if (frame >= _markerStart + _markerLength) StopMarkers(true);
+    }
+
+    private static void StartMarkers(int frame)
+    {
+        double t0 = NowMs;
+        _markerRunning = true;
+        _markerFirstFrame = frame;
+        _markerLength = Math.Max(1, _markerStart + _markerLength - frame);
+        _markerStart = frame;
+        _markers = new List<MarkerStat>(2048);
+
+        try
+        {
+            LiveRecordMarkers.Touch();   //make sure the live's own markers are registered
+
+            var handles = new List<ProfilerRecorderHandle>(4096);
+            ProfilerRecorderHandle.GetAvailable(handles);
+            const ProfilerRecorderOptions options = ProfilerRecorderOptions.SumAllSamplesInFrame |
+                                                    ProfilerRecorderOptions.WrapAroundWhenCapacityReached |
+                                                    ProfilerRecorderOptions.StartImmediately;
+            var seen = new HashSet<string>();
+            foreach (var handle in handles)
+            {
+                var description = ProfilerRecorderHandle.GetDescription(handle);
+                if (description.UnitType != ProfilerMarkerDataUnit.TimeNanoseconds) continue;
+                string name = description.Name;
+                if (string.IsNullOrEmpty(name) || name.StartsWith("Inl_", StringComparison.Ordinal)) continue;
+                string category = description.Category.Name;
+                if (SkippedCategories.Contains(category)) continue;
+                if (!seen.Add(category + "|" + name)) continue;
+
+                var recorder = new ProfilerRecorder(handle, 1, options);
+                if (!recorder.Valid) { recorder.Dispose(); continue; }
+                _markers.Add(new MarkerStat { Name = name, Category = category, Recorder = recorder });
+            }
+        }
+        catch (Exception e)
+        {
+            Note("marcadores de CPU: no se pudieron preparar (" + e.Message + ")");
+            StopMarkers(false);
+            _markerDone = true;
+            return;
+        }
+
+        _markerSetupMs = NowMs - t0;
+        Note(string.Format("marcadores de CPU: {0} grabadores activos desde el frame {1} ({2} frames; preparados en {3:0} ms)",
+            _markers.Count, frame, _markerLength, _markerSetupMs));
+    }
+
+    //Disposes the recorders. With 'report' the per-marker summary is built for the profile.
+    private static void StopMarkers(bool report)
+    {
+        if (_markers == null)
+        {
+            _markerRunning = false;
+            return;
+        }
+
+        foreach (var stat in _markers)
+        {
+            try { stat.Recorder.Dispose(); } catch { }
+        }
+
+        if (report) _markerReport = BuildMarkerReport();
+        _markers = null;
+        _markerRunning = false;
+        _markerDone = true;
+    }
+
+    private static string BuildMarkerReport()
+    {
+        var sb = new StringBuilder();
+        int frames = Math.Max(1, _markerFrames);
+        sb.AppendLine(string.Format(
+            "CPU por marcador (fase 'm': frames {0}-{1}, {2} frames medidos, {3} marcadores; ms por frame):",
+            _markerFirstFrame, _markerFirstFrame + _markerFrames - 1, _markerFrames, _markers.Count));
+        sb.AppendLine("  · Los marcadores se anidan: un padre incluye a sus hijos (PlayerLoop lo incluye casi todo).");
+        sb.AppendLine("  · Los de hilos de trabajo/render se suman entre hilos y pueden superar el tiempo del frame.");
+        sb.AppendLine("  · Los grabadores encarecen algo esos frames: por eso van aparte de 'c'.");
+
+        var sorted = new List<MarkerStat>(_markers);
+        sorted.Sort((a, b) => b.SumNs.CompareTo(a.SumNs));
+
+        sb.AppendLine("     avg      max  %frames  categoría      marcador");
+        int shown = 0;
+        foreach (var stat in sorted)
+        {
+            if (stat.SumNs <= 0 || shown >= MarkerReportTop) break;
+            AppendMarkerLine(sb, stat, frames);
+            shown++;
+        }
+
+        var own = sorted.FindAll(s => s.Name.StartsWith(LiveRecordMarkers.Prefix, StringComparison.Ordinal));
+        if (own.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("Desglose del código del live (" + LiveRecordMarkers.Prefix + "*):");
+            sb.AppendLine("     avg      max  %frames  categoría      marcador");
+            foreach (var stat in own) AppendMarkerLine(sb, stat, frames);
+        }
+        return sb.ToString();
+    }
+
+    private static void AppendMarkerLine(StringBuilder sb, MarkerStat stat, int frames)
+    {
+        sb.AppendLine(string.Format("  {0,6:0.00}  {1,7:0.00}  {2,6:0}%  {3,-13}  {4}",
+            stat.SumNs / frames / 1e6, stat.MaxNs / 1e6, 100.0 * stat.ActiveFrames / frames,
+            stat.Category.Length > 13 ? stat.Category.Substring(0, 13) : stat.Category, stat.Name));
     }
 
     //Cuánta memoria de vídeo piden los adjuntos de UN frame (color + profundidad con MSAA) contando la
@@ -199,7 +412,7 @@ public static class LiveRecordProfile
 
         sb.AppendLine();
         sb.AppendLine("fase  frames    totalMs(avg/p50/p95/min/max)        submit  wait resolv  blit  read  copy  write   gap   pend");
-        foreach (char phase in new[] { 'p', 'q', 'b', 'c' })
+        foreach (char phase in new[] { 'p', 'q', 'b', 'c', 'm' })
         {
             var group = new List<Sample>();
             foreach (var s in Samples) if (s.phase == phase) group.Add(s);
@@ -229,6 +442,12 @@ public static class LiveRecordProfile
         if (c.Count > 0)
             sb.AppendLine(string.Format("grabación: {0:0.0} ms/frame → {1:0.0} fps de vídeo muestreado",
                 Avg(c, s => s.totalMs), 1000.0 / Math.Max(0.001, Avg(c, s => s.totalMs))));
+
+        if (!string.IsNullOrEmpty(_markerReport))
+        {
+            sb.AppendLine();
+            sb.Append(_markerReport);
+        }
         return sb.ToString();
     }
 
@@ -237,6 +456,8 @@ public static class LiveRecordProfile
     {
         if (!Enabled || _dumped || string.IsNullOrEmpty(_folder) || string.IsNullOrEmpty(_name)) return;
         _dumped = true;
+        //Recording cut short inside the marker window: report what was measured so far.
+        if (_markerRunning) StopMarkers(true);
         try
         {
             Directory.CreateDirectory(_folder);
@@ -272,6 +493,7 @@ public static class LiveRecordProfile
             case 'q': return "q-drain";
             case 'b': return "b-read";
             case 'c': return "c-capture";
+            case 'm': return "m-markers";
             default: return phase.ToString();
         }
     }
@@ -316,4 +538,45 @@ public static class LiveRecordProfile
         int index = (int)Math.Round((values.Count - 1) * fraction);
         return values[Math.Max(0, Math.Min(values.Count - 1, index))];
     }
+}
+
+//(Live recording · diagnostics) Profiler markers around the live's own per-frame work, so the CPU
+//marker window of LiveRecordProfile can tell which part of the show update costs what. A ProfilerMarker
+//costs next to nothing when nobody records it, so they stay in the code permanently; they also show
+//up in Unity's Profiler window.
+public static class LiveRecordMarkers
+{
+    public const string Prefix = "LiveRecord.";
+
+    //Director.Update / LateUpdate
+    public static readonly ProfilerMarker TimelineUpdate = New("Timeline.AlterUpdate");
+    public static readonly ProfilerMarker AudioUpdate = New("Audio.AlterUpdate");
+    public static readonly ProfilerMarker TimelineLateUpdate = New("Timeline.AlterLateUpdate");
+    public static readonly ProfilerMarker Props = New("Props.Evaluate");
+    public static readonly ProfilerMarker MiniChara = New("MiniChara.Evaluate");
+    public static readonly ProfilerMarker FootLight = New("FootLight.AlterLateUpdate");
+    public static readonly ProfilerMarker Spotlights = New("Spotlight.AlterLateUpdate");
+    public static readonly ProfilerMarker StageFlares = New("StageFlares.AlterUpdate");
+    public static readonly ProfilerMarker StageFovShift = New("Stage.ApplyFovShifts");
+    public static readonly ProfilerMarker VolumeLight = New("VolumeLight.SunShafts");
+    public static readonly ProfilerMarker DofFocal = New("Dof.UpdateMaxFocalSize");
+    public static readonly ProfilerMarker Lasers = New("Stage.AlterUpdateLasers");
+    public static readonly ProfilerMarker ModelRenderQueue = New("ModelRenderQueue.Update");
+    public static readonly ProfilerMarker MirrorReflections = New("Mirror.UpdateReflections");
+    public static readonly ProfilerMarker RuntimeDiagnostics = New("Diagnostics.RecordFrame");
+
+    //UmaContainerCharacter.LateUpdate
+    public static readonly ProfilerMarker CharacterLateUpdate = New("Character.LateUpdate");
+    public static readonly ProfilerMarker CharacterCySpring = New("Character.CySpring");
+    public static readonly ProfilerMarker CharacterPostRuntime = New("Character.PostRuntime");
+
+    private static ProfilerMarker New(string name)
+    {
+        return new ProfilerMarker(ProfilerCategory.Scripts, Prefix + name);
+    }
+
+    //Explicit static constructor (no 'beforefieldinit'): calling Touch() is then guaranteed to create
+    //and register every marker before the recorders are attached.
+    static LiveRecordMarkers() { }
+    public static void Touch() { }
 }
