@@ -10,6 +10,11 @@ namespace Gallop
     [DisallowMultipleComponent]
     public class GallopImageEffect : MonoBehaviour
     {
+        // Class-side parameter, only used by the MultiCamera composites (LiveMultiCameraTimeline
+        // evaluates their tracks into it and copies it with Parameter.Setup). The active live camera
+        // does NOT go through it: like the client, the Director writes straight into
+        // RenderParameter.DofDiffuionBloomOverlay (native get_DofDiffusionBloomOverlayParam,
+        // JP RVA 0x3E878C0, returns a ref to CameraData.Parameter + 0x1b0).
         [SerializeField] private DofDiffusionBloomOverlayParam _dofDiffusionBloomOverlayParam =
             new DofDiffusionBloomOverlayParam();
 
@@ -25,16 +30,13 @@ namespace Gallop
             }
         }
 
-        // 子系统 A7b：原生 GallopImageEffect.get_ExposureParam(RVA=0x19a97b0) /
-        // get_ToneCurveParam(RVA=0x19a9930) 的 master7 等价属性。原生 getter 返回
-        // CameraData 内偏移 +5B0h 的参数块；master7 渲染链用独立 Param 对象，
-        // Director.OnUpdateExposure/OnUpdateToneCurve 写入这里，再由
-        // ApplyBloomParameter 发布到 PostImageEffectFeature.RuntimeParameter。
+        // Timeline-side Exposure / ToneCurve state. Director.OnUpdateExposure/OnUpdateToneCurve
+        // fill it and publish it into RenderParameter in the same call.
         public ExposureParam ExposureParam { get; } = new ExposureParam();
         public ToneCurveParam ToneCurveParam { get; } = new ToneCurveParam();
 
-        // User A/B gate, independent of authored timeline data and other effects.
-        // Enabled after fixing the source focus-mode setter ordering regression.
+        // User A/B gate, independent of authored timeline data and other effects. Read by
+        // CameraData.UpdateImageEffectParameter when the draw type is decided for each camera.
         public static bool UserDofEnabled { get; private set; } = true;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
@@ -43,10 +45,6 @@ namespace Gallop
         public static void SetUserDofEnabled(bool enabled)
         {
             UserDofEnabled = enabled;
-            var director = Live.Director.instance;
-            if (director == null || director.MainRenderCamera == null) return;
-            var adapter = director.MainRenderCamera.GetComponent<GallopImageEffect>();
-            if (adapter != null) adapter.ApplyBloomParameter();
         }
 
         protected void Awake() { InitializeVolume(); }
@@ -58,34 +56,6 @@ namespace Gallop
             if (!TryGetComponent(out _cameraData))
                 _cameraData = gameObject.AddComponent<CameraData>();
             IsInitialized = true;
-        }
-
-        public void ApplyBloomParameter()
-        {
-            var director = Live.Director.instance;
-            if (director == null || director.MainRenderCamera == null ||
-                director.MainRenderCamera.gameObject != gameObject) return;
-
-            var parameter = RenderParameter;
-            PostImageEffectFeature.RuntimeParameter = parameter;
-            parameter.DofDiffuionBloomOverlay.Setup(_dofDiffusionBloomOverlayParam);
-            if (!UserDofEnabled)
-            {
-                parameter.DofDiffuionBloomOverlay.IsEnableDof = false;
-                parameter.DofDiffuionBloomOverlay.IsEnableOldDof = false;
-            }
-            _cameraData.UpdateImageEffectParameter();
-            parameter.TargetCamera = director.MainRenderCamera;
-
-            // Exposure and tone curves publish into the same camera-owned render state.
-            parameter.ExposureParam.Setup(ExposureParam);
-            parameter.ToneCurveParam.Setup(ToneCurveParam);
-
-            // Do NOT propagate parameters to MultiCameras. Each MultiCamera has its own
-            // PostEffectParameter set by the multi-camera timeline tracks (MultiCameraPostEffectDOFData,
-            // MultiCameraPostEffectBloomDiffusionData, MultiCameraPostFilmData). Copying the active
-            // camera's parameters to all sub-cameras forces identical effects on every view — the
-            // native game gives each camera its own TiltShift, DOF, ChromaticAberration, etc.
         }
     }
 }

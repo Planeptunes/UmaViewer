@@ -1135,6 +1135,8 @@ namespace Gallop.Live
                 MultiCameraFinalComposite.SetRenderCamera(MainRenderCamera);
             }
             UpdateTransparentCameraStack();
+            // Re-point PostImageEffectFeature.RuntimeParameter at the new active camera.
+            GetActivePostEffect();
         }
 
         // Luz direccional del escenario: la unica Light real del live y la que proyecta la sombra
@@ -1902,19 +1904,23 @@ namespace Gallop.Live
             if (mainCamera == null)
                 return null;
 
-            if (_mainGallopImageEffect != null && _mainGallopImageEffect.gameObject == mainCamera.gameObject)
-                return _mainGallopImageEffect;
-
-            _mainGallopImageEffect =
-                mainCamera.GetComponent<GallopImageEffect>();
-
-            if (_mainGallopImageEffect == null)
+            if (_mainGallopImageEffect == null || _mainGallopImageEffect.gameObject != mainCamera.gameObject)
             {
                 _mainGallopImageEffect =
-                    mainCamera.gameObject
-                        .AddComponent<LiveImageEffect>();
+                    mainCamera.GetComponent<GallopImageEffect>();
+
+                if (_mainGallopImageEffect == null)
+                {
+                    _mainGallopImageEffect =
+                        mainCamera.gameObject
+                            .AddComponent<LiveImageEffect>();
+                }
             }
 
+            // The handlers that write PostImageEffectFeature.RuntimeParameter (color correction,
+            // radial blur, tilt shift...) target the active camera's own render state.
+            Gallop.RenderPipeline.PostImageEffectFeature.RuntimeParameter =
+                _mainGallopImageEffect.RenderParameter;
             return _mainGallopImageEffect;
         }
         private string _lastDofBypassReason;
@@ -1933,22 +1939,22 @@ namespace Gallop.Live
             if (_cameraImageEffects != null)
                 for (int i = 0; i < _cameraImageEffects.Length; ++i)
                     if (_cameraImageEffects[i] != null)
-                    {
-                        _cameraImageEffects[i].DofDiffusionBloomOverlayParam.DofMaxFocalSize = maximum;
                         _cameraImageEffects[i].RenderParameter.DofDiffuionBloomOverlay.DofMaxFocalSize = maximum;
-                    }
             if (_multiCameras != null)
                 for (int i = 0; i < _multiCameras.Length; ++i)
                     if (_multiCameras[i] != null)
                         _multiCameras[i].PostEffectParameter.DofDiffuionBloomOverlay.DofMaxFocalSize = maximum;
-            GetActivePostEffect()?.ApplyBloomParameter();
         }
 
         private void OnUpdatePostEffect_Dof(LiveTimelineKeyPostEffectDOFData key, Vector3? worldFocus)
         {
             var effect = GetActivePostEffect();
             if (effect == null) return;
-            var param = effect.DofDiffusionBloomOverlayParam;
+            // Native Director.OnUpdatePostEffect_DOF (JP RVA 0x4E76890) writes straight into the
+            // active camera's render struct (get_DofDiffusionBloomOverlayParam); there is no
+            // class -> struct copy in the live. DofMaxFocalSize is left to UpdateDofMaxFocalSize
+            // (native AlterLateUpdate) and the draw type to CameraData.UpdateImageEffectParameter.
+            ref var param = ref effect.RenderParameter.DofDiffuionBloomOverlay;
             param.IsEnableDof = false;
             param.IsEnableOldDof = false;
             var renderCamera = MainRenderCamera;
@@ -1975,12 +1981,20 @@ namespace Gallop.Live
                 valid = valid && !float.IsNaN(focusDepth) && !float.IsInfinity(focusDepth);
                 if (!valid) bypassReason = "missing or invalid focus depth";
                 param.IsEnableDof = valid && ((int)key.attribute & (1 << 18)) != 0;
-                // Source setters select the mode; write only the selected coordinate.
-                if (metric) param.DofFocalPoint = key.dofFocalPoint;
-                else param.DofFocalPosition = focus;
+                // Native setters select the focal mode: set_DofFocalPoint -> Point,
+                // set_DofFocalPosition -> Position. Only the selected coordinate is written.
+                if (metric)
+                {
+                    param.DofFocalPoint = key.dofFocalPoint;
+                    param.DofFocalType = DepthBlurAndBloom.DofFocalType.Point;
+                }
+                else
+                {
+                    param.DofFocalPosition = focus;
+                    param.DofFocalType = DepthBlurAndBloom.DofFocalType.Position;
+                }
                 param.DofQualityType = (DepthBlurAndBloom.DofQuality)key.dofQuality;
                 param.DofFocalSize = key.forcalSize;
-                param.DofMaxFocalSize = GetMaxForcalSize();
                 param.DofMaxBlurSpread = key.blurSpread;
                 param.DofForegroundSize = key.dofForegroundSize;
                 param.DofSmoothness = key.dofSmoothness;
@@ -2001,7 +2015,6 @@ namespace Gallop.Live
                     Debug.LogWarning($"[LiveDOF] Bypass DOF only: {bypassReason}; time={_liveCurrentTime:F3}, " +
                         $"camera={renderCamera?.name}, key={key?.frame}, attr=0x{(key != null ? (int)key.attribute : 0):X}");
             }
-            effect.ApplyBloomParameter();
         }
 
         private void OnUpdateColorCorrection(Gallop.RenderPipeline.SimpleColorCorrectionPass.Parameter sample)
@@ -2025,9 +2038,9 @@ namespace Gallop.Live
         // [A7b] 原生 Director.OnUpdateExposure(RVA=0x1a63430) 三连：
         // GetActivePostEffect → get_ExposureParam 整块覆盖写（0x1a6349e-0x1a634ae，
         // IsEnable/DepthMask/Gain/Lift/MaskGain/MaskLift 顺序）→ 空值门后
-        // CameraData.UpdateImageEffectParameter(0x1a0da30)。master7 的参数发布
-        // 由 ApplyBloomParameter 统一完成（含 TargetCamera/DOF），因此这里只写参数，
-        // 末尾调 ApplyBloomParameter 等价原生 UpdateImageEffectParameter。
+        // CameraData.UpdateImageEffectParameter(0x1a0da30)。
+        // The timeline-side ExposureParam is published into the active camera's render
+        // parameter right away (the draw type is decided per camera by CameraData).
         private void OnUpdateExposure(LiveExposureToneCurveTimeline.ExposureUpdateInfo info)
         {
             var effect = GetActivePostEffect();
@@ -2036,7 +2049,7 @@ namespace Gallop.Live
             // 返回已在上方处理；直接整块覆盖。
             effect.ExposureParam.Set(info.IsEnable, info.DepthMask, info.Gain,
                 info.Lift, info.MaskGain, info.MaskLift);
-            effect.ApplyBloomParameter();
+            effect.RenderParameter.ExposureParam.Setup(effect.ExposureParam);
         }
 
         // [A7b] 原生 Director.OnUpdateToneCurve(RVA=0x1a63f80) 三连：
@@ -2047,7 +2060,7 @@ namespace Gallop.Live
             var effect = GetActivePostEffect();
             if (effect == null) return;
             effect.ToneCurveParam.Set(info.IsEnable, info.ToneCurve, info.MaskToneCurve);
-            effect.ApplyBloomParameter();
+            effect.RenderParameter.ToneCurveParam.Setup(effect.ToneCurveParam);
         }
 
         private void OnUpdateRadialBlur(Gallop.RenderPipeline.RadialBlurPass.Parameter sample)
@@ -2154,12 +2167,12 @@ namespace Gallop.Live
         {
             var effect = GetActivePostEffect();
             if (effect == null) return;
-            var overlay = effect.DofDiffusionBloomOverlayParam.ScreenOverlay;
-            var target = layer == 0 ? overlay.Overlay1 : layer == 1 ? overlay.Overlay2 : overlay.Overlay3;
-            LivePostFilmTimeline.Copy(sample, target);
-            // Publish only after all three layers, including disabled/empty tracks,
-            // have replaced the active camera's old state.
-            if (layer == 2) effect.ApplyBloomParameter();
+            // Native Director.OnUpdatePostFilm (JP RVA 0x4E76CB0): UpdatePostFilm writes the layer
+            // straight into the active camera's render struct overlays.
+            ref var dof = ref effect.RenderParameter.DofDiffuionBloomOverlay;
+            if (layer == 0) dof.Overlay1.Setup(sample);
+            else if (layer == 1) dof.Overlay2.Setup(sample);
+            else dof.Overlay3.Setup(sample);
         }
 
         private void OnUpdatePostEffect_BloomDiffusion(PostEffectUpdateInfo_BloomDiffusion updateInfo)
@@ -2169,8 +2182,9 @@ namespace Gallop.Live
 
             if (imageEffect == null) return;
 
-            DofDiffusionBloomOverlayParam param =
-                imageEffect.DofDiffusionBloomOverlayParam;
+            // Native Director.OnUpdatePostEffect_BloomDiffusion (JP RVA 0x4E76650): direct write
+            // into the active camera's render struct.
+            ref var param = ref imageEffect.RenderParameter.DofDiffuionBloomOverlay;
 
             param.IsEnableBloom =
                 updateInfo.IsEnabledBloom;
@@ -2208,7 +2222,6 @@ namespace Gallop.Live
             param.DiffusionContrast =
                 updateInfo.diffusionContrast;
 
-            imageEffect.ApplyBloomParameter();
             //         Debug.Log(
             // $"[BloomDirector] activeCameraIndex={_activeCameraIndex}, " +
             // $"imageEffect={(imageEffect != null ? imageEffect.name : "null")}");
