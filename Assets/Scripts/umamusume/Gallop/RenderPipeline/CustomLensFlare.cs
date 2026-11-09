@@ -27,6 +27,30 @@ namespace Gallop.RenderPipeline
         /// <summary>Global brightness multiplier, for A/B against a reference capture.</summary>
         public static float RuntimeStrength = 1f;
 
+        // The native LensFlareRenderPass draws the flares AFTER the camera's DOF / bloom / chromatic chain
+        // (JP probe), so the DOF never blurs the rays. The quads therefore live on a layer that the
+        // presentation cameras do not render; LensFlareRenderPass culls and draws it inside the chain.
+        // Mirror and monitor cameras have no such chain here: they render the layer in the scene.
+        public const int PassLayer = 15;
+        public static bool PassMode = true;
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterAssembliesLoaded)]
+        private static void HookCameraMasks()
+        {
+            RenderPipelineManager.beginCameraRendering -= OnBeginCameraRendering;
+            RenderPipelineManager.beginCameraRendering += OnBeginCameraRendering;
+        }
+
+        private static void OnBeginCameraRendering(ScriptableRenderContext context, Camera camera)
+        {
+            if (!PassMode || camera == null) return;
+            int bit = 1 << PassLayer;
+            string n = camera.name;
+            bool sceneRender = n == "MonitorCameraCapture" || n.IndexOf("Mirror", System.StringComparison.OrdinalIgnoreCase) >= 0;
+            if (sceneRender) camera.cullingMask |= bit;
+            else camera.cullingMask &= ~bit;
+        }
+
         /// <summary>
         /// The built-in flare is hidden by any collider between the flare and the camera. The
         /// stage's own lamp colliders sit at the flare source itself, so the raycast is opt-in
@@ -135,7 +159,7 @@ namespace Gallop.RenderPipeline
                 return;
             }
 
-            int layer = ResolveLayer(camera);
+            int layer = PassMode ? PassLayer : ResolveLayer(camera);
             if (_layer != layer)
             {
                 _layer = layer;

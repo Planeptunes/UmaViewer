@@ -43,6 +43,7 @@ namespace Gallop.RenderPipeline
         private SunShaftsPass _sunShaftsPass;
         private IndirectLightShaftsPass _indirectLightShaftsPass;
         private TransmittedLightPass _transmittedLightPass;
+        private LensFlareRenderPass _lensFlarePass;
         private MultiCameraCompositePass _multiCameraCompositePass;
         private MultiCameraFinalCompositePass _multiCameraFinalCompositePass;
         private ProjectorRenderPass _projectorPass;
@@ -145,6 +146,7 @@ namespace Gallop.RenderPipeline
             _sunShaftsPass = new SunShaftsPass(passEvent);
             _indirectLightShaftsPass = new IndirectLightShaftsPass(passEvent);
             _transmittedLightPass = new TransmittedLightPass(passEvent);
+            _lensFlarePass = new LensFlareRenderPass(passEvent);
             _multiCameraCompositePass = new MultiCameraCompositePass();
             _multiCameraFinalCompositePass = new MultiCameraFinalCompositePass();
             _projectorPass = new ProjectorRenderPass();
@@ -209,6 +211,7 @@ namespace Gallop.RenderPipeline
                 {
                     _loggedBypass = true;
                 }
+                EnqueueFlareOnly(renderer);
                 return;
             }
 
@@ -249,6 +252,7 @@ namespace Gallop.RenderPipeline
                     _loggedParameterMissing = true;
                     Debug.LogWarning($"[RecoveredPostEffect] skip camera={camera.name}: CameraData.Parameter missing");
                 }
+                EnqueueFlareOnly(renderer);
                 return;
             }
 
@@ -258,6 +262,7 @@ namespace Gallop.RenderPipeline
                 {
                     _loggedParameterDisabled = true;
                 }
+                EnqueueFlareOnly(renderer);
                 return;
             }
 
@@ -304,7 +309,10 @@ namespace Gallop.RenderPipeline
                 _transmittedLightPass.Setup(Gallop.Live.Cutt.LiveTransmittedLightTimeline.Current, this);
             bool correctionReady = colorReady || exposureReady || toneReady;
             // TransmittedLight composes like the shafts: same scheduling and limiter layer.
-            bool lightReady = sunReady || shaftsReady || transmittedReady;
+            // Lens flares: drawn by the native LensFlareRenderPass after DOF/bloom/chromatic and before
+            // the colour correction (see LensFlareRenderPass).
+            bool flareReady = _lensFlarePass != null && _lensFlarePass.Setup(this, false);
+            bool lightReady = sunReady || shaftsReady || transmittedReady || flareReady;
             if (!dofReady && !radialReady && !chromaticReady && !tiltReady && !fogReady && !vortexReady && !fluctuationReady && !correctionReady && !lightReady)
             {
                 if (!_loggedSetupFailed)
@@ -380,6 +388,11 @@ namespace Gallop.RenderPipeline
                 _chromaticAberrationPass.renderPassEvent = effectEvent;
                 _registerPass.Add(_chromaticAberrationPass);
             }
+            if (flareReady)
+            {
+                _lensFlarePass.renderPassEvent = effectEvent;
+                _registerPass.Add(_lensFlarePass);
+            }
             if (toneReady) _registerPass.Add(_toneCurvePass);
             if (exposureReady) _registerPass.Add(_exposurePass);
             if (colorReady)
@@ -414,6 +427,16 @@ namespace Gallop.RenderPipeline
                 camera, renderingData.cameraData.cameraTargetDescriptor, parameter,
                 _registerPass.Count, ShaderManager.IsShaderBundleReady,
                 renderingData.cameraData.postProcessEnabled);
+        }
+
+        // The native LensFlareRenderPass is independent of the image-effect chain: when the chain does not
+        // run for a presentation camera the flares are still drawn, straight onto the camera colour.
+        private void EnqueueFlareOnly(ScriptableRenderer renderer)
+        {
+            if (_lensFlarePass == null || renderer == null) return;
+            if (!_lensFlarePass.Setup(this, true)) return;
+            _lensFlarePass.renderPassEvent = RenderPassEvent.BeforeRenderingPostProcessing;
+            renderer.EnqueuePass(_lensFlarePass);
         }
 
         /// <summary>
@@ -504,6 +527,7 @@ namespace Gallop.RenderPipeline
             _sunShaftsPass = null;
             _indirectLightShaftsPass = null;
             _transmittedLightPass = null;
+            _lensFlarePass = null;
             _multiCameraCompositePass = null;
             _multiCameraFinalCompositePass = null;
             if (_dofDiffusionBloomOverlayPass != null)
