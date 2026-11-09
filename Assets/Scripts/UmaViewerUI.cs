@@ -192,6 +192,13 @@ public class UmaViewerUI : MonoBehaviour
     //Opciones que se están viendo AHORA (filtradas o no); dd.value es un índice en ESTA lista.
     private readonly List<CharaEntry> otherOptionsVisible = new List<CharaEntry>();
 
+    //(Modo "Favorites" del desplegable de otros PJ: entrada propia SIEMPRE primera de la lista. No es
+    //un PJ: al elegirla se listan los trajes marcados con la estrella, de todos los PJ a la vez.)
+    private const string FavoritesOptionLabel = "Favorites";
+    private bool otherFavoritesSelected = false;
+    //Equivalente a pendingOtherChara para la entrada 'Favorites' (se resuelve por el TEXTO del item).
+    private bool pendingOtherFavorites = false;
+
     //==========================================================================
     // (Buscador de personajes de "Canvas/UI/Panels/Characters/SearchCharacter")
     //Se rellena con el listado que AHORA MISMO muestra el panel de personajes activo (Normal / Mini /
@@ -1512,11 +1519,93 @@ public class UmaViewerUI : MonoBehaviour
             }
         }
 
-        //--- Trajes PROPIOS del personaje (id corto). Los mobs no los tienen. (En 'Uniques',
-        //'Other Characters' y 'All'; en General/Extras no salen.)
+        //--- Character-OWN costumes (short id). Mobs have none. (In 'Uniques', 'Other Characters' and
+        //'All'; not in General/Extras.)
         bool includeOwn = !listChara.IsMob &&
             (mode == CostumeListMode.Uniques || mode == CostumeListMode.OtherCharacters || mode == CostumeListMode.All);
-        if (includeOwn)
+
+        //(FAVORITES) The user's own list: the costumes starred with the star, from several characters at
+        //once, without going character by character. It is painted FROM THE FILE on every pass: picking
+        //'Favorites' in the dropdown re-reads it and refreshes the list.
+        bool favoritesMode = mode == CostumeListMode.OtherCharacters && otherFavoritesSelected;
+
+        //(One character-OWN costume item of bodyChara. With bodyOverride the body belongs to another
+        //character than the current one (Other Characters/Favorites): head/hair/tail stay those of the
+        //CURRENT character and the Live slot stores the body character. Everything else is exactly the
+        //own-costume item.)
+        void AddOwnCostumeItem(CharaEntry bodyChara, string costumeId, bool bodyOverride, bool filtrar)
+        {
+            int sub;
+            if (!int.TryParse(costumeId, out sub)) sub = int.MinValue;   //never matches a real BodyTypeSub
+            var dressdata = Main.Costumes.FirstOrDefault(a => (a.CharaId == bodyChara.Id && a.BodyTypeSub == sub));
+
+            // (AÑADIDO) Blacklist: own costume with no body (asset scan + file list).
+            string ownBodyPath = mini ? UmaDatabaseController.MiniBodyPath : UmaDatabaseController.BodyPath;
+            if (filtrar &&
+                (!Main.AbList.ContainsKey(ownBodyPath + $"bdy{bodyChara.Id}_{costumeId}/pfb_bdy{bodyChara.Id}_{costumeId}") ||
+                 CostumeBlacklist.IsBlacklisted(bodyChara.Id, costumeId)))
+            {
+                return;
+            }
+
+            CharaEntry costumeHeadChara = bodyOverride ? chara : bodyChara;
+
+            var container = Instantiate(UmaContainerCostumePrefab, costumeList.content).GetComponent<UmaUIContainer>();
+            UIPressScaleFeedback.AddTo(container.gameObject);
+            container.Name = container.name = GetCostumeName(costumeId, (dressdata == null ? costumeId : dressdata.DressName));
+            container.Image.sprite = CustomCostumeIcons.Get(bodyChara.Id, costumeId, false)
+                ?? (dressdata == null ? CostumeIconDefault : dressdata.Icon);
+            container.Image.enabled = true;
+            container.Id = costumeId;
+            container.Button.onClick.AddListener(() =>
+            {
+                if (LiveSelectPannel.activeInHierarchy && CurrentSeletChara)
+                {
+                    //(Other Characters/Favorites: the slot is the CURRENT character —face/hair/tail— with the other one's body.)
+                    CurrentSeletChara.SetValue(costumeHeadChara, costumeId, container.Image.sprite, CurrentHeadCostumeId, 0, bodyOverride ? bodyChara : null);
+                }
+                else
+                {
+                    HighlightChildImage(costumeList.content, container);
+                    var list = new List<UmaDatabaseEntry>();
+                    list.AddRange(Main.AbChara.Where(a => a.Name.StartsWith(UmaDatabaseController.BodyPath) && a.Name.Contains(bodyChara.Id.ToString())));
+                    list.AddRange(Main.AbChara.Where(a => a.Name.StartsWith(UmaDatabaseController.HeadPath) && a.Name.Contains(costumeHeadChara.Id.ToString())));
+                    var tail_path = getCharaTailPath(costumeHeadChara);
+                    if (!string.IsNullOrEmpty(tail_path))
+                    {
+                        list.AddRange(Main.AbChara.Where(a => a.Name.StartsWith(tail_path)));
+                    }
+                    list.Add(Main.AbList["3d/animator/drivenkeylocator"]);
+                    list.Add(Main.AbList[$"3d/motion/event/body/chara/chr{bodyChara.Id}_00/anm_eve_chr{bodyChara.Id}_00_idle01_loop"]);
+
+                    Builder.UnloadUma();
+                    //UmaAssetManager.UnloadAllBundle(true);
+                    UmaAssetManager.PreLoadAndRun(list , delegate {
+                        StartCoroutine(Builder.LoadUma(bodyChara, costumeId, mini, CurrentHeadCostumeId, bodyOverride ? chara : null));
+                    });
+                    //StartCoroutine(Builder.LoadUma(bodyChara, costumeId, mini));
+                }
+            });
+
+            //(FAVORITES) Favorite star in the top-right corner of EVERY character-owned ("unique")
+            //costume, no matter which menu is selected (Uniques, General, Extras, Other Characters,
+            //Favorites): if the outfit is unique, it carries the star. Common costumes never get one.
+            if (!mini)
+                CostumeFavoriteStar.Attach(container, bodyChara.Id, costumeId, OnFavoriteStarChanged);
+        }
+
+        if (favoritesMode)
+        {
+            foreach (var fav in CostumeFavorites.GetAll())
+            {
+                if (fav == null || string.IsNullOrEmpty(fav.costumeId)) continue;
+                var favChara = Main.Characters.FirstOrDefault(c => c != null && !c.IsMob && c.Id == fav.charaId);
+                if (favChara == null) continue;
+                //Same body/blacklist check as the own costume of its own character.
+                AddOwnCostumeItem(favChara, fav.costumeId, true, UmaDatabaseController.ReadCharaData(favChara) != null);
+            }
+        }
+        else if (includeOwn)
         {
             string ownNameVar = mini ? $"pfb_mbdy{listChara.Id}" : $"pfb_bdy{listChara.Id}";
             string ownBodyPath = mini ? UmaDatabaseController.MiniBodyPath : UmaDatabaseController.BodyPath;
@@ -1524,52 +1613,7 @@ public class UmaViewerUI : MonoBehaviour
             {
                 string[] split = entry.Name.Split('_');
                 string costumeId = split[split.Length - 1];
-                var dressdata = Main.Costumes.FirstOrDefault(a => (a.CharaId == listChara.Id && a.BodyTypeSub == int.Parse(costumeId)));
-
-                // (AÑADIDO) Blacklist: propio sin cuerpo (escaneo de assets + lista de archivo).
-                if (filtrarSinCuerpo &&
-                    (!Main.AbList.ContainsKey(ownBodyPath + $"bdy{listChara.Id}_{costumeId}/pfb_bdy{listChara.Id}_{costumeId}") ||
-                     CostumeBlacklist.IsBlacklisted(listChara.Id, costumeId)))
-                {
-                    continue;
-                }
-
-                var container = Instantiate(UmaContainerCostumePrefab, costumeList.content).GetComponent<UmaUIContainer>();
-                UIPressScaleFeedback.AddTo(container.gameObject);
-                container.Name = container.name = GetCostumeName(costumeId, (dressdata == null ? costumeId : dressdata.DressName));
-                container.Image.sprite = CustomCostumeIcons.Get(listChara.Id, costumeId, false)
-                    ?? (dressdata == null ? CostumeIconDefault : dressdata.Icon);
-                container.Image.enabled = true;
-                container.Id = costumeId;
-                container.Button.onClick.AddListener(() =>
-                {
-                    if (LiveSelectPannel.activeInHierarchy && CurrentSeletChara)
-                    {
-                        //(Other Characters: el slot es el PJ actual —cara/pelo/cola— con el cuerpo del otro.)
-                        CurrentSeletChara.SetValue(headChara, costumeId, container.Image.sprite, CurrentHeadCostumeId, 0, otherMode ? listChara : null);
-                    }
-                    else
-                    {
-                        HighlightChildImage(costumeList.content, container);
-                        var list = new List<UmaDatabaseEntry>();
-                        list.AddRange(Main.AbChara.Where(a => a.Name.StartsWith(UmaDatabaseController.BodyPath) && a.Name.Contains(listChara.Id.ToString())));
-                        list.AddRange(Main.AbChara.Where(a => a.Name.StartsWith(UmaDatabaseController.HeadPath) && a.Name.Contains(headChara.Id.ToString())));
-                        var tail_path = getCharaTailPath(headChara);
-                        if (!string.IsNullOrEmpty(tail_path))
-                        {
-                            list.AddRange(Main.AbChara.Where(a => a.Name.StartsWith(tail_path)));
-                        }
-                        list.Add(Main.AbList["3d/animator/drivenkeylocator"]);
-                        list.Add(Main.AbList[$"3d/motion/event/body/chara/chr{listChara.Id}_00/anm_eve_chr{listChara.Id}_00_idle01_loop"]);
-
-                        Builder.UnloadUma();
-                        //UmaAssetManager.UnloadAllBundle(true);
-                        UmaAssetManager.PreLoadAndRun(list , delegate {
-                            StartCoroutine(Builder.LoadUma(listChara, costumeId, mini, CurrentHeadCostumeId, otherMode ? chara : null));
-                        });
-                        //StartCoroutine(Builder.LoadUma(listChara, costumeId, mini));
-                    }
-                });
+                AddOwnCostumeItem(listChara, costumeId, otherMode, filtrarSinCuerpo);
             }
         }
 
@@ -3629,6 +3673,7 @@ public class UmaViewerUI : MonoBehaviour
         otherCharactersList.Clear();
         foreach (var c in Main.Characters.OrderBy(c => c.Id)) otherCharactersList.Add(c);
         selectedOtherChara = otherCharactersList.Count > 0 ? otherCharactersList[0] : null;
+        otherFavoritesSelected = false;
         RebuildOtherCharactersOptions();
         OtherCharactersDropdown.onValueChanged.AddListener(OnOtherCharactersChanged);
 
@@ -3637,7 +3682,8 @@ public class UmaViewerUI : MonoBehaviour
 
     //Rehace las opciones del desplegable "Other Characters" según el filtro tecleado.
     //otherOptionsVisible[] queda en el MISMO orden que dd.options, para que dd.value (y por tanto
-    //OnOtherCharactersChanged) apunten al PJ correcto aunque la lista esté filtrada.
+    //OnOtherCharactersChanged) apunten al PJ correcto aunque la lista esté filtrada. La entrada propia
+    //'Favorites' es el elemento null de esa lista (siempre la primera).
     void RebuildOtherCharactersOptions()
     {
         var dd = OtherCharactersDropdown;
@@ -3646,6 +3692,11 @@ public class UmaViewerUI : MonoBehaviour
         string f = (otherSearchFilter ?? "").Trim();
         otherOptionsVisible.Clear();
         dd.options.Clear();
+
+        //La entrada 'Favorites' no es un PJ: siempre la primera, incluso con filtro tecleado.
+        otherOptionsVisible.Add(null);
+        dd.options.Add(new TMP_Dropdown.OptionData(FavoritesOptionLabel));
+
         foreach (var c in otherCharactersList)
         {
             string nombre = c.GetName() ?? "";
@@ -3656,9 +3707,10 @@ public class UmaViewerUI : MonoBehaviour
 
         if (otherOptionsVisible.Count > 0)
         {
-            int idx = IndexOfOtherChara(selectedOtherChara);
-            if (idx < 0) idx = 0;
-            selectedOtherChara = otherOptionsVisible[idx];
+            //dd.value indexa otherOptionsVisible: la entrada 0 es 'Favorites' (null).
+            int idx = otherFavoritesSelected ? 0 : IndexOfOtherChara(selectedOtherChara);
+            if (idx < 0) idx = otherOptionsVisible.Count > 1 ? 1 : 0;   //primer PJ; si solo está 'Favorites', esa
+            if (idx > 0) selectedOtherChara = otherOptionsVisible[idx];
             dd.SetValueWithoutNotify(idx);
         }
         dd.RefreshShownValue();
@@ -3732,6 +3784,7 @@ public class UmaViewerUI : MonoBehaviour
         {
             //Sin pasar por ApplyOtherCharaSelection: ésta repintaría los trajes del PJ anterior.
             selectedOtherChara = slot.BodyCharaEntry;
+            otherFavoritesSelected = false;
             otherSearchFilter = "";
             otherSearchActive = false;
             RebuildOtherCharactersOptions();
@@ -3752,9 +3805,14 @@ public class UmaViewerUI : MonoBehaviour
 
     void OnOtherCharactersChanged(int value)
     {
-        //Si venimos de un clic en la lista, manda el PJ clicado: TMP dispara esto al SOLTAR el ratón, y
-        //para entonces la lista ya puede estar rehecha (sin filtro), así que su índice apuntaría a otro
-        //PJ (el primero de la lista completa).
+        //Si venimos de un clic en la lista, manda el item clicado (un PJ o 'Favorites'): TMP dispara
+        //esto al SOLTAR el ratón, y para entonces la lista ya puede estar rehecha (sin filtro), así que
+        //su índice apuntaría a otro (el primero de la lista completa).
+        if (pendingOtherFavorites)
+        {
+            ApplyOtherCharaSelection(null);
+            return;
+        }
         if (pendingOtherChara != null)
         {
             CharaEntry clicado = pendingOtherChara;
@@ -3766,28 +3824,45 @@ public class UmaViewerUI : MonoBehaviour
             return;
         }
 
-        //dd.value indexa la lista VISIBLE (filtrada o no), no la completa.
+        //dd.value indexa la lista VISIBLE (filtrada o no), no la completa. La entrada 'Favorites' llega
+        //como null (no es un PJ).
         if (value >= 0 && value < otherOptionsVisible.Count)
             ApplyOtherCharaSelection(otherOptionsVisible[value]);
     }
 
-    //Fija el PJ elegido, quita el filtro y recarga la lista de trajes. OJO: NO toca `pendingOtherChara`
-    //(lo limpia quien corresponda): el clic de la lista lo deja puesto para que los callbacks de TMP
-    //—que llegan al SOLTAR el ratón y pueden ser DOS en el mismo frame— usen ese PJ y no su índice.
+    //Fija lo elegido (un PJ, o 'Favorites' cuando llega null), quita el filtro y recarga la lista de
+    //trajes. OJO: NO toca `pendingOtherChara`/`pendingOtherFavorites` (los limpia quien corresponda):
+    //el clic de la lista los deja puestos para que los callbacks de TMP —que llegan al SOLTAR el ratón
+    //y pueden ser DOS en el mismo frame— usen el item clicado y no su índice.
     void ApplyOtherCharaSelection(CharaEntry chara)
     {
-        if (chara == null) return;
+        //'Favorites' (la entrada propia del desplegable) llega como null: no es un PJ.
+        bool favorites = chara == null;
+        otherFavoritesSelected = favorites;
+        if (!favorites) selectedOtherChara = chara;
 
-        selectedOtherChara = chara;
         otherSearchFilter = "";
         otherSearchActive = false;
         otherListQuiere = false;
         RebuildOtherCharactersOptions();
 
         //Los dos callbacks del mismo frame no deben reconstruir la lista de trajes dos veces (Destroy
-        //se difiere al final del frame y quedarían items duplicados).
+        //se difiere al final del frame y quedarían items duplicados). En 'Favorites' la lista se pinta
+        //leyendo otra vez el fichero del usuario (seleccionar la entrada actualiza el listado).
         if (costumeListMode == CostumeListMode.OtherCharacters && currentCostumeChara != null &&
             lastOtherCostumeFrame != Time.frameCount)
+        {
+            lastOtherCostumeFrame = Time.frameCount;
+            ListCostumes(currentCostumeChara, currentCostumeMini);
+        }
+    }
+
+    //(FAVORITES) La estrella de un item acaba de cambiar: si se está viendo la lista 'Favorites', se
+    //repinta (el traje acaba de entrar o salir de ella). En los demás listados no hay nada que ver.
+    void OnFavoriteStarChanged()
+    {
+        if (costumeListMode == CostumeListMode.OtherCharacters && otherFavoritesSelected &&
+            currentCostumeChara != null && lastOtherCostumeFrame != Time.frameCount)
         {
             lastOtherCostumeFrame = Time.frameCount;
             ListCostumes(currentCostumeChara, currentCostumeMini);
@@ -3873,6 +3948,16 @@ public class UmaViewerUI : MonoBehaviour
         return null;
     }
 
+    //True si el item `index` de las opciones es la entrada propia 'Favorites'. Se distingue por su
+    //TEXTO, igual que OtherCharaOfItem resuelve el PJ, para que el valor siga siendo válido aunque la
+    //lista se haya reconstruido cuando llegue el callback de TMP_Dropdown.
+    bool OtherItemIsFavorites(int index)
+    {
+        var dd = OtherCharactersDropdown;
+        if (dd == null || index < 0 || index >= dd.options.Count) return false;
+        return string.Equals(dd.options[index].text, FavoritesOptionLabel, StringComparison.Ordinal);
+    }
+
     void UpdateOtherCharacterSearch()
     {
         var dd = OtherCharactersDropdown;
@@ -3884,20 +3969,33 @@ public class UmaViewerUI : MonoBehaviour
             {
                 //Clic fuera de la lista: el PJ apuntado por un clic anterior ya no vale.
                 pendingOtherChara = null;
+                pendingOtherFavorites = false;
                 if (OtherDropdownBajoElPuntero()) BeginOtherSearch();
                 else EndOtherSearch();
             }
             else
             {
-                //Clic en un item: se resuelve el PJ por el TEXTO del item (lo que el usuario ve) y se
-                //aplica YA. TMP_Dropdown puede ignorar el clic (si el índice ya es el "actual"; con un
-                //solo resultado del filtro pasa SIEMPRE) y su onValueChanged llega al SOLTAR el ratón,
-                //ya con el índice obsoleto: por eso se guarda el PJ y el callback usa ESTE.
-                CharaEntry clicado = OtherCharaOfItem(OtherListItemBajoElPuntero());
-                if (clicado != null)
+                //Clic en un item: se resuelve el item por el TEXTO (lo que el usuario ve) —un PJ o la
+                //entrada 'Favorites'— y se aplica YA. TMP_Dropdown puede ignorar el clic (si el índice
+                //ya es el "actual"; con un solo resultado del filtro pasa SIEMPRE) y su onValueChanged
+                //llega al SOLTAR el ratón, ya con el índice obsoleto: por eso se guarda el item y el
+                //callback usa ESTE.
+                int itemClicado = OtherListItemBajoElPuntero();
+                if (OtherItemIsFavorites(itemClicado))
                 {
-                    pendingOtherChara = clicado;
-                    ApplyOtherCharaSelection(clicado);
+                    pendingOtherChara = null;
+                    pendingOtherFavorites = true;
+                    ApplyOtherCharaSelection(null);
+                }
+                else
+                {
+                    CharaEntry clicado = OtherCharaOfItem(itemClicado);
+                    if (clicado != null)
+                    {
+                        pendingOtherChara = clicado;
+                        pendingOtherFavorites = false;
+                        ApplyOtherCharaSelection(clicado);
+                    }
                 }
             }
             return;
@@ -3916,12 +4014,23 @@ public class UmaViewerUI : MonoBehaviour
         RefreshDropdownPreselection(dd, false);
         if (EnterPulsado())
         {
-            var elegido = OtherCharaOfItem(dd.value);
-            if (elegido != null)
+            if (OtherItemIsFavorites(dd.value))
             {
-                pendingOtherChara = elegido;
-                ApplyOtherCharaSelection(elegido);
+                pendingOtherChara = null;
+                pendingOtherFavorites = true;
+                ApplyOtherCharaSelection(null);
                 EndOtherSearch();
+            }
+            else
+            {
+                var elegido = OtherCharaOfItem(dd.value);
+                if (elegido != null)
+                {
+                    pendingOtherChara = elegido;
+                    pendingOtherFavorites = false;
+                    ApplyOtherCharaSelection(elegido);
+                    EndOtherSearch();
+                }
             }
             return;
         }
@@ -3964,6 +4073,7 @@ public class UmaViewerUI : MonoBehaviour
 
         otherSearchActive = true;
         pendingOtherChara = null;
+        pendingOtherFavorites = false;
         if (!string.IsNullOrEmpty(otherSearchFilter))
         {
             otherSearchFilter = "";
@@ -3978,6 +4088,7 @@ public class UmaViewerUI : MonoBehaviour
     {
         otherSearchActive = false;
         pendingOtherChara = null;
+        pendingOtherFavorites = false;
         var dd = OtherCharactersDropdown;
         if (dd != null && dd.IsActive()) dd.Hide();
         if (string.IsNullOrEmpty(otherSearchFilter)) return;

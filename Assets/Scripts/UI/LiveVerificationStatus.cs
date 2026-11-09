@@ -23,7 +23,9 @@ public static class LiveVerificationStatus
 
     public static bool IsVerified(int musicId) => VerifiedLives.Contains(musicId);
 
-    //Añade al item de la lista el indicador (tick verde o WIP), pegado al borde derecho de la fila del texto.
+    //Adds the status indicator (green tick or WIP) to the list item, pinned to the right edge of the
+    //row. It sits in the TOP-right corner on purpose: the bottom-right one is where the row's
+    //selection tick is drawn, so the badge used to cover it.
     public static void AttachBadge(UmaUIContainer container, int musicId)
     {
         if (container == null) return;
@@ -54,8 +56,9 @@ public static class LiveVerificationStatus
         }
 
         var rect = (RectTransform)go.transform;
-        rect.anchorMin = rect.anchorMax = new Vector2(1f, 0f);
-        rect.pivot = new Vector2(1f, 0f);
+        //Top-right corner of the row (mirror of the old bottom-right anchor).
+        rect.anchorMin = rect.anchorMax = new Vector2(1f, 1f);
+        rect.pivot = new Vector2(1f, 1f);
         rect.sizeDelta = new Vector2(label.preferredWidth, Height);
         rect.anchoredPosition = new Vector2(-Margin, 0f);
     }
