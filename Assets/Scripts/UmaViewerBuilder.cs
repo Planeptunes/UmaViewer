@@ -255,6 +255,7 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
         int head_id;
         string head_costumeId;
         int tailId = Convert.ToInt32(charaData["tail_model_id"]);
+        string headSkinIndex = null;   //skin index of the head character (only with a head override)
 
         if (headOverride != null)
         {
@@ -263,7 +264,11 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
             DataRow headData = UmaDatabaseController.ReadCharaData(headOverride);
             head_id = headOverride.Id;
             head_costumeId = string.IsNullOrEmpty(haedCostumeId) ? "00" : haedCostumeId;
-            if (headData != null) tailId = Convert.ToInt32(headData["tail_model_id"]);
+            if (headData != null)
+            {
+                tailId = Convert.ToInt32(headData["tail_model_id"]);
+                headSkinIndex = headData["skin"].ToString();
+            }
             CurrentHead = new UmaHeadData
             {
                 id = head_id,
@@ -352,7 +357,9 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
             string exclusiveTailPath = $"3d/chara/tail/{exclusiveTailName}/";
             string exclusiveTailPfb = $"{exclusiveTailPath}pfb_{exclusiveTailName}";
 
-            if (Main.AbList.TryGetValue(exclusiveTailPfb, out asset))
+            //With a head override (Other Characters/Favorites) the tail must be the HEAD character's, so the
+            //costume's exclusive tail (named after the BODY character, e.g. tail1013_30) is skipped.
+            if (headOverride == null && Main.AbList.TryGetValue(exclusiveTailPfb, out asset))
             {
                 umaContainer.LoadExclusiveTail(asset);
 
@@ -390,6 +397,12 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
 
 
         umaContainer.LoadPhysics();
+
+        //Other Characters/Favorites with a UNIQUE costume: its skin is painted in its own textures, so the
+        //body is recolored to the skin index of the head character (generic costumes pick it by index).
+        if (headOverride != null && !genericCostume && headSkinIndex != null)
+            BodySkinRecolor.Apply(umaContainer, skin, headSkinIndex);
+
         umaContainer.SetDynamicBoneEnable(ModelSettings.DynamicBoneEnable);
         umaContainer.LoadFaceMorph(id, costumeId);
         umaContainer.TearControllers.ForEach(a => a.SetDir(a.CurrentDir));
