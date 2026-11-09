@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using Gallop.Live;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
@@ -35,6 +36,16 @@ public class SliderControl : MonoBehaviour, IPointerDownHandler, IPointerUpHandl
 
     private void Awake()
     {
+        //Las flechas son atajos del live: sin esto, con el slider seleccionado tras un clic, Unity UI
+        //tambien movia la barra con izquierda/derecha.
+        _slider = GetComponent<Slider>();
+        if (_slider != null)
+        {
+            Navigation nav = _slider.navigation;
+            nav.mode = Navigation.Mode.None;
+            _slider.navigation = nav;
+        }
+
         if (PauseButton != null)
         {
             PauseButton.onClick.AddListener(OnPauseButtonClick);
@@ -51,6 +62,97 @@ public class SliderControl : MonoBehaviour, IPointerDownHandler, IPointerUpHandl
         //El video arranca reproduciendose.
         _paused = false;
         ApplyPhase();
+    }
+
+    //Atajos de teclado del live:
+    //  Espacio          -> pausa / reanuda
+    //  Izquierda/Derecha -> -1 s / +1 s (conserva el estado de pausa)
+    //  Abajo/Arriba      -> -1 frame / +1 frame (pausa el show si estaba sonando)
+    private const float SecondStep = 1f;
+    private const float FrameStep = 1f / 60f;
+    private const float RepeatDelay = 0.4f;
+    private const float RepeatInterval = 1f / 20f;
+
+    private Slider _slider;
+    private KeyCode _heldKey = KeyCode.None;
+    private float _nextRepeatTime;
+
+    private void Update()
+    {
+        Director director = Director.instance;
+        if (director == null || !director._isLiveSetup || director.IsOfflineRender || director.IsRecordVMD) return;
+        if (IsTypingInInputField()) return;
+
+        if (Input.GetKeyDown(KeyCode.Space))
+        {
+            TogglePause();
+            return;
+        }
+
+        int seconds = PollStep(KeyCode.RightArrow, 1) + PollStep(KeyCode.LeftArrow, -1);
+        int frames = PollStep(KeyCode.UpArrow, 1) + PollStep(KeyCode.DownArrow, -1);
+
+        if (seconds != 0)
+        {
+            SeekBy(director, seconds * SecondStep);
+        }
+        if (frames != 0)
+        {
+            //Avanzar frame a frame solo tiene sentido con el show detenido.
+            if (!_paused) ApplyPausedState(true);
+            SeekBy(director, frames * FrameStep);
+        }
+    }
+
+    //Devuelve `direction` cuando la tecla dispara un paso: al pulsarla y luego repetido mientras se
+    //mantiene; 0 en cualquier otro caso.
+    private int PollStep(KeyCode key, int direction)
+    {
+        if (Input.GetKeyDown(key))
+        {
+            _heldKey = key;
+            _nextRepeatTime = Time.unscaledTime + RepeatDelay;
+            return direction;
+        }
+        if (_heldKey == key)
+        {
+            if (!Input.GetKey(key))
+            {
+                _heldKey = KeyCode.None;
+            }
+            else if (Time.unscaledTime >= _nextRepeatTime)
+            {
+                _nextRepeatTime = Time.unscaledTime + RepeatInterval;
+                return direction;
+            }
+        }
+        return 0;
+    }
+
+    //Mueve el show `delta` segundos. Pausado: Director.Update relee la barra en su rama is_Touched.
+    //Sonando: se marca is_Outed para que la rama de reanudacion recoloque el audio en el nuevo tiempo.
+    private void SeekBy(Director director, float delta)
+    {
+        if (_slider == null) _slider = GetComponent<Slider>();
+        if (_slider == null || director.totalTime <= 0f) return;
+
+        float target = Mathf.Clamp(director._liveCurrentTime + delta, 0f, Mathf.Max(0f, director.totalTime - 0.001f));
+        director._liveCurrentTime = target;
+        _slider.SetValueWithoutNotify(target / director.totalTime);
+
+        if (!_paused)
+        {
+            is_Touched = false;
+            is_Outed = true;
+        }
+    }
+
+    private static bool IsTypingInInputField()
+    {
+        var es = UnityEngine.EventSystems.EventSystem.current;
+        if (es == null || es.currentSelectedGameObject == null) return false;
+        GameObject go = es.currentSelectedGameObject;
+        return go.GetComponent<InputField>() != null || go.GetComponent<TMPro.TMP_InputField>() != null;
     }
 
     //Punto de entrada publico: alterna pausa/reproduccion con el MISMO efecto que pulsar el boton de
