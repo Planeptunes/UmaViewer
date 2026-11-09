@@ -22,7 +22,10 @@ namespace Gallop.Live
         // Draw order (user-confirmed): the ground light panels must render BEFORE the foot shadow,
         // otherwise they cover the X. The shadow is therefore kept in the transparent range and
         // drawn after them (the game's shader tag is "Transparent-1", under its own additive
-        // panels; ours cover it, so the X goes after).
+        // panels; ours cover it, so the X goes after). URP's default transparent pass already
+        // draws it at this queue, after the q3000 panels. Do NOT add a Render Objects feature on
+        // layer 13 for it: that layer also holds the characters and the additive foot spotlights
+        // (spotlight000), which got drawn twice (doubled foot light, live 1001 frame 1625).
         public const int ShadowRenderQueue = 3005;
 
         private static readonly int ShadowIntensityId = Shader.PropertyToID("_ShadowIntensity");
