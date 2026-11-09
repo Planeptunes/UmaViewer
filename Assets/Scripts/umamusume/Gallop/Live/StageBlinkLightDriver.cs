@@ -28,10 +28,6 @@ namespace Gallop.Live
         public bool continueWhenNoUpdate = false;
         public float maxCatchupSecondsPerFrame = 0.2f;
 
-        public int uvSortingBias = 2048;
-        public int rootSortingStride = 8192;
-        public int stableSortStride = 4;
-
         public bool probeTimeline = false;
         public string probeTimelineNameContains = "";
         public bool probeTimelineOncePerFrame = true;
@@ -83,8 +79,6 @@ namespace Gallop.Live
         }
 
         private readonly Dictionary<string, CacheItem> _latest = new Dictionary<string, CacheItem>(256);
-        private readonly Dictionary<string, int> _rootBase = new Dictionary<string, int>(256);
-        private int _nextRootBase = 0;
 
         private bool _allOffInited = false;
         private readonly List<string> _tmpKeys = new List<string>(256);
@@ -292,8 +286,6 @@ namespace Gallop.Live
             _rootCache.Clear();
             _runtime.Clear();
 
-            _rootBase.Clear();
-            _nextRootBase = 0;
             _allOffInited = false;
 
             _tmpKeys.Clear();
@@ -352,7 +344,6 @@ namespace Gallop.Live
                 if (cache.rootGo != root) continue;
                 _rootCache.Remove(cache.rootName);
                 _runtime.Remove(cache.rootName);
-                _rootBase.Remove(cache.rootName);
                 roots.RemoveAt(i);
             }
             if (roots.Count == 0)
@@ -910,15 +901,6 @@ namespace Gallop.Live
             if (verboseLog) Debug.Log("[StageBlinkLightDriver] InitAllStageLightsOff done");
         }
 
-        private int GetRootBase(string rootName)
-        {
-            if (_rootBase.TryGetValue(rootName, out int b)) return b;
-            b = _nextRootBase;
-            _nextRootBase += rootSortingStride;
-            _rootBase[rootName] = b;
-            return b;
-        }
-
         private void ApplyToRootCached(string runtimeKey, GameObject rootGo, BlinkLightUpdateInfo updateInfo, float liveNow)
         {
             var rc = GetOrBuildRootCache(runtimeKey, rootGo);
@@ -928,8 +910,6 @@ namespace Gallop.Live
             ApplyUpdateInfoToRuntime(rt, rc.slotCount, updateInfo, liveNow);
             BuildCurrentColors(rt, rc.slotCount);
             SetWashLightBlendMode(rc, updateInfo.UseWashLightBlendMode);
-            int baseOrder = GetRootBase(runtimeKey);
-            int stride = Mathf.Max(1, stableSortStride);
 
             for (int i = 0; i < rc.renderers.Count; i++)
             {
@@ -1031,10 +1011,11 @@ namespace Gallop.Live
                 if (e.customLensFlare != null)
                     _registeredFlares?.SetBlinkColor(e.customLensFlare, currentColor * p);
 
-                int uvBias = (rc.rootIsUv || e.isUvAlphaMask) ? uvSortingBias : 0;
-                int wantSortingOrder = baseOrder + uvBias + e.stableSlot * stride;
-                if (r.sortingOrder != wantSortingOrder)
-                    r.sortingOrder = wantSortingOrder;
+                // No sortingOrder is written here: the native BlinkLightController never touches it
+                // (it only sets the material renderQueue in Initialize), so the panels keep their
+                // authored order (0, or 1 from RendererController). The old per-root order
+                // (8192 per root) pushed the floor panels after the fake foot shadows
+                // (FakeShadowController: 100 + alpha step) and hid the X in live 1053.
 
                 EnsureLightBlinkBlendState(r, ref e, rt.lightBlendMode);
 
