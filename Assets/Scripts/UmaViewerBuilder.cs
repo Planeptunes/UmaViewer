@@ -70,6 +70,10 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
         Instance = this;
     }
 
+    //"Resize Character" checkbox of the Other Characters panel: when on, a body that carries another character's head takes
+    //that character's height (uniform scale) and thighs; when off the body is loaded untouched.
+    public static bool ResizeOtherCharacterBody = true;
+
     public IEnumerator LoadUma(CharaEntry chara, string costumeId, bool mini, string haedCostumeId = "", CharaEntry headOverride = null, int colorIndex = 0)
     {
         int id = chara.Id;
@@ -256,6 +260,8 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
         string head_costumeId;
         int tailId = Convert.ToInt32(charaData["tail_model_id"]);
         string headSkinIndex = null;   //skin index of the head character (only with a head override)
+        string headShapeIndex = null;  //shape index of the head character
+        float heightRatio = 1f;        //head character height / body character height (uniform scale already applied to the model)
 
         if (headOverride != null)
         {
@@ -268,6 +274,15 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
             {
                 tailId = Convert.ToInt32(headData["tail_model_id"]);
                 headSkinIndex = headData["skin"].ToString();
+                headShapeIndex = headData["shape"].ToString();
+                //The height follows the head character (uniform scale, so every proportion stays relative to it).
+                if (ResizeOtherCharacterBody)
+                {
+                    int headScaleDb = Convert.ToInt32(headData["scale"]);
+                    int bodyScaleDb = Convert.ToInt32(charaData["scale"]);
+                    umaContainer.HeightOverride = headScaleDb;
+                    heightRatio = bodyScaleDb > 0 ? headScaleDb / (float)bodyScaleDb : 1f;
+                }
             }
             CurrentHead = new UmaHeadData
             {
@@ -402,6 +417,10 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
         //body is recolored to the skin index of the head character (generic costumes pick it by index).
         if (headOverride != null && !genericCostume && headSkinIndex != null)
             BodySkinRecolor.Apply(umaContainer, skin, headSkinIndex);
+
+        //Same case: only the thighs follow the head character (the height is already handled by HeightOverride).
+        if (ResizeOtherCharacterBody && headOverride != null && !genericCostume && headShapeIndex != null)
+            BodyThighProportion.Apply(umaContainer, shape, headShapeIndex, chara, headOverride, heightRatio);
 
         umaContainer.SetDynamicBoneEnable(ModelSettings.DynamicBoneEnable);
         umaContainer.LoadFaceMorph(id, costumeId);

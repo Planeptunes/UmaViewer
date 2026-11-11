@@ -246,11 +246,15 @@ public static class BodySkinRecolor
 
     private const float ClothWeight = 0.5f;   //same threshold as BodyZoneEditor.clothWeight
 
+    //Cloth = vertices weighted on physics bones. The bust bones (Sp_Ch_Bust*) are physics bones too, but the
+    //bust is BODY (skin), so they do not count as cloth: otherwise the chest skin would be left unrecolored.
     private static bool[] ClassifyVertices(SkinnedMeshRenderer smr, Mesh mesh, HashSet<string> springNames)
     {
         Transform[] bones = smr.bones;
         bool[] isSpring = new bool[bones.Length];
-        for (int i = 0; i < bones.Length; i++) isSpring[i] = bones[i] != null && springNames.Contains(bones[i].name);
+        for (int i = 0; i < bones.Length; i++)
+            isSpring[i] = bones[i] != null && springNames.Contains(bones[i].name) &&
+                          bones[i].name.IndexOf("Bust", StringComparison.OrdinalIgnoreCase) < 0;
 
         BoneWeight[] weights = mesh.boneWeights;
         bool[] cloth = new bool[mesh.vertexCount];

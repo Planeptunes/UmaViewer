@@ -171,6 +171,8 @@ public class UmaViewerUI : MonoBehaviour
     //(Modo "Other Characters"): desplegable con el resto de PJ y el elegido.
     private TMP_Dropdown OtherCharactersDropdown;
     private readonly List<CharaEntry> otherCharactersList = new List<CharaEntry>();
+    //"Resize Character" checkbox (NormalCharacters/Panel): only shown in the Other Characters mode.
+    private GameObject resizePanel;
     private CharaEntry selectedOtherChara;
 
     //Búsqueda por teclado del desplegable "Other Characters": mismo comportamiento que la combobox
@@ -633,6 +635,7 @@ public class UmaViewerUI : MonoBehaviour
         //(Prepara los desplegables del panel de personajes: modo de listado de trajes y buscador.)
         EnsureModelDropdown();
         EnsureOtherCharactersDropdown();
+        EnsureResizeToggle();
         EnsureSearchCharacterDropdown();
 
         var containerG = Instantiate(UmaContainerPrefab, AnimationSetList.content).GetComponent<UmaUIContainer>();
@@ -3745,6 +3748,33 @@ public class UmaViewerUI : MonoBehaviour
             dd.captionText.text = texto;
     }
 
+    //ExtraOptions/ModelDropdown -> NormalCharacters/Panel holds the "Resize Character" toggle.
+    void EnsureResizeToggle()
+    {
+        if (resizePanel != null || ModelDropdown == null) return;
+        var normalCharacters = ModelDropdown.transform.parent != null ? ModelDropdown.transform.parent.parent : null;
+        var panel = normalCharacters != null ? normalCharacters.Find("Panel") : null;
+        if (panel == null)
+        {
+            Debug.LogError("[UmaViewerUI] No se encuentra 'NormalCharacters/Panel' (checkbox Resize Character).");
+            return;
+        }
+        resizePanel = panel.gameObject;
+        var toggle = panel.GetComponentInChildren<Toggle>(true);
+        if (toggle != null)
+        {
+            toggle.onValueChanged = new Toggle.ToggleEvent();
+            toggle.onValueChanged.AddListener(on => UmaViewerBuilder.ResizeOtherCharacterBody = on);
+            UmaViewerBuilder.ResizeOtherCharacterBody = toggle.isOn;
+        }
+        RefreshResizePanel();
+    }
+
+    void RefreshResizePanel()
+    {
+        if (resizePanel != null) resizePanel.SetActive(costumeListMode == CostumeListMode.OtherCharacters);
+    }
+
     void OnModelDropdownChanged(int value)
     {
         costumeListMode = (CostumeListMode)value;
@@ -3752,6 +3782,7 @@ public class UmaViewerUI : MonoBehaviour
         //El desplegable de "otros personajes" sólo se ve en su modo.
         if (OtherCharactersDropdown != null)
             OtherCharactersDropdown.gameObject.SetActive(costumeListMode == CostumeListMode.OtherCharacters);
+        RefreshResizePanel();
 
         if (currentCostumeChara != null) ListCostumes(currentCostumeChara, currentCostumeMini);
     }
@@ -3771,6 +3802,7 @@ public class UmaViewerUI : MonoBehaviour
         }
         if (OtherCharactersDropdown != null)
             OtherCharactersDropdown.gameObject.SetActive(bodyOverride);
+        RefreshResizePanel();
 
         if (slot == null || slot.CharaEntry == null || slot.CharaEntry.IsMob)
         {

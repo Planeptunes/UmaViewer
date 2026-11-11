@@ -255,6 +255,8 @@ public class UmaContainerCharacter : UmaContainer
     public List<CySpringDataContainer> cySpringDataContainers;
     public GameObject PhysicsContainer;
     public float BodyScale = 1;
+    /// <summary>DB `scale` (height) of the head character when the body belongs to another one; null = use the body character's.</summary>
+    public int? HeightOverride;
 
     // (DATAMINE) El motor CySpring es un solver Verlet que se alimenta UNA vez por frame: el
     // "ancla" (SelfPosition) se recoge al principio del frame y su desplazamiento respecto al
@@ -535,7 +537,9 @@ public class UmaContainerCharacter : UmaContainer
         }
         else if (scale == -1)
         {
-            BodyScale = (Convert.ToInt32(CharaData[IsMob ? "chara_height" : "scale"]) / 160.7529f);
+            //With a head override (Other Characters/Favorites) the whole model takes the HEAD character's height.
+            int dbScale = HeightOverride ?? Convert.ToInt32(CharaData[IsMob ? "chara_height" : "scale"]);
+            BodyScale = (dbScale / 160.7529f);
         }
         else
         {
