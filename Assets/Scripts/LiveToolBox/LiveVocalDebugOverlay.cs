@@ -269,18 +269,22 @@ public class LiveVocalDebugOverlay : MonoBehaviour
             _visible = !_visible;
             PlayerPrefs.SetInt(VisiblePrefKey, _visible ? 1 : 0);
             PlayerPrefs.Save();
-            ApplyVisibility();
         }
 
-        if (_visible)
+        // Re-evaluated every frame: the overlay is created while the Live is still loading, and its
+        // canvas sorts above the loading screen.
+        ApplyVisibility();
+        if (_panel != null && _panel.activeSelf)
             Refresh();
     }
 
     // Se apaga el FONDO, no este componente: el Update sigue corriendo y el atajo vuelve a encenderlo.
+    // Hidden while the scene transition is still loading.
     private void ApplyVisibility()
     {
-        if (_panel != null)
-            _panel.SetActive(_visible);
+        bool shown = _visible && !UmaSceneController.IsTransitionActive;
+        if (_panel != null && _panel.activeSelf != shown)
+            _panel.SetActive(shown);
     }
 
     private void Refresh()

@@ -96,6 +96,25 @@ public class UmaViewerMain : MonoBehaviour
     {
         if (AbList == null) yield break;
 
+        // Block all UI input while the startup data loads: menus opened before their panels are
+        // built show stale/placeholder text and trigger extra work. Stepping the inner routine by
+        // hand (instead of yielding it as a nested coroutine) makes the finally run even if it throws.
+        var eventSystem = UnityEngine.EventSystems.EventSystem.current;
+        if (eventSystem != null) eventSystem.enabled = false;
+        try
+        {
+            var loading = LoadStartupData();
+            while (loading.MoveNext())
+                yield return loading.Current;
+        }
+        finally
+        {
+            if (eventSystem != null) eventSystem.enabled = true;
+        }
+    }
+
+    private IEnumerator LoadStartupData()
+    {
         // Traduce nombres JP->EN con la instalacion GLOBAL (solo nombres; si no esta,
         // no pasa nada y se conservan los japoneses).
         GlobalNames.EnsureLoaded(Config.Instance.GlobalNamesPath);
