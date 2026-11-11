@@ -67,6 +67,9 @@ public class Config
     public string TargetFrameRateTip = "Live scene frame rate: positive integer FPS, 0 = unlimited (desktop). Changed only by the Live settings panel.";
     public int TargetFrameRate = 60;
 
+    public string AnimationLoopTip = "Animation panel 'Loop' checkbox: true = the current animation restarts when it ends, false = it stops at the end. Saved when the checkbox changes.";
+    public bool AnimationLoop = true;
+
     public string VideoSpeedTip = "Live playback speed: 1 = normal, 0.25 = slow motion (audio is pitched down to stay in sync). Changed only by the Live settings panel.";
     public float VideoSpeed = 1f;
 

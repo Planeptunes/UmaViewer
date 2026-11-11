@@ -16,6 +16,9 @@ namespace uGIF
 		public bool stop = false;
 		public bool transparentBackground = false;
 
+		// Base name of the file to save ("[character]_[animation]"), set before recording starts.
+		public string BaseName;
+
 		[System.NonSerialized]
 		public byte[] bytes = null;
 
@@ -44,13 +47,13 @@ namespace uGIF
 #else
             string fileDirectory = Application.dataPath + "/../Screenshots/";
 #endif
-            string fileName = fileDirectory + string.Format("UmaViewer_{0}", DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss-fff"));
+            string fileName = fileDirectory + Screenshot.NextFreeName(fileDirectory, string.IsNullOrEmpty(BaseName) ? "UmaViewer" : BaseName, ".gif");
             Directory.CreateDirectory(fileDirectory);
             //fixes "/../" in path
             var fullpath = Path.GetFullPath($"{fileName}.gif");
             File.WriteAllBytes(fullpath, bytes);
             bytes = null;
-			UmaViewerUI.Instance.ShowMessage($"GIF saved: {fullpath}", UIMessageType.Success);
+			UmaViewerUI.Instance.ShowMessage($"GIF saved: {Screenshot.ToRootRelativePath(fullpath)}", UIMessageType.Success);
 			Frames.Clear();
 			stop = false;
             UmaViewerUI.Instance.ScreenshotSettings.GifButton.GetComponentInChildren<TMPro.TextMeshProUGUI>().text = "Record GIF";

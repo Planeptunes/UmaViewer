@@ -1871,6 +1871,7 @@ public class UmaViewerUI : MonoBehaviour
                 pageentry.OnClick = (container) =>
                 {
                     HighlightChildImage(animationList.content, container);
+                    SetLastLoadedAnimation(entry);
                     (Builder.CurrentUMAContainer)?.LoadAnimation(entry);
                     LoadedAnimation();
                 };
@@ -1919,6 +1920,7 @@ public class UmaViewerUI : MonoBehaviour
         container.Button.onClick.AddListener(() =>
         {
             HighlightChildImage(parent, container);
+            SetLastLoadedAnimation(entry);
             (Builder.CurrentUMAContainer)?.LoadAnimation(entry);
             LoadedAnimation();
         });
@@ -2013,6 +2015,52 @@ public class UmaViewerUI : MonoBehaviour
         Builder.AnimationCameraAnimator.speed = AnimationSettings.SpeedSlider.value;
         if (container.UmaFaceAnimator)
             container.UmaFaceAnimator.speed = AnimationSettings.SpeedSlider.value;
+    }
+
+    // Last animation clicked by the user, kept so it can be reloaded when the loop wraps.
+    private UmaDatabaseEntry _lastLoadedAnimation;
+
+    /// <summary>
+    /// Reloads the last clicked animation from the start, as if its list button was pressed again.
+    /// Used by the `EnableLoop` toggle when progress reaches 1 (proper loops, loops that did not
+    /// repeat, and animations without `_loop`).
+    /// </summary>
+    public bool ReloadLastAnimation(UmaContainerCharacter container)
+    {
+        // Only valid for the character the animation was clicked on (the list entry is per character).
+        if (_lastLoadedAnimation == null || container == null || container != _lastLoadedContainer)
+            return false;
+
+        // Replicate EXACTLY the first button click. On the first click `clip_2` is not yet this
+        // clip, so `LoadAnimation` takes the "new animation" branch (`Rebind()` + `Play("motion_2")`),
+        // which plays correctly. A plain reload takes the "same clip" path without Rebind, so the
+        // pose is not re-evaluated. Forget the current clip to force the first-click path.
+        container.OverrideController["clip_2"] = container.OverrideController["clip_1"] != null
+            ? container.OverrideController["clip_1"]
+            : container.OverrideController["clip_2"];
+        container.OverrideController["clip_1"] = null;
+
+        container.LoadAnimation(_lastLoadedAnimation);
+        LoadedAnimation();
+
+        // The cycle counter must start from 0.
+        if (AnimationSettings != null)
+            AnimationSettings.ResetCycleTracking();
+        return true;
+    }
+
+    private UmaContainerCharacter _lastLoadedContainer;
+
+    /// <summary>Registers the clicked animation so it can be reloaded in a loop.</summary>
+    public void SetLastLoadedAnimation(UmaDatabaseEntry entry)
+    {
+        _lastLoadedAnimation = entry;
+        _lastLoadedContainer = Builder.CurrentUMAContainer;
+
+        // A newly clicked animation must start the end-of-cycle detector clean; otherwise it would
+        // inherit the previous animation's time (e.g. a non-`_loop` one left at 1) and stop early.
+        if (AnimationSettings != null)
+            AnimationSettings.ResetCycleTracking();
     }
 
     /// <summary> Toggles one object ON and all others from UI.TogglablePanels list OFF </summary>
@@ -2307,7 +2355,7 @@ public class UmaViewerUI : MonoBehaviour
         string content = string.Join("\n", lines);
         File.WriteAllText(fullPath, content, Encoding.UTF8);
 
-        UmaViewerUI.Instance.ShowMessage($"ColorSet data saved: {fullPath}", UIMessageType.Success);
+        UmaViewerUI.Instance.ShowMessage($"ColorSet data saved: {Screenshot.ToRootRelativePath(fullPath)}", UIMessageType.Success);
     }
 
 
