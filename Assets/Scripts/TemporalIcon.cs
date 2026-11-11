@@ -89,6 +89,7 @@ public class TemporalIcon : MonoBehaviour
     }
 
     private const float PopupWidth = 900f;
+    private const float PopupHeight = 280f;   // Panel (prefab: 420) = TextField/Text (TMP) de 200 de alto + botones
     private bool _doCostumes = true;
     private bool _doHeads = true;
 
@@ -106,8 +107,8 @@ public class TemporalIcon : MonoBehaviour
         var popup = Popup.Create(
             "This tool creates icons for the costumes that have none and are using the default icon, " +
             "and for every head item, since heads currently reuse the costume icon and it is hard to tell " +
-            "what each one is.\n\nWhat do you want to create?",
-            900, 420, both, delegate { StartBatch(true, true); }, "Cancel", null);
+            "what each one is.\n\nWhat do you want to create?\n\n*This may take several minutes",
+            PopupWidth, PopupHeight, both, delegate { StartBatch(true, true); }, "Cancel", null);
         if (popup == null) return;
 
         Button accept = null;

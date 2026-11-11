@@ -241,6 +241,13 @@ public class UISettingsOther : MonoBehaviour
             Config.Instance.Region = (Region)region;
             Config.Instance.UpdateConfig(false);
             StartCoroutine(UmaViewerUI.Instance.ApplyGraphicsSettings());
+
+            if (Config.Instance.Region == Region.Global)
+            {
+                UmaViewerUI.Instance.ShowMessage(
+                    "Live Shows is currently under development with JP assets/code, loading global assets may result in some bugs or textures not loading",
+                    UIMessageType.Warning);
+            }
         }
     }
 
@@ -257,6 +264,30 @@ public class UISettingsOther : MonoBehaviour
     //la aplica al listado. Mismo escaneo que la carga normal (LoadNormalUma). Muestra un popup
     //sin opciones mientras se construye (repartido entre frames) y lo cierra al terminar.
     public void UpdateNonLoadingModels()
+    {
+        //Asks first: the list is only built when the user presses Generate.
+        var popup = Popup.Create(
+            "Updating list of costumes that trigger error on some characters.\nThose costumes will be disable for selection\n\nThis only takes few seconds",
+            -1, -1, "Generate", StartUpdateNonLoadingModels, "Cancel", null);
+        if (popup == null) return;
+
+        //The prefab puts the reject button first (left): Generate goes on the left, Cancel on the right.
+        Button generate = null, cancel = null;
+        foreach (var b in popup.GetComponentsInChildren<Button>(true))
+        {
+            var label = b.GetComponentInChildren<TMP_Text>(true);
+            if (label == null) continue;
+            if (label.text == "Generate") generate = b;
+            else if (label.text == "Cancel") cancel = b;
+        }
+        if (generate != null && cancel != null)
+        {
+            generate.transform.SetSiblingIndex(0);
+            cancel.transform.SetSiblingIndex(1);
+        }
+    }
+
+    private void StartUpdateNonLoadingModels()
     {
         var popup = Popup.CreateProgress(
             "Updating list of costumes that trigger error on some characters.\nThose costumes will be disable for selection");
