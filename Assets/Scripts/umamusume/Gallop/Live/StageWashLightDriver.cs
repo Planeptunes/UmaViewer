@@ -102,7 +102,10 @@ namespace Gallop.Live
 
             _controllerMap.Clear();
             _controllers.Clear();
+            _missedHashes.Clear();
         }
+
+        private readonly HashSet<int> _missedHashes = new HashSet<int>();
 
         private void OnWashLight(ref WashLightUpdateInfo updateInfo)
         {
@@ -111,6 +114,10 @@ namespace Gallop.Live
 
             if (!_controllerMap.TryGetValue(updateInfo.NameHash, out WashLightController controller) || controller == null)
             {
+                // A timeline name that matches no controller used to rebuild the whole cache (GetComponentsInChildren +
+                // hash tables, ~190k allocations) on EVERY frame. Rebuild once per unknown name and remember the miss.
+                if (!_missedHashes.Add(updateInfo.NameHash))
+                    return;
                 RebuildCache();
                 _controllerMap.TryGetValue(updateInfo.NameHash, out controller);
             }

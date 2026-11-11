@@ -1933,6 +1933,36 @@ namespace Gallop.Live
             UpdateObjectByHash(hash, ref updateInfo);
         }
 
+        // Port of StageController.UpdateObjectLayer (JP 0x7ffd59274050): the object key's LayerType picks the
+        // GraphicSettings layer (1 -> BG, 2 -> Background3D_NotReflect, 3 -> 3D, 4 -> TransparentFX; 0 or other: no
+        // change) and applies it to the object, or to its whole hierarchy when IsLayerTypeRecursively is set.
+        private static void UpdateObjectLayer(Transform tr, int layerType, bool recursively)
+        {
+            GraphicSettings.LayerIndex index;
+            switch (layerType)
+            {
+                case 1: index = GraphicSettings.LayerIndex.LayerBG; break;
+                case 2: index = GraphicSettings.LayerIndex.LayerBackground3D_NotReflect; break;
+                case 3: index = GraphicSettings.LayerIndex.Layer3D; break;
+                case 4: index = GraphicSettings.LayerIndex.LayerTransparentFX; break;
+                default: return;
+            }
+            int layer = GraphicSettings.GetLayer(index);
+            if (layer < 0) return;
+            if (!recursively)
+            {
+                if (tr.gameObject.layer != layer) tr.gameObject.layer = layer;
+                return;
+            }
+            SetLayerRecursively(tr, layer);
+        }
+
+        private static void SetLayerRecursively(Transform tr, int layer)
+        {
+            if (tr.gameObject.layer != layer) tr.gameObject.layer = layer;
+            for (int i = 0; i < tr.childCount; i++) SetLayerRecursively(tr.GetChild(i), layer);
+        }
+
         private void UpdateObjectByHash(int hash, ref ObjectUpdateInfo updateInfo)
         {
             // Native has a prefab renderer-array branch and a per-transform work branch.
@@ -1964,6 +1994,8 @@ namespace Gallop.Live
                         break;
                 }
                 if (tr.parent != parent) tr.SetParent(parent, false);
+
+                UpdateObjectLayer(tr, (int)updateInfo.LayerType, updateInfo.IsLayerTypeRecursively);
 
                 var start = work.startTransform;
                 Vector3 position = updateInfo.data.enablePosition ? updateInfo.updateData.position : start.position;

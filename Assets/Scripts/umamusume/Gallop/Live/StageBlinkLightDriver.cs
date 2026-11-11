@@ -37,7 +37,8 @@ namespace Gallop.Live
         // 官方 LightBlinkBlend 常见 fallback 是 Multiply = DstColor / One
         public BlendMode lightBlinkBlendSrc = BlendMode.DstColor;
         public BlendMode lightBlinkBlendDst = BlendMode.One;
-        public int lightBlinkBlendRenderQueue = -1;
+        // Game (JP probe, live 1156): every LightBlinkBlend material of the stage runs at renderQueue 3112.
+        public int lightBlinkBlendRenderQueue = 3112;
 
         public bool useTimelineLightBlendMode = true;
         public LiveDefine.LightBlendMode fallbackLightBlendMode = LiveDefine.LightBlendMode.Multiply;
