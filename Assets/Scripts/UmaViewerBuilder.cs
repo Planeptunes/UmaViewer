@@ -71,7 +71,7 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
     }
 
     //"Resize Character" checkbox of the Other Characters panel: when on, a body that carries another character's head takes
-    //that character's height (uniform scale) and thighs; when off the body is loaded untouched.
+    //that character's height (uniform scale) and body type (chest, thighs, calves); when off the body is loaded untouched.
     public static bool ResizeOtherCharacterBody = true;
 
     public IEnumerator LoadUma(CharaEntry chara, string costumeId, bool mini, string haedCostumeId = "", CharaEntry headOverride = null, int colorIndex = 0)
@@ -260,8 +260,7 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
         string head_costumeId;
         int tailId = Convert.ToInt32(charaData["tail_model_id"]);
         string headSkinIndex = null;   //skin index of the head character (only with a head override)
-        string headShapeIndex = null;  //shape index of the head character
-        float heightRatio = 1f;        //head character height / body character height (uniform scale already applied to the model)
+        string headHeightIndex = null, headShapeIndex = null, headBustIndex = null;  //body type indexes of the head character
 
         if (headOverride != null)
         {
@@ -274,15 +273,12 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
             {
                 tailId = Convert.ToInt32(headData["tail_model_id"]);
                 headSkinIndex = headData["skin"].ToString();
+                headHeightIndex = headData["height"].ToString();
                 headShapeIndex = headData["shape"].ToString();
+                headBustIndex = headData["bust"].ToString();
                 //The height follows the head character (uniform scale, so every proportion stays relative to it).
                 if (ResizeOtherCharacterBody)
-                {
-                    int headScaleDb = Convert.ToInt32(headData["scale"]);
-                    int bodyScaleDb = Convert.ToInt32(charaData["scale"]);
-                    umaContainer.HeightOverride = headScaleDb;
-                    heightRatio = bodyScaleDb > 0 ? headScaleDb / (float)bodyScaleDb : 1f;
-                }
+                    umaContainer.HeightOverride = Convert.ToInt32(headData["scale"]);
             }
             CurrentHead = new UmaHeadData
             {
@@ -418,9 +414,14 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
         if (headOverride != null && !genericCostume && headSkinIndex != null)
             BodySkinRecolor.Apply(umaContainer, skin, headSkinIndex);
 
-        //Same case: only the thighs follow the head character (the height is already handled by HeightOverride).
+        //Same case: the height is already handled by HeightOverride; chest, thighs and calves follow the body type of the
+        //head character (real difference between the generic bodies of both types).
         if (ResizeOtherCharacterBody && headOverride != null && !genericCostume && headShapeIndex != null)
-            BodyThighProportion.Apply(umaContainer, shape, headShapeIndex, chara, headOverride, heightRatio);
+        {
+            BodyTypeMorph.Apply(umaContainer, height, shape, bust, headHeightIndex, headShapeIndex, headBustIndex);
+            //The painted chest shadows of the bigger bust are removed when the head character has less bust.
+            BodyChestShadow.Apply(umaContainer, bust, headBustIndex);
+        }
 
         umaContainer.SetDynamicBoneEnable(ModelSettings.DynamicBoneEnable);
         umaContainer.LoadFaceMorph(id, costumeId);
