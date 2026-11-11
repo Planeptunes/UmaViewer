@@ -206,7 +206,7 @@ public static class BodySkinRecolor
     }
 
     // ---- the shader-effect data (UV scroll emissive) points to the ORIGINAL materials: re-point it.
-    private static void RemapShaderEffectTargets(UmaContainerCharacter c, Dictionary<Material, Material> map)
+    internal static void RemapShaderEffectTargets(UmaContainerCharacter c, Dictionary<Material, Material> map)
     {
         var data = c.BodyShaderEffectData;
         if (data == null || map.Count == 0) return;
@@ -225,7 +225,7 @@ public static class BodySkinRecolor
     // ================================================================= cloth / geometry mask
     //Names of every physics bone of the costume (body cloth + the rest): read from the physics data, which is
     //already loaded when the builder gets here (the controller itself may still be pending).
-    private static HashSet<string> CollectSpringBoneNames(UmaContainerCharacter c)
+    internal static HashSet<string> CollectSpringBoneNames(UmaContainerCharacter c)
     {
         var names = new HashSet<string>(StringComparer.Ordinal);
         if (c.PhysicsContainer == null) return names;
@@ -248,7 +248,7 @@ public static class BodySkinRecolor
 
     //Cloth = vertices weighted on physics bones. The bust bones (Sp_Ch_Bust*) are physics bones too, but the
     //bust is BODY (skin), so they do not count as cloth: otherwise the chest skin would be left unrecolored.
-    private static bool[] ClassifyVertices(SkinnedMeshRenderer smr, Mesh mesh, HashSet<string> springNames)
+    internal static bool[] ClassifyVertices(SkinnedMeshRenderer smr, Mesh mesh, HashSet<string> springNames)
     {
         Transform[] bones = smr.bones;
         bool[] isSpring = new bool[bones.Length];
@@ -552,7 +552,7 @@ public static class BodySkinRecolor
 
     // ================================================================= texture -> CPU pixels
     //GPU blit to a temporary RT (the bundle textures are not readable) and read back, keeping the colour space.
-    private static Color32[] ReadPixels(Texture tex, int w, int h, out bool srgb)
+    internal static Color32[] ReadPixels(Texture tex, int w, int h, out bool srgb)
     {
         srgb = GraphicsFormatUtility.IsSRGBFormat(tex.graphicsFormat);
         RenderTexture rt = RenderTexture.GetTemporary(w, h, 0, RenderTextureFormat.ARGB32,
