@@ -29,7 +29,7 @@ namespace Gallop.Live.Cutt
                 ? LiveTimelineControl.CalculateInterpolationValue(a, b, frame) : 0f;
             if (b == null) b = a;
             state.IsEnable = true;
-            state.Iterations = Mathf.Clamp(a.Iterations, 1, 4);
+            state.Iterations = Mathf.Max(a.Iterations, 1); // the native pass clamps to [1, 5]
             state.Intensity = Mathf.LerpUnclamped(a.Intensity, b.Intensity, t);
             state.Threshold = Mathf.LerpUnclamped(a.Threshold, b.Threshold, t);
             state.BlurSpread = Mathf.LerpUnclamped(a.BlurSpread, b.BlurSpread, t);

@@ -35,7 +35,11 @@ namespace Gallop.RenderPipeline
         LightShafts,
         LensFlare,
         // Glow of the stage lights (TransmittedLight track).
-        TransmittedLight
+        TransmittedLight,
+        // Appended AFTER the rows of the LiveScene popup (they are matched by index and extra rows are cloned).
+        LensDistortion,
+        Hatching,
+        EdgeStyle
     }
 
     public static class PostEffectSelection
@@ -66,7 +70,10 @@ namespace Gallop.RenderPipeline
             PostEffectId.SunShafts,
             PostEffectId.LightShafts,
             PostEffectId.LensFlare,
-            PostEffectId.TransmittedLight
+            PostEffectId.TransmittedLight,
+            PostEffectId.LensDistortion,
+            PostEffectId.Hatching,
+            PostEffectId.EdgeStyle
         };
 
         public static string Label(PostEffectId id)
@@ -90,6 +97,9 @@ namespace Gallop.RenderPipeline
                 case PostEffectId.LightShafts: return "Light shafts";
                 case PostEffectId.LensFlare: return "Lens flare";
                 case PostEffectId.TransmittedLight: return "Transmitted light";
+                case PostEffectId.LensDistortion: return "Lens distortion";
+                case PostEffectId.Hatching: return "Hatching";
+                case PostEffectId.EdgeStyle: return "Edge style";
                 default: return id.ToString();
             }
         }

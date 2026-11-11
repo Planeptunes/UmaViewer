@@ -7,28 +7,37 @@ using UnityEngine.Rendering.Universal;
 
 namespace Gallop.RenderPipeline
 {
-    // TransmittedLight (glow of the stage lights), reconstructed from the game's shaders:
-    //  1) the stage light materials have a "TransmittedLightMask" LightMode pass (alpha blend,
-    //     _TransmittedLightMaskScale): drawn with the scene depth into a mask RT;
-    //  2) FastBloom pass 4 "DownSampleMask" (_MainTex = frame, _TransmittedMaskTex = mask,
-    //     _Parameter.zw = threshold / intensity) down-samples the frame only where the lights are;
-    //  3) FastBloom vertical / horizontal blur, Iterations times, spread from BlurSpread;
-    //  4) FastBloom pass 0 "Bloom" (_Bloom, _BloomIsScreenBlend) composes it over the frame.
-    // Parameters come from the TransmittedLight track (LiveTransmittedLightTimeline.Current).
-    // Not recovered from game code (the datamined build predates it): the exact place in the
-    // chain (here with the shafts, before DOF/Bloom), the blur spread scaling (same as the
-    // viewer's FastBloom path) and the BlendMode mapping (2 = Add, otherwise Screen).
+    // TransmittedLight (glow of the stage lights). Port of the JP client's
+    // Gallop.RenderPipeline.TransmittedLightPass (Execute 0x7ffd595cecd0, DrawTransmittedLightMask
+    // 0x7ffd595ce920, CreateBloomRenderTexture 0x7ffd595ce4a0, Setup 0x7ffd595cf890):
+    //  1) mask RT (RenderTextureFormat 5): cleared to black (GameDefine.COLOR_BLACK), stage light
+    //     materials drawn with the "TransmittedLightMask" LightMode against the scene depth,
+    //     published as _TransmittedMaskTex;
+    //  2) Iterations (clamped to [1, 5]) mip levels of size source / 2^(i + 2): every level is made from
+    //     the previous one (level 0 from the frame) with FastBloom pass 4 DownSampleMask and
+    //     _Parameter = (DefaultShaderParameter.xy, 0, 1): threshold / intensity are NOT applied here;
+    //  3) every level is blurred once: pass 2 (vertical) then pass 3 (horizontal) with
+    //     _Parameter = (spread / aspect / 512, spread / 512, Threshold, Intensity), same spread for
+    //     every level;
+    //  4) Iterations > 1: merged from the smallest level up (_Bloom = level k, _BloomIsScreenBlend = 1,
+    //     pass 0 over level k - 1, copied back);
+    //  5) _BloomIsScreenBlend = BlendMode as a raw int (Screen 0, Add 1, Multiply 2), _Bloom = level 0,
+    //     pass 0 over the frame.
+    // Chain position (PostImageEffectFeature.RegisterPass): after SunShafts, before IndirectLightShafts.
+    // The game enables it with GraphicSettings' quality flag (true for the live) AND the track flag;
+    // there is no intensity gate.
     public sealed class TransmittedLightPass : ScriptableRenderPass, IDisposable
     {
-        private const int Divider = 4;
+        private const int MaxIterations = 5;
         private const float OneOverBaseSize = 1f / 512f;
         private const int PassBloom = 0, PassBlurVertical = 2, PassBlurHorizontal = 3, PassDownSampleMask = 4;
 
         private static readonly ShaderTagId MaskTag = new ShaderTagId("TransmittedLightMask");
         private static readonly int MaskId = Shader.PropertyToID("_RecoveredTransmittedLightMask");
-        private static readonly int Low0 = Shader.PropertyToID("_RecoveredTransmittedLightLow0");
-        private static readonly int Low1 = Shader.PropertyToID("_RecoveredTransmittedLightLow1");
-        private static readonly int Output = Shader.PropertyToID("_RecoveredTransmittedLightOutput");
+        private static readonly int TempId = Shader.PropertyToID("_RecoveredTransmittedLightTemp");
+        private static readonly int OutputId = Shader.PropertyToID("_RecoveredTransmittedLightOutput");
+        private static readonly int[] LevelIds = MakeIds("_RecoveredTransmittedLightLevel", MaxIterations);
+        private static readonly int[] VerticalIds = MakeIds("_RecoveredTransmittedLightVertical", MaxIterations);
         private static readonly int MaskTexId = Shader.PropertyToID("_TransmittedMaskTex");
         private static readonly int ParameterId = Shader.PropertyToID("_Parameter");
         private static readonly int BloomId = Shader.PropertyToID("_Bloom");
@@ -40,11 +49,18 @@ namespace Gallop.RenderPipeline
 
         public TransmittedLightPass(RenderPassEvent evt) { renderPassEvent = evt; }
 
+        private static int[] MakeIds(string prefix, int count)
+        {
+            var ids = new int[count];
+            for (int i = 0; i < count; i++) ids[i] = Shader.PropertyToID(prefix + i);
+            return ids;
+        }
+
         public bool Setup(LiveTransmittedLightTimeline.State state, PostImageEffectFeature feature)
         {
             _state = state;
             _feature = feature;
-            if (!state.IsEnable || state.Intensity <= 0f) return false;
+            if (!state.IsEnable) return false;
             Shader shader = ShaderManager.GetShader(ShaderManager.ShaderKinds.FastBloom);
             if (shader == null || !shader.isSupported) return false;
             if (_material == null) _material = CoreUtils.CreateEngineMaterial(shader);
@@ -70,58 +86,90 @@ namespace Gallop.RenderPipeline
                 // 1) Mask of the stage lights, depth-tested against the scene.
                 var maskDesc = camDesc;
                 maskDesc.depthBufferBits = 0;
-                maskDesc.colorFormat = RenderTextureFormat.ARGB32;
+                maskDesc.colorFormat = SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.ARGB4444)
+                    ? RenderTextureFormat.ARGB4444 : RenderTextureFormat.ARGB32; // game: format 5
                 maskDesc.bindMS = false;
+                // The scene depth is multisampled when the camera uses MSAA: the mask must have the same sample count
+                // to be bound together with it (a 1-sample colour with an MSAA depth makes every depth test fail).
+                maskDesc.msaaSamples = Mathf.Max(1, camDesc.msaaSamples);
+                if (maskDesc.msaaSamples > 1) maskDesc.colorFormat = RenderTextureFormat.ARGB32;
                 maskDesc.useMipMap = maskDesc.autoGenerateMips = false;
                 cmd.GetTemporaryRT(MaskId, maskDesc, FilterMode.Bilinear);
                 cmd.SetRenderTarget(new RenderTargetIdentifier(MaskId), depth.nameID);
-                cmd.ClearRenderTarget(false, true, Color.clear);
+                cmd.ClearRenderTarget(false, true, Color.black); // GameDefine.COLOR_BLACK
                 context.ExecuteCommandBuffer(cmd);
                 cmd.Clear();
                 var drawing = CreateDrawingSettings(MaskTag, ref renderingData, SortingCriteria.CommonTransparent);
                 drawing.perObjectData = PerObjectData.None;
                 var filter = new FilteringSettings(RenderQueueRange.all, renderingData.cameraData.camera.cullingMask);
                 context.DrawRenderers(renderingData.cullResults, ref drawing, ref filter);
+                cmd.SetGlobalTexture(MaskTexId, MaskId);
 
-                // 2) Masked, thresholded down-sample of the frame.
                 var full = camDesc;
                 full.depthBufferBits = 0; full.msaaSamples = 1; full.bindMS = false;
                 full.useMipMap = full.autoGenerateMips = false;
-                var low = full;
-                low.width = Mathf.Max(1, full.width / Divider);
-                low.height = Mathf.Max(1, full.height / Divider);
-                cmd.GetTemporaryRT(Low0, low, FilterMode.Bilinear);
-                cmd.GetTemporaryRT(Low1, low, FilterMode.Bilinear);
-                cmd.GetTemporaryRT(Output, full, FilterMode.Bilinear);
-                cmd.SetGlobalTexture(MaskTexId, MaskId);
-                cmd.SetGlobalVector(ParameterId, new Vector4(0f, 0f, _state.Threshold, _state.Intensity));
-                cmd.Blit(input.RtId, Low0, _material, PassDownSampleMask);
-
-                // 3) Blur. The blur passes also read _Parameter.zw (pass 2 subtracts z from every
-                // tap, pass 3 multiplies by w), so they get 0 / 1 like the game's bloom texture:
-                // threshold and intensity are applied once, in DownSampleMask.
                 float aspect = full.height > 0 ? (float)full.width / full.height : 1f;
-                for (int i = 0; i < _state.Iterations; i++)
+
+                int iterations = Mathf.Clamp(_state.Iterations, 1, MaxIterations);
+                var levelDesc = new RenderTextureDescriptor[iterations];
+
+                // 2) Mip chain with DownSampleMask: level i = source / 2^(i + 2), threshold/intensity neutral.
+                var defaultXY = DofDiffusionBloomOverlayPass.DefaultShaderParameter;
+                cmd.SetGlobalVector(ParameterId, new Vector4(defaultXY.x, defaultXY.y, 0f, 1f));
+                RenderTargetIdentifier previous = input.RtId;
+                for (int i = 0; i < iterations; i++)
                 {
-                    float spread = _state.BlurSpread * (1f + i);
-                    cmd.SetGlobalVector(ParameterId, new Vector4(spread / aspect * OneOverBaseSize,
-                        spread * OneOverBaseSize, 0f, 1f));
-                    cmd.Blit(Low0, Low1, _material, PassBlurVertical);
-                    cmd.Blit(Low1, Low0, _material, PassBlurHorizontal);
+                    int divider = 1 << (i + 2);
+                    var d = full;
+                    d.width = Mathf.Max(1, full.width / divider);
+                    d.height = Mathf.Max(1, full.height / divider);
+                    levelDesc[i] = d;
+                    cmd.GetTemporaryRT(LevelIds[i], d, FilterMode.Bilinear);
+                    cmd.Blit(previous, LevelIds[i], _material, PassDownSampleMask);
+                    previous = LevelIds[i];
                 }
 
-                // 4) Compose; the bloom globals are restored for the main Bloom pass.
+                // 3) One vertical + horizontal blur per level (the game flushes the buffer per level).
+                float spread = _state.BlurSpread;
+                for (int i = 0; i < iterations; i++)
+                {
+                    cmd.SetGlobalVector(ParameterId, new Vector4(spread / aspect * OneOverBaseSize,
+                        spread * OneOverBaseSize, _state.Threshold, _state.Intensity));
+                    cmd.GetTemporaryRT(VerticalIds[i], levelDesc[i], FilterMode.Bilinear);
+                    cmd.Blit(LevelIds[i], VerticalIds[i], _material, PassBlurVertical);
+                    cmd.Blit(VerticalIds[i], LevelIds[i], _material, PassBlurHorizontal);
+                    cmd.ReleaseTemporaryRT(VerticalIds[i]);
+                    context.ExecuteCommandBuffer(cmd);
+                    cmd.Clear();
+                }
+
                 float previousScreenBlend = Shader.GetGlobalFloat(ScreenBlendId);
-                cmd.SetGlobalTexture(BloomId, Low0);
-                cmd.SetGlobalFloat(ScreenBlendId, _state.BlendMode == 2 ? 0f : 1f);
-                cmd.Blit(input.RtId, Output, _material, PassBloom);
+
+                // 4) Merge from the smallest level up with the Bloom pass in screen-blend mode.
+                if (iterations > 1)
+                {
+                    cmd.SetGlobalFloat(ScreenBlendId, 1f);
+                    for (int k = iterations - 1; k >= 1; k--)
+                    {
+                        cmd.SetGlobalTexture(BloomId, LevelIds[k]);
+                        cmd.GetTemporaryRT(TempId, levelDesc[k - 1], FilterMode.Bilinear);
+                        cmd.Blit(LevelIds[k - 1], TempId, _material, PassBloom);
+                        cmd.CopyTexture(TempId, LevelIds[k - 1]);
+                        cmd.ReleaseTemporaryRT(TempId);
+                    }
+                }
+
+                // 5) Compose over the frame: BlendMode raw int (Screen 0, Add 1, Multiply 2).
+                cmd.GetTemporaryRT(OutputId, full, FilterMode.Bilinear);
+                cmd.SetGlobalFloat(ScreenBlendId, _state.BlendMode);
+                cmd.SetGlobalTexture(BloomId, LevelIds[0]);
+                cmd.Blit(input.RtId, OutputId, _material, PassBloom);
                 cmd.SetGlobalFloat(ScreenBlendId, previousScreenBlend);
                 cmd.SetGlobalTexture(MaskTexId, Texture2D.blackTexture);
 
-                cmd.ReleaseTemporaryRT(Low0);
-                cmd.ReleaseTemporaryRT(Low1);
+                for (int i = 0; i < iterations; i++) cmd.ReleaseTemporaryRT(LevelIds[i]);
                 cmd.ReleaseTemporaryRT(MaskId);
-                _feature.SetSourceRT(RenderTextureHandle.Make(Output, full.width, full.height), cmd, ref renderingData);
+                _feature.SetSourceRT(RenderTextureHandle.Make(OutputId, full.width, full.height), cmd, ref renderingData);
                 context.ExecuteCommandBuffer(cmd);
                 LiveRuntimeDiagnostics.RecordRenderExecution(renderingData.cameraData.camera,
                     "TransmittedLight", renderPassEvent, input, _feature.SourceRT);

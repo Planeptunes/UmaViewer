@@ -36,6 +36,8 @@ namespace Gallop.RenderPipeline
         private TiltShiftPass _tiltShiftPass;
         private GlobalFogPass _globalFogPass;
         private VortexPass _vortexPass;
+        private LensDistortionPass _lensDistortionPass;
+        private HatchingPass _hatchingPass;
         private FluctuationPass _fluctuationPass;
         private SimpleColorCorrectionPass _colorCorrectionPass;
         private FinalBlitPass _colorEarlyResolvePass;
@@ -97,6 +99,13 @@ namespace Gallop.RenderPipeline
 
         // Pure scheduling policy, shared with regression tests. URP performs the stable
         // event sort; this does not change the existing DOF pass or its late camera writes.
+        // Lens flare at the JP event (600, after the 550 chain) instead of the DOF event. Static so it can be
+        // toggled at runtime while comparing frames (e.g. live 1053 f1331).
+        public static bool FlareAfterChain = true;
+        // Vortex (603) and ColorCorrection (604) at their JP events, with a late resolve blit at 605.
+        public static bool JpPostEvents = true;
+        private FinalBlitPass _lateResolvePass;
+
         public struct ColorChainSchedule
         {
             public int FirstEvent, LastEvent;
@@ -138,8 +147,11 @@ namespace Gallop.RenderPipeline
             _tiltShiftPass = new TiltShiftPass(passEvent);
             _globalFogPass = new GlobalFogPass(passEvent);
             _vortexPass = new VortexPass(passEvent);
+            _lensDistortionPass = new LensDistortionPass(passEvent);
+            _hatchingPass = new HatchingPass(passEvent);
             _fluctuationPass = new FluctuationPass(passEvent);
             _colorCorrectionPass = new SimpleColorCorrectionPass();
+            _lateResolvePass = new FinalBlitPass(this, (RenderPassEvent)605, "LateResolve");
             _colorEarlyResolvePass = new FinalBlitPass(this, passEvent, "ColorEarlyResolve");
             _exposurePass = new ExposureToneCurvePass(false);
             _toneCurvePass = new ExposureToneCurvePass(true);
@@ -290,7 +302,11 @@ namespace Gallop.RenderPipeline
                 _globalFogPass != null && _globalFogPass.Setup(parameter.GlobalFog, this);
             bool vortexReady = Gallop.RenderPipeline.PostEffectSelection.IsEnabled(PostEffectId.Vortex) &&
                 _vortexPass != null && _vortexPass.Setup(parameter.Vortex, this);
-            bool fluctuationReady = Gallop.RenderPipeline.PostEffectSelection.IsEnabled(PostEffectId.Fluctuation) &&
+            bool hatchingReady = Gallop.RenderPipeline.PostEffectSelection.IsEnabled(PostEffectId.Hatching) &&
+                _hatchingPass != null && _hatchingPass.Setup(parameter.Hatching, this);
+            bool lensDistortionReady =Gallop.RenderPipeline.PostEffectSelection.IsEnabled(PostEffectId.LensDistortion) &&
+                _lensDistortionPass != null && _lensDistortionPass.Setup(parameter.LensDistortion, this);
+            bool fluctuationReady =Gallop.RenderPipeline.PostEffectSelection.IsEnabled(PostEffectId.Fluctuation) &&
                                     _fluctuationPass != null &&
                                     _fluctuationPass.Setup(parameter.Fluctuation, this);
             bool colorReady = Gallop.RenderPipeline.PostEffectSelection.IsEnabled(PostEffectId.ColorCorrection) &&
@@ -313,7 +329,7 @@ namespace Gallop.RenderPipeline
             // the colour correction (see LensFlareRenderPass).
             bool flareReady = _lensFlarePass != null && _lensFlarePass.Setup(this, false);
             bool lightReady = sunReady || shaftsReady || transmittedReady || flareReady;
-            if (!dofReady && !radialReady && !chromaticReady && !tiltReady && !fogReady && !vortexReady && !fluctuationReady && !correctionReady && !lightReady)
+            if (!dofReady && !radialReady && !chromaticReady && !tiltReady && !fogReady && !vortexReady && !hatchingReady && !lensDistortionReady && !fluctuationReady && !correctionReady && !lightReady)
             {
                 if (!_loggedSetupFailed)
                 {
@@ -346,8 +362,13 @@ namespace Gallop.RenderPipeline
             RenderPassEvent effectEvent = parameter.DofDiffuionBloomOverlay.RenderPassEvent;
 
             // Color keeps its native default event550, independent of DOF's event.
+            // JP: LensFlareRenderPass.Setup sets its event to 600, after the 550 chain, so it must not shape the
+            // chain schedule when FlareAfterChain is on.
+            bool chainLightReady = FlareAfterChain ? (sunReady || shaftsReady || transmittedReady) : lightReady;
+            // With JpPostEvents the ColorCorrection runs at 604, outside the 550 chain.
+            bool chainCorrectionReady = JpPostEvents ? (exposureReady || toneReady) : correctionReady;
             var schedule = GetColorChainSchedule(dofReady, radialReady,
-                correctionReady || lightReady, effectEvent);
+                chainCorrectionReady || chainLightReady, effectEvent);
             _sourceSetupPass.renderPassEvent = (RenderPassEvent)schedule.FirstEvent;
             _finalBlitPass.renderPassEvent = (RenderPassEvent)schedule.LastEvent;
 
@@ -360,15 +381,22 @@ namespace Gallop.RenderPipeline
                 _globalFogPass.ConfigureInput(ScriptableRenderPassInput.Depth);
                 _registerPass.Add(_globalFogPass);
             }
+            // JP RegisterPass: GlobalFog -> SunShafts -> TransmittedLight -> IndirectLightShafts -> ... -> DOF.
             if (sunReady) _registerPass.Add(_sunShaftsPass);
-            if (shaftsReady) _registerPass.Add(_indirectLightShaftsPass);
             if (transmittedReady) _registerPass.Add(_transmittedLightPass);
+            if (shaftsReady) _registerPass.Add(_indirectLightShaftsPass);
             if (dofReady) _registerPass.Add(_dofDiffusionBloomOverlayPass);
             // Native GallopImageEffect chain order: DOF/Diffusion/Bloom -> TiltShift -> RadialBlur.
             if (tiltReady)
             {
                 _tiltShiftPass.renderPassEvent = effectEvent;
                 _registerPass.Add(_tiltShiftPass);
+            }
+            // JP RegisterPass: TiltShift -> Hatching -> RadialBlur.
+            if (hatchingReady)
+            {
+                _hatchingPass.renderPassEvent = effectEvent;
+                _registerPass.Add(_hatchingPass);
             }
             if (radialReady)
             {
@@ -383,6 +411,12 @@ namespace Gallop.RenderPipeline
                 _fluctuationPass.renderPassEvent = effectEvent;
                 _registerPass.Add(_fluctuationPass);
             }
+            // JP RegisterPass: Fluctuation -> LensDistortion -> ChromaticAberration.
+            if (lensDistortionReady)
+            {
+                _lensDistortionPass.renderPassEvent = effectEvent;
+                _registerPass.Add(_lensDistortionPass);
+            }
             if (chromaticReady)
             {
                 _chromaticAberrationPass.renderPassEvent = effectEvent;
@@ -390,21 +424,27 @@ namespace Gallop.RenderPipeline
             }
             if (flareReady)
             {
-                _lensFlarePass.renderPassEvent = effectEvent;
+                _lensFlarePass.renderPassEvent = FlareAfterChain ? (RenderPassEvent)600 : effectEvent;
                 _registerPass.Add(_lensFlarePass);
             }
             if (toneReady) _registerPass.Add(_toneCurvePass);
             if (exposureReady) _registerPass.Add(_exposurePass);
+            // JP: Vortex 603 (LiveImageEffect.Initialize) and ColorCorrection 604 (Director.OnUpdateColorCorrection)
+            // run after the 550 chain and the 600 lens flare, on the resolved camera colour (each pass starts
+            // with ResetSourceRT); the late resolve at 605 copies the last temporary back.
             if (colorReady)
             {
+                _colorCorrectionPass.renderPassEvent = JpPostEvents ? (RenderPassEvent)604 : RenderPassEvent.BeforeRenderingPostProcessing;
                 _registerPass.Add(_colorCorrectionPass);
             }
             // Native Vortex lives in LiveImageEffect's after-lensflare command buffer: last.
             if (vortexReady)
             {
-                _vortexPass.renderPassEvent = effectEvent;
+                _vortexPass.renderPassEvent = JpPostEvents ? (RenderPassEvent)603 : effectEvent;
                 _registerPass.Add(_vortexPass);
             }
+            if (JpPostEvents && (colorReady || vortexReady) && _lateResolvePass != null)
+                _registerPass.Add(_lateResolvePass);
             // All native event550 corrections must resolve before a late DOF draw.
             if (schedule.EarlyResolve)
             {
@@ -512,11 +552,16 @@ namespace Gallop.RenderPipeline
             _globalFogPass = null;
             _vortexPass?.Dispose();
             _vortexPass = null;
+            _lensDistortionPass?.Dispose();
+            _lensDistortionPass = null;
+            _hatchingPass?.Dispose();
+            _hatchingPass = null;
             _fluctuationPass?.Dispose();
             _fluctuationPass = null;
             _colorCorrectionPass?.Dispose();
             _colorCorrectionPass = null;
             _colorEarlyResolvePass = null;
+            _lateResolvePass = null;
             _exposurePass?.Dispose();
             _toneCurvePass?.Dispose();
             _exposurePass = _toneCurvePass = null;
@@ -718,6 +763,8 @@ namespace Gallop.RenderPipeline
             public TiltShiftPass.Parameter TiltShift;
             public GlobalFogPass.Parameter GlobalFog;
             public VortexPass.Parameter Vortex;
+            public LensDistortionPass.Parameter LensDistortion;
+            public HatchingPass.Parameter Hatching;
             public FluctuationPass.Parameter Fluctuation;
             public SimpleColorCorrectionPass.Parameter ColorCorrection;
             public SunShaftsPass.Parameter SunShafts = SunShaftsPass.Parameter.Default();
@@ -797,6 +844,8 @@ namespace Gallop.RenderPipeline
                 TiltShift = src.TiltShift;
                 GlobalFog = src.GlobalFog;
                 Vortex = src.Vortex;
+                LensDistortion = src.LensDistortion;
+                Hatching = src.Hatching;
                 Fluctuation = src.Fluctuation;
                 ColorCorrection = src.ColorCorrection;
                 SunShafts = src.SunShafts;

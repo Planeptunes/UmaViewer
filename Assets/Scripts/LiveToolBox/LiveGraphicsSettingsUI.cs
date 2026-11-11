@@ -251,8 +251,36 @@ public class LiveGraphicsSettingsUI : MonoBehaviour
     public GameObject PostEffectListBlocker;
     public Toggle[] PostEffectToggles;
 
+    // The scene (LiveScene) only ships a row per effect up to Lens flare. Effects added to
+    // PostEffectSelection.All later (Transmitted light) get their row cloned from the last one; the
+    // popup content is a VerticalLayoutGroup + ContentSizeFitter, so the clone lays itself out.
+    private void EnsurePostEffectToggles()
+    {
+        var ids = Gallop.RenderPipeline.PostEffectSelection.All;
+        if (PostEffectToggles == null || PostEffectToggles.Length == 0 || PostEffectToggles.Length >= ids.Length) return;
+        var template = PostEffectToggles[PostEffectToggles.Length - 1];
+        if (template == null) return;
+
+        var list = new System.Collections.Generic.List<Toggle>(PostEffectToggles);
+        for (int i = list.Count; i < ids.Length; i++)
+        {
+            GameObject clone = Instantiate(template.gameObject, template.transform.parent);
+            clone.name = "PostEffectToggle_" + ids[i];
+            clone.transform.SetSiblingIndex(template.transform.parent.childCount - 1);
+            clone.SetActive(true);
+            var toggle = clone.GetComponent<Toggle>();
+            if (toggle == null) { Destroy(clone); break; }
+            toggle.onValueChanged.RemoveAllListeners();
+            var text = clone.GetComponentInChildren<Text>(true);
+            if (text != null) text.text = Gallop.RenderPipeline.PostEffectSelection.Label(ids[i]);
+            list.Add(toggle);
+        }
+        PostEffectToggles = list.ToArray();
+    }
+
     private void WirePostEffectRows()
     {
+        EnsurePostEffectToggles();
         if (PostEffectListButton != null)
             PostEffectListButton.onClick.AddListener(TogglePostEffectList);
 

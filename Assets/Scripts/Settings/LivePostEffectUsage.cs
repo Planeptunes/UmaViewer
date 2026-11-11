@@ -161,6 +161,19 @@ namespace Gallop.RenderPipeline
                             foreach (var k in group.keys.thisList)
                                 if (k != null && k.enableFlare) used.Add(PostEffectId.LensFlare);
 
+                if (sheet.LensDistortionKeys != null)
+                    foreach (var k in sheet.LensDistortionKeys.thisList)
+                        if (k != null && k.Intensity != 0f) used.Add(PostEffectId.LensDistortion);
+
+                // HatchingBlendMode None (0) keeps the effect off.
+                if (sheet.hatchingKeys != null)
+                    foreach (var k in sheet.hatchingKeys.thisList)
+                        if (k != null && k.BlendMode != 0) used.Add(PostEffectId.Hatching);
+
+                if (sheet.edgeStyleKeys != null)
+                    foreach (var k in sheet.edgeStyleKeys.thisList)
+                        if (k != null && k.IsEnable) used.Add(PostEffectId.EdgeStyle);
+
                 if (sheet.TransmittedLightKeys != null)
                     foreach (var k in sheet.TransmittedLightKeys.thisList)
                         if (k != null && k.IsEnable) used.Add(PostEffectId.TransmittedLight);

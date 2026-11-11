@@ -44,6 +44,8 @@ namespace Gallop.Live.Cutt
         public event ChromaticAberrationUpdateInfoDelegate OnUpdateChromaticAberration;
         public Action<Gallop.RenderPipeline.TiltShiftPass.Parameter> OnUpdateTiltShift;
         public Action<Gallop.RenderPipeline.VortexPass.Parameter> OnUpdateVortex;
+        public Action<Gallop.RenderPipeline.LensDistortionPass.Parameter> OnUpdateLensDistortion;
+        public Action<Gallop.RenderPipeline.HatchingPass.Parameter> OnUpdateHatching;
         public Action<Gallop.RenderPipeline.FluctuationPass.Parameter> OnUpdateFluctuation;
         public event Action<LiveTimelineGlobalFogData, LiveTimelineKeyGlobalFogData> OnUpdateGlobalFog;
 
@@ -422,10 +424,6 @@ namespace Gallop.Live.Cutt
 
         public bool _limitFovForWidth = false;
 
-        // Extra zoom applied to the timeline FOV (1 = none): fov' = 2*atan(tan(fov/2) / CameraZoom).
-        // Set per song by the Director where the framing is known to be wider than the game's.
-        public float CameraZoom = 1f;
-
         private float _currentFrame;
 
         private bool _isExtraCameraLayer;
@@ -763,6 +761,10 @@ namespace Gallop.Live.Cutt
             // runs after the whole image-effect chain.
             OnUpdateVortex?.Invoke(LiveVortexTimeline.Evaluate(
                 camSheet != null ? camSheet.VortexKeys : null, _currentFrame, _playMode));
+            OnUpdateLensDistortion?.Invoke(LiveLensDistortionTimeline.Evaluate(
+                camSheet != null ? camSheet.LensDistortionKeys : null, _currentFrame, _playMode));
+            OnUpdateHatching?.Invoke(LiveHatchingTimeline.Evaluate(
+                camSheet != null ? camSheet.hatchingKeys : null, _currentFrame, _playMode));
             OnUpdateFluctuation?.Invoke(LiveFluctuationTimeline.Evaluate(
                 camSheet != null ? camSheet.FluctuationKeys : null, _currentFrame, _playMode));
             AlterUpdate_GlobalFogControl(camSheet, _currentFrame);
@@ -2246,8 +2248,6 @@ namespace Gallop.Live.Cutt
                     num /= num3;
                 }
             }
-            if (CameraZoom > 0f && !Mathf.Approximately(CameraZoom, 1f))
-                num = 2f * Mathf.Atan(Mathf.Tan(num * 0.5f * Mathf.Deg2Rad) / CameraZoom) * Mathf.Rad2Deg;
             camera.camera.fieldOfView = num;
         }
 
@@ -2984,10 +2984,37 @@ namespace Gallop.Live.Cutt
                 ? CalculateInterpolationValue(cur, next, currentFrame)
                 : -1f;
 
+            // The native update only touches the characters selected by positionFlag and every other
+            // character keeps whatever the last key that selected it wrote. Playing forward that state is
+            // implicit; after a seek back the viewer would keep the values of a LATER key (live 1053 f534:
+            // the background characters kept the blue of the f802 key instead of the f0 state). So the
+            // unselected characters are re-fed from the latest earlier key that selected them.
+            int curIndex = keys.thisList != null ? keys.thisList.IndexOf(cur) : -1;
             for (int i = 0; i < 20; i++)
             {
                 if ((((int)cur.positionFlag >> i) & 1) == 0)
+                {
+                    for (int j = curIndex - 1; j >= 0; j--)
+                    {
+                        var prev = keys.thisList[j];
+                        if (prev == null || (((int)prev.positionFlag >> i) & 1) == 0) continue;
+                        if (prev.hightMax == null || i >= prev.hightMax.Length) break;
+                        if (prev.lightColor == null || i >= prev.lightColor.Length) break;
+                        CharaFootLightUpdateInfo held = default;
+                        held.CharacterIndex = i;
+                        held.hightMax = prev.hightMax[i];
+                        held.lightColor = prev.lightColor[i];
+                        held.LightBlendMode = (prev.LightBlendModeArray != null && i < prev.LightBlendModeArray.Length)
+                            ? prev.LightBlendModeArray[i]
+                            : LiveDefine.HightLightBlendMode.Addition;
+                        held.Easing = (prev.EasingArray != null && i < prev.EasingArray.Length)
+                            ? prev.EasingArray[i]
+                            : LiveDefine.Easing.Linear;
+                        OnUpdateCharaFootLight.Invoke(ref held);
+                        break;
+                    }
                     continue;
+                }
                 if (cur.hightMax == null || i >= cur.hightMax.Length)
                     continue;
                 if (cur.lightColor == null || i >= cur.lightColor.Length)

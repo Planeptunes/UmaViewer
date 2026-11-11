@@ -55,6 +55,9 @@ namespace Gallop.RenderPipeline
             _parameter = parameter;
             _feature = feature;
             if (!parameter.IsValid) return false;
+            // JP AddRenderPasses counts the Vortex validity among the effects that request the depth
+            // texture (the shader compares _DepthClip with the scene depth).
+            ConfigureInput(ScriptableRenderPassInput.Depth);
             Shader shader = ShaderManager.GetShader(ShaderManager.ShaderKinds.Vortex);
             if (shader == null || !shader.isSupported) return false;
             if (_material == null) _material = CoreUtils.CreateEngineMaterial(shader);
@@ -67,8 +70,22 @@ namespace Gallop.RenderPipeline
             material.SetVector(ShaderManager.GetPropertyId(ShaderManager.PropertyId._DistortionArea),
                 new Vector4(p.Area.x, p.Area.y,
                     Mathf.Max(p.Area.z, kMinAreaSize), Mathf.Max(p.Area.w, kMinAreaSize)));
-            material.SetFloat(ShaderManager.GetPropertyId(ShaderManager.PropertyId._Angle), p.RotVolume);
+            material.SetFloat(ShaderManager.GetPropertyId(ShaderManager.PropertyId._RotVolume), p.RotVolume);
             material.SetFloat(ShaderManager.GetPropertyId(ShaderManager.PropertyId._DepthClip), p.DepthClip);
+        }
+
+        // JP VortexPass.Execute (0x7ffd596001e0): the area, angle and depth clip are written with
+        // CommandBuffer.SetGlobalVector / SetGlobalFloat (property ids 0x108 / 0x109 / 0x107), NOT on the material:
+        // the Vortex shader only declares _MainTex, the rest are plain uniforms the game feeds as globals.
+        public static void SetGlobals(CommandBuffer cmd, Parameter p)
+        {
+            cmd.SetGlobalVector(ShaderManager.GetPropertyId(ShaderManager.PropertyId._DistortionArea),
+                new Vector4(p.Area.x, p.Area.y,
+                    Mathf.Max(p.Area.z, kMinAreaSize), Mathf.Max(p.Area.w, kMinAreaSize)));
+            // The JP property id 0x109 is _RotVolume (the Global-era name _Angle is a different property and
+            // leaves the twirl at 0: verified on the game's Vortex shader).
+            cmd.SetGlobalFloat(ShaderManager.GetPropertyId(ShaderManager.PropertyId._RotVolume), p.RotVolume);
+            cmd.SetGlobalFloat(ShaderManager.GetPropertyId(ShaderManager.PropertyId._DepthClip), p.DepthClip);
         }
 
         public static void Render(CommandBuffer cmd, Material material, Parameter p,
@@ -92,6 +109,7 @@ namespace Gallop.RenderPipeline
                     FilterMode.Bilinear, descriptor.colorFormat);
 
                 var inputHandle = _feature.SourceRT;
+                SetGlobals(cmd, _parameter);
                 Render(cmd, _material, _parameter, inputHandle.RtId, Temp);
                 _feature.SetSourceRT(RenderTextureHandle.Make(Temp, descriptor.width, descriptor.height),
                     cmd, ref renderingData);

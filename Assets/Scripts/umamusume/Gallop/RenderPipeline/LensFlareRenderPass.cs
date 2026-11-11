@@ -20,6 +20,9 @@ namespace Gallop.RenderPipeline
     {
         private static readonly ShaderTagId UnlitTag = new ShaderTagId("SRPDefaultUnlit");
 
+        /// <summary>0 = automatic projection flip, 1 = force flipped, 2 = force unflipped (debug).</summary>
+        public static int FlipOverride = 0;
+
         private PostImageEffectFeature _feature;
         // True when no image-effect chain runs this frame: draw straight onto the camera colour.
         private bool _standalone;
@@ -73,7 +76,13 @@ namespace Gallop.RenderPipeline
                 // Orientation: into the camera colour the camera's own flip applies. Into the chain's temporaries
                 // BOTH `true` (first version) and the camera's flip (which is true here) drew the flares upside
                 // down, so the temporaries take the unflipped GPU projection.
-                bool flipped = intoCameraColor && renderingData.cameraData.IsCameraProjectionMatrixFlipped();
+                // Confirmed on live 1053 f1331 (flare after the chain, event 600): drawing into the camera colour
+                // also needs the UNflipped GPU projection, same as the chain temporaries. The earlier
+                // "camera flip" rule for the camera colour was never validated and inverted the flares.
+                bool flipped = false;
+                // Runtime override to find the right orientation per target (0 = automatic).
+                if (FlipOverride == 1) flipped = true;
+                else if (FlipOverride == 2) flipped = false;
                 Matrix4x4 projection = GL.GetGPUProjectionMatrix(renderingData.cameraData.GetProjectionMatrix(), flipped);
                 cmd.SetViewProjectionMatrices(renderingData.cameraData.GetViewMatrix(), projection);
                 context.ExecuteCommandBuffer(cmd);

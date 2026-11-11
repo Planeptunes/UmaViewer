@@ -838,15 +838,14 @@ namespace Gallop.Live
             }
             _liveTimelineControl.OnUpdatePostEffect_BloomDiffusion += OnUpdatePostEffect_BloomDiffusion;
             _liveTimelineControl.OnUpdatePostEffect_Dof += OnUpdatePostEffect_Dof;
-            // Song 1156 frames ~1.39x wider than the game (measured against footage of the same
-            // shot; cause not found), so its timeline FOV is narrowed by that factor.
-            _liveTimelineControl.CameraZoom = live != null && live.MusicId == 1156 ? 1.39f : 1f;
             _liveTimelineControl.OnUpdatePostFilm += OnUpdatePostFilm;
             _liveTimelineControl.OnUpdateRadialBlur += OnUpdateRadialBlur;
             _liveTimelineControl.OnUpdateColorCorrection += OnUpdateColorCorrection;
             _liveTimelineControl.OnUpdateChromaticAberration += OnUpdateChromaticAberration;
             _liveTimelineControl.OnUpdateTiltShift += OnUpdateTiltShift;
             _liveTimelineControl.OnUpdateVortex += OnUpdateVortex;
+            _liveTimelineControl.OnUpdateLensDistortion += OnUpdateLensDistortion;
+            _liveTimelineControl.OnUpdateHatching += OnUpdateHatching;
             _liveTimelineControl.OnUpdateFluctuation += OnUpdateFluctuation;
             _liveTimelineControl.OnUpdateGlobalFog += OnUpdateGlobalFog;
 
@@ -2100,6 +2099,19 @@ namespace Gallop.Live
             Gallop.RenderPipeline.PostImageEffectFeature.RuntimeParameter.Vortex = sample;
         }
 
+        // JP Director.OnUpdateLensDistortion (0x7ffd591f6020): copies the six values into the active camera's
+        // LensDistortionParam.
+        private void OnUpdateLensDistortion(Gallop.RenderPipeline.LensDistortionPass.Parameter sample)
+        {
+            Gallop.RenderPipeline.PostImageEffectFeature.RuntimeParameter.LensDistortion = sample;
+        }
+
+        // JP Director.OnUpdateHatching (0x7ffd591f5ed0): copies the update info into the active camera's HatchingParam.
+        private void OnUpdateHatching(Gallop.RenderPipeline.HatchingPass.Parameter sample)
+        {
+            Gallop.RenderPipeline.PostImageEffectFeature.RuntimeParameter.Hatching = sample;
+        }
+
         private void OnUpdateFluctuation(Gallop.RenderPipeline.FluctuationPass.Parameter sample)
         {
             Gallop.RenderPipeline.PostImageEffectFeature.RuntimeParameter.Fluctuation = sample;
@@ -2295,6 +2307,8 @@ namespace Gallop.Live
             _liveTimelineControl.OnUpdateChromaticAberration -= OnUpdateChromaticAberration;
             _liveTimelineControl.OnUpdateTiltShift -= OnUpdateTiltShift;
             _liveTimelineControl.OnUpdateVortex -= OnUpdateVortex;
+            _liveTimelineControl.OnUpdateLensDistortion -= OnUpdateLensDistortion;
+            _liveTimelineControl.OnUpdateHatching -= OnUpdateHatching;
             _liveTimelineControl.OnUpdateFluctuation -= OnUpdateFluctuation;
             _liveTimelineControl.OnUpdateGlobalFog -= OnUpdateGlobalFog;
             _liveTimelineControl.OnUpdatePostEffect_BloomDiffusion -=

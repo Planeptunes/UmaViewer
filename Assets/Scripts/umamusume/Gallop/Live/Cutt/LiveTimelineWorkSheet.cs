@@ -407,6 +407,10 @@ namespace Gallop.Live.Cutt
         [SerializeField] public LiveTimelineKeyPostEffectDOFDataList postEffectDOFKeys;
         [SerializeField] public LiveTimelineKeyRadialBlurDataList radialBlurKeys;
         [SerializeField] public LiveTimelineKeyVortexDataList VortexKeys;
+        // Native names (case-sensitive, they must match the bundle TypeTree).
+        [SerializeField] public LiveTimelineKeyLensDistortionDataList LensDistortionKeys;
+        [SerializeField] public LiveTimelineKeyHatchingDataList hatchingKeys;
+        [SerializeField] public LiveTimelineKeyEdgeStyleDataList edgeStyleKeys;
         [SerializeField] public LiveTimelineKeyFluctuationDataList FluctuationKeys;
         [SerializeField] public LiveTimelineKeyTiltShiftDataList tiltShiftKeys;
         // Main-camera simple/nonselective color correction; other modes remain unsupported.
