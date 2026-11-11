@@ -1741,8 +1741,9 @@ public class UmaViewerUI : MonoBehaviour
                 string[] split = entry.Name.Split('_');
                 string head_costumeId = split[split.Length - 1];
                 var dressdata = Main.Costumes.FirstOrDefault(a => (a.CharaId == chara.Id && a.BodyTypeSub == int.Parse(head_costumeId)));
-                container.Name = container.name = GetCostumeName(head_costumeId, (dressdata == null ? head_costumeId : dressdata.DressName));
-                container.Image.sprite = (dressdata == null ? CostumeIconDefault : dressdata.Icon);
+                container.Name = container.name = GetHeadName(head_costumeId, (dressdata == null ? head_costumeId : dressdata.DressName));
+                container.Image.sprite = CustomCostumeIcons.GetHead(chara.Id, head_costumeId)
+                    ?? (dressdata == null ? CostumeIconDefault : dressdata.Icon);
                 container.Image.enabled = true;
                 container.Id = head_costumeId;
                 container.Button.onClick.AddListener(() =>
@@ -1984,6 +1985,21 @@ public class UmaViewerUI : MonoBehaviour
                 return "Towel";
             default:
                 return (defaultname == "00") ? "Default" : defaultname;
+        }
+    }
+
+    //Names of the HEAD list items. The head ids are shared by every character, and their costume-based
+    //names (dress_data of the costume with the same sub id) repeat and say nothing about the head.
+    public static string GetHeadName(string headId, string defaultname)
+    {
+        switch (headId)
+        {
+            case "00":
+                return "Default";
+            case "80":
+                return "Bareheaded";
+            default:
+                return GetCostumeName(headId, defaultname);
         }
     }
 

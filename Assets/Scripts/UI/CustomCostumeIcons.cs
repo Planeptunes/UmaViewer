@@ -3,8 +3,10 @@ using UnityEngine;
 
 /// <summary>
 /// Iconos de traje propios guardados en Assets/Resources/CostumeIcons.
-/// Clave: comunes = costumeId (p.ej. "0001_00_01"); propios = charaId_costumeId (p.ej. "1013_0055").
-/// Si existe el PNG, se usa en vez del icono del traje (o del default). Los que no existan devuelven null.
+/// Ubicacion: comunes/extras = CostumeIcons/<costumeId>.png (p.ej. "0001_00_01");
+/// propios = CostumeIcons/<charaId>/<charaId>_<costumeId>.png (p.ej. "1007/1007_04");
+/// cabezas = CostumeIcons/<charaId>/<charaId>_<headId>_head.png (p.ej. "1007/1007_04_head").
+/// Si existe el PNG, se usa en vez del icono del traje/cabeza (o del default). Los que no existan devuelven null.
 /// </summary>
 public static class CustomCostumeIcons
 {
@@ -28,6 +30,11 @@ public static class CustomCostumeIcons
 
     public static Sprite Get(int charaId, string costumeId, bool isCommon)
     {
-        return Get(isCommon ? costumeId : charaId + "_" + costumeId);
+        return Get(isCommon ? costumeId : charaId + "/" + charaId + "_" + costumeId);
+    }
+
+    public static Sprite GetHead(int charaId, string headId)
+    {
+        return Get(charaId + "/" + charaId + "_" + headId + "_head");
     }
 }
