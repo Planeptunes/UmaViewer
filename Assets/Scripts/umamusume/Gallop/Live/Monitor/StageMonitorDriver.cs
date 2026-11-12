@@ -160,8 +160,54 @@ namespace Gallop.Live
             _cameraDriver.UpdateCapture(_ctl, _ctl.currentLiveTime * LiveTimelineControl.kTargetFpsF, _ctl.data);
             for (int i = 0; i < _bindings.Count; i++)
                 _bindings[i].cameraAppliedThisFrame = false;
+            EnsureFramesDrawBeforeScreens();
             ApplyMonitorTimeline();
             RestoreCameraBindings();
+        }
+
+        // The game's wide wall frame (monitor_side_frame) has sortingOrder 0 while the screen images (monitor004/005,
+        // additive, ZTest-less) have -1, so in the viewer's pipeline the cut-out frame is drawn AFTER the image and its
+        // bars hide it (the game shows the image over the frame). Raising the image above the frame would also draw it
+        // over the characters (sortingOrder 0), so the frame goes below the images instead, like the four
+        // monitor_*_frame meshes (-2 / -1). RendererController.Start rewrites the authored order once, so this is
+        // re-checked every frame on a small cached list.
+        private readonly List<Renderer> _monitorFrameRenderers = new List<Renderer>();
+        private bool _monitorFramesCached;
+
+        private void EnsureFramesDrawBeforeScreens()
+        {
+            if (_bindings.Count == 0 || _stage == null)
+                return;
+            if (!_monitorFramesCached)
+            {
+                _monitorFramesCached = true;
+                _monitorFrameRenderers.Clear();
+                foreach (Renderer r in _stage.GetComponentsInChildren<Renderer>(true))
+                {
+                    if (r == null || !r.name.StartsWith("monitor", StringComparison.Ordinal) ||
+                        !r.name.EndsWith("_frame", StringComparison.Ordinal))
+                        continue;
+                    Material shared = r.sharedMaterial;
+                    if (shared != null && shared.shader != null && shared.shader.name.IndexOf("DefaultCutoff", StringComparison.Ordinal) >= 0)
+                        _monitorFrameRenderers.Add(r);
+                }
+            }
+
+            int minScreenOrder = int.MaxValue;
+            for (int i = 0; i < _bindings.Count; i++)
+            {
+                Renderer screen = _bindings[i].renderer;
+                if (screen != null && screen.sortingOrder < minScreenOrder)
+                    minScreenOrder = screen.sortingOrder;
+            }
+            if (minScreenOrder == int.MaxValue)
+                return;
+            for (int i = 0; i < _monitorFrameRenderers.Count; i++)
+            {
+                Renderer frame = _monitorFrameRenderers[i];
+                if (frame != null && frame.sortingOrder >= minScreenOrder)
+                    frame.sortingOrder = minScreenOrder - 1;
+            }
         }
 
         // LightProjection's movie mode consumes the Monitor's already-authored movie clock/slot,

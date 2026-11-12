@@ -15,6 +15,7 @@ namespace Gallop.Live
     public sealed class LivePropsController : IDisposable
     {
         private const int CharacterMaskWidth = 20;
+        private static readonly bool IgnoreDressCondition = true;
         private readonly Transform owner;
         private readonly LiveTimelinePropsSettings settings;
         private readonly IList<UmaContainerCharacter> characters;
@@ -78,6 +79,8 @@ namespace Gallop.Live
             public RendererState[] Renderers;
             public Props[] StageProps;
             public string NameSuffixToken;
+            public string ResourcePath;
+            public LivePropPhysicsDriver Physics;
             public LiveTimelineKeyPropsData Appearance, NextAppearance;
             public LiveTimelineKeyPropsAttachData Attachment, NextAttachment;
             public float AppearanceRatio, AttachmentRatio;
@@ -152,6 +155,7 @@ namespace Gallop.Live
                         Setting = setting,
                         Instance = instance,
                         Anchor = anchor,
+                        ResourcePath = path,
                         Animator = instance.GetComponentInChildren<Animator>(true)
                     };
                     CacheNodes(runtime);
@@ -174,7 +178,52 @@ namespace Gallop.Live
                 // Animation transitions restore the initialized pose, not the prefab's
                 // unadjusted stand height. Native CreateProps scales once before playback.
                 CacheNodes(prop);
+                SetupPhysics(prop);
             }
+        }
+
+        // Port of Props.InitCySpring (JP 0x7ffd5925b190): the prop's cloth asset (".../clothes/<prefab>_cloth00",
+        // a CySpringDataContainer) is loaded as BODY cloth data and simulated by its own CySpringController.
+        // Collision names with `_isOtherTarget` (Col_P_Elbow_R, Col_P_Arm_R, Col_P_Wrist_R, Col_P_Chest) resolve to
+        // the wearer's bones, so the transform cache holds the wearer's rig plus the prop's own nodes.
+        private void SetupPhysics(RuntimeProp prop)
+        {
+            if (prop == null || !prop.Setting.isCharaProps || string.IsNullOrEmpty(prop.ResourcePath))
+                return;
+            var bones = characterBones[prop.CharacterIndex];
+            var character = characters[prop.CharacterIndex];
+            if (bones == null || character == null)
+                return;
+
+            int slash = prop.ResourcePath.LastIndexOf('/');
+            if (slash < 0)
+                return;
+            string clothPath = prop.ResourcePath.Substring(0, slash) + "/clothes/" + prop.ResourcePath.Substring(slash + 1) + "_cloth00";
+            if (LiveEffectController.FindResourceEntry(clothPath) == null)
+                return;
+            var clothPrefab = LiveFlashResourceUtility.LoadOnView<GameObject>(clothPath);
+            var container = clothPrefab != null ? clothPrefab.GetComponentInChildren<CySpringDataContainer>(true) : null;
+            if (container == null)
+            {
+                Warn("Prop cloth asset has no CySpringDataContainer: " + clothPath);
+                return;
+            }
+
+            var cache = new Dictionary<string, Transform>(StringComparer.Ordinal);
+            foreach (var pair in bones) cache[pair.Key] = pair.Value;
+            foreach (var pair in prop.Nodes) cache[pair.Key] = pair.Value;
+
+            var controller = CySpringController.AddController(prop.Instance, null, new LivePropCySpringOwner(character));
+            if (controller == null)
+                return;
+            // Props.InitCySpring sets controller bytes +0xAC / +0xAD right after Load: IsAffectOwnerPotision and
+            // IsAffectOwnerRotation (JP dump). With them the owner is NOT moved to the origin / identity during
+            // the step, so the solver works in world space and the hand's motion drives the towel. Without them
+            // (the character default) the prop root, which travels with the hand, looks static to the solver.
+            controller.IsAffectOwnerPotision = true;
+            controller.IsAffectOwnerRotation = true;
+            controller.LoadFromDataContainers(cache, null, container, null, null);
+            prop.Physics = LivePropPhysicsDriver.Create(prop.Instance, controller, character.CySpringWarmUpTime, character);
         }
 
         // Actual-game Director.CreateProps registers all three stage work arrays
@@ -256,7 +305,11 @@ namespace Gallop.Live
                 case LiveTimelinePropsSettings.PropsConditionType.CharaPosition: return index == condition.Value;
                 case LiveTimelinePropsSettings.PropsConditionType.CharaId: return character.CharaEntry != null && character.CharaEntry.Id == condition.Value;
                 case LiveTimelinePropsSettings.PropsConditionType.DressId:
-                    return CanonicalDressId(character) == condition.Value;
+                    // User-confirmed behaviour (Live 1093): in the game ANY costume shows the towel prop even
+                    // though the cutt names dress 50 (default_main_dress). The game code that evaluates this
+                    // condition (CharacterData.GetCharacterPropsList) is not in the decompiled export, so the
+                    // exact rule is unverified; set IgnoreDressCondition to false to require the dress again.
+                    return IgnoreDressCondition || CanonicalDressId(character) == condition.Value;
                 default:
                     Debug.LogWarning("[LivePropsController] Unsupported props condition type: " + condition.Type);
                     return false;
@@ -275,16 +328,35 @@ namespace Gallop.Live
             int subtype = 0, setting = 0;
             if (generic && (!int.TryParse(parts[1], out subtype) || !int.TryParse(parts[2], out setting))) return -1;
             int found = -1;
+            // Generic costumes: the third part of the id ("0015_00_00") is not guaranteed to be the
+            // dress_data body_setting (Live 1093: costume 0015_00_00 is dress 50, whose body_setting
+            // is 2, so requiring it made every character resolve to -1 and the DressId == 50 props
+            // were never created). body_type + body_type_sub pick the dress; body_setting is only a
+            // tie-breaker when several dresses share them.
+            var genericIds = new List<int>();
+            var genericSettingIds = new List<int>();
             foreach (var row in rows)
             {
-                // Use the same character/subtype and generic body tuple as costume selection.
-                bool matches = generic
-                    ? Convert.ToInt32(row["body_type"]) == first && Convert.ToInt32(row["body_type_sub"]) == subtype && Convert.ToInt32(row["body_setting"]) == setting
-                    : character.CharaEntry != null && Convert.ToInt32(row["chara_id"]) == character.CharaEntry.Id && Convert.ToInt32(row["body_type_sub"]) == first;
+                if (generic)
+                {
+                    if (Convert.ToInt32(row["body_type"]) != first || Convert.ToInt32(row["body_type_sub"]) != subtype) continue;
+                    int genericId = Convert.ToInt32(row["id"]);
+                    if (!genericIds.Contains(genericId)) genericIds.Add(genericId);
+                    if (Convert.ToInt32(row["body_setting"]) == setting && !genericSettingIds.Contains(genericId)) genericSettingIds.Add(genericId);
+                    continue;
+                }
+                // Use the same character/subtype as costume selection.
+                bool matches = character.CharaEntry != null && Convert.ToInt32(row["chara_id"]) == character.CharaEntry.Id && Convert.ToInt32(row["body_type_sub"]) == first;
                 if (!matches) continue;
                 int id = Convert.ToInt32(row["id"]);
                 if (found != -1 && found != id) return -1;
                 found = id;
+            }
+            if (generic)
+            {
+                if (genericIds.Count == 1) return genericIds[0];
+                if (genericSettingIds.Count == 1) return genericSettingIds[0];
+                return -1;
             }
             return found;
         }

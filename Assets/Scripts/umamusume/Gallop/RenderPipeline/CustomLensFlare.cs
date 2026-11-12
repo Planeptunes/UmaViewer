@@ -52,11 +52,19 @@ namespace Gallop.RenderPipeline
         }
 
         /// <summary>
-        /// The built-in flare is hidden by any collider between the flare and the camera. The
-        /// stage's own lamp colliders sit at the flare source itself, so the raycast is opt-in
-        /// (it always ignores <see cref="IgnoreLayers"/> either way).
+        /// Native LensFlareManager occlusion: one ray per flare from the camera to the flare; any collider it hits
+        /// (stage colliders and the characters' CharacterFlareCollision colliders) fades the flare out. The rays
+        /// ignore the layers of the host's IgnoreLayers plus the UI layers (native: GraphicSettings layers 0x0B
+        /// and 0x12), see <see cref="IsOccluded"/>.
         /// </summary>
-        public static bool RuntimeOcclusion = false;
+        public static bool RuntimeOcclusion = true;
+
+        // Native step factors of LensFlareManager.EndUpdateFlare (JP .rdata 0x62C0D60 / 0x62C0D6C): a hit lowers
+        // the flare alpha by step * 0.5, a clear ray raises it by step (clamped to [0, 1]).
+        private const float OccludedFadeFactor = 0.5f;
+
+        private static int sSyncFrame = -1;
+        private static int sIgnoredUiLayers = -1;
 
         // ---- Serialized fields of the authored flare host (do not rename) ----
         public LensFlareData Flare;
@@ -171,11 +179,16 @@ namespace Gallop.RenderPipeline
             bool visible = viewport.z > 0f &&
                            viewport.x >= 0f && viewport.x <= 1f &&
                            viewport.y >= 0f && viewport.y <= 1f;
-            if (visible && RuntimeOcclusion && IsOccluded(camera))
+            // Native EndUpdateFlare: a ray that hits a collider lowers the alpha at half speed, a clear ray raises
+            // it; a flare that is off screen / disabled fades out at full speed.
+            bool occluded = visible && _enabled && Brightness > 0f && RuntimeOcclusion && IsOccluded(camera);
+            float step = Mathf.Max(0.0001f, FadeSpeed) * Time.deltaTime;
+            if (_enabled && Brightness > 0f && visible)
+                _fade = occluded ? Mathf.Max(0f, _fade - step * OccludedFadeFactor) : Mathf.Min(1f, _fade + step);
+            else
+                _fade = Mathf.Max(0f, _fade - step);
+            if (occluded)
                 visible = false;
-
-            float target = (_enabled && Brightness > 0f && visible) ? 1f : 0f;
-            _fade = Mathf.MoveTowards(_fade, target, Mathf.Max(0.0001f, FadeSpeed) * Time.deltaTime);
 
             Vector3 sourceScreen = camera.WorldToScreenPoint(transform.position);
             if (_fade <= 0.001f || sourceScreen.z <= 0.0001f)
@@ -387,11 +400,30 @@ namespace Gallop.RenderPipeline
             return _light != null;
         }
 
+        // LensFlareManager.UpdateFlareParameter: RaycastCommand(origin = camera position, direction = towards the
+        // flare, distance = distance to the flare, layerMask = ~(IgnoreLayers | UI layers), maxHits = 1). Directional
+        // hosts (IsDirectional) are not occlusion-tested here: the ray the client builds for them is not recovered.
         private bool IsOccluded(Camera camera)
         {
-            Vector3 target = Vector3.Lerp(camera.transform.position, transform.position, 0.98f);
-            int mask = ~(int)IgnoreLayers;
-            return Physics.Linecast(camera.transform.position, target, mask, QueryTriggerInteraction.Ignore);
+            if (IsDirectional)
+                return false;
+
+            // Colliders follow the animated bones only after a transform sync.
+            if (sSyncFrame != Time.frameCount)
+            {
+                sSyncFrame = Time.frameCount;
+                Physics.SyncTransforms();
+            }
+            if (sIgnoredUiLayers < 0)
+                sIgnoredUiLayers = LayerMask.GetMask("UI", "SystemUI");
+
+            Vector3 origin = camera.transform.position;
+            Vector3 toFlare = transform.position - origin;
+            float distance = toFlare.magnitude;
+            if (distance <= 0.0001f)
+                return false;
+            int mask = ~((int)IgnoreLayers | sIgnoredUiLayers);
+            return Physics.Raycast(origin, toFlare / distance, distance, mask, QueryTriggerInteraction.UseGlobal);
         }
 
         private void SetRootLayer(int layer)

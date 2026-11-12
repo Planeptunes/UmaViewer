@@ -658,6 +658,8 @@ namespace Gallop.Live
             ctl.OnUpdateAnimation -= UpdateAnimation;
             ctl.OnUpdateAdditionalLight -= UpdateAdditionalLight;
             ctl.OnUpdateAdditionalLightCount -= UpdateAdditionalLightCount;
+            ctl.OnUpdateTransmittedLightMask -= UpdateTransmittedLightMask;
+            ctl.OnUpdateMultiLightShadowParam -= UpdateMultiLightShadowParam;
 
             ctl.OnUpdateTransform += UpdateTransform;
             ctl.OnUpdateObject += UpdateObject;
@@ -670,6 +672,8 @@ namespace Gallop.Live
             ctl.OnUpdateAnimation += UpdateAnimation;
             ctl.OnUpdateAdditionalLight += UpdateAdditionalLight;
             ctl.OnUpdateAdditionalLightCount += UpdateAdditionalLightCount;
+            ctl.OnUpdateTransmittedLightMask += UpdateTransmittedLightMask;
+            ctl.OnUpdateMultiLightShadowParam += UpdateMultiLightShadowParam;
 
             _laserSetupDone = false;
             _laserSetupTimelineControl = ctl;
@@ -1235,6 +1239,10 @@ namespace Gallop.Live
 
         private void OnDestroy()
         {
+            // Native MultiLightShadowController.OnDestroy / Reset: the static distance goes back to 15.
+            MultiLightShadowDistance = DefaultMultiLightShadowDistance;
+            // Outside a Live the viewer has no game distance: only the user's setting limits the shadows.
+            Gallop.RenderPipeline.CameraData.GlobalShadowDistance = float.PositiveInfinity;
             DestroyMirrorReflections();
             UnbindTimelineCallbacks(_boundTimelineControl);
             _boundTimelineControl = null;
@@ -1256,6 +1264,8 @@ namespace Gallop.Live
             ctl.OnUpdateAnimation -= UpdateAnimation;
             ctl.OnUpdateAdditionalLight -= UpdateAdditionalLight;
             ctl.OnUpdateAdditionalLightCount -= UpdateAdditionalLightCount;
+            ctl.OnUpdateTransmittedLightMask -= UpdateTransmittedLightMask;
+            ctl.OnUpdateMultiLightShadowParam -= UpdateMultiLightShadowParam;
         }
 
         // Client's StageController.SetupAdditionalLight: the light root is the StageController
@@ -1287,6 +1297,151 @@ namespace Gallop.Live
             if (_addLight == null)
                 return;
             _addLight.UpdateAdditionalLight(ref updateInfo);
+        }
+
+        // Port of StageController.SetupMultiLightShadow (JP 0x7ffd5926aba0) + UpdateMultiLightShadowParam (0x7ffd59273ec0)
+        // + MultiLightShadowController.UpdateParamater: the stage renderers whose shader name contains "DefaultShadow"
+        // (ground_top, stage_object_shadow in live10137) get their material instance collected; each frame the track
+        // either switches the USE_SHADOW_PARAM keyword off (IsUseParam false) or switches it on and writes
+        // _ShadowFadeCenter / _ShadowFadeFront / _MulColor2 / _ShadowFadeParam / _ShadowStartColor / _ShadowEndColor.
+        // _AdditionalLightShadowRenderType is written in both cases. Not ported: the static shadow distance the native
+        // also sets (read by GallopRenderer.SetupCullingParameters).
+        private static readonly int ShadowFadeCenterId = Shader.PropertyToID("_ShadowFadeCenter");
+        private static readonly int ShadowFadeFrontId = Shader.PropertyToID("_ShadowFadeFront");
+        private static readonly int ShadowFadeParamId = Shader.PropertyToID("_ShadowFadeParam");
+        private static readonly int ShadowStartColorId = Shader.PropertyToID("_ShadowStartColor");
+        private static readonly int ShadowEndColorId = Shader.PropertyToID("_ShadowEndColor");
+        private static readonly int ShadowMulColor2Id = Shader.PropertyToID("_MulColor2");
+        private static readonly int AdditionalLightShadowRenderTypeId = Shader.PropertyToID("_AdditionalLightShadowRenderType");
+        private const string UseShadowParamKeyword = "USE_SHADOW_PARAM";
+        private Material[] _multiLightShadowMaterials;
+        private bool _multiLightShadowSetupDone;
+
+        // MultiLightShadowController's static float (JP: initial 15.0, restored on Reset/OnDestroy, set to the key's
+        // ShadowDistance while IsUseParam). GallopRenderer.SetupCullingParameters uses it as the culling shadow
+        // distance; here it is mirrored into CameraData.GlobalShadowDistance, read by GallopRenderer.
+        public const float DefaultMultiLightShadowDistance = 15f;
+        public static float MultiLightShadowDistance { get; private set; } = DefaultMultiLightShadowDistance;
+
+        private void SetupMultiLightShadow()
+        {
+            var materials = new List<Material>();
+            foreach (Renderer renderer in GetComponentsInChildren<Renderer>(true))
+            {
+                if (renderer == null)
+                    continue;
+                Material shared = renderer.sharedMaterial;
+                if (shared == null || shared.shader == null || shared.shader.name.IndexOf("DefaultShadow", StringComparison.Ordinal) < 0)
+                    continue;
+                materials.Add(renderer.material);
+            }
+            _multiLightShadowMaterials = materials.ToArray();
+            _multiLightShadowSetupDone = _multiLightShadowMaterials.Length > 0;
+        }
+
+        public void UpdateMultiLightShadowParam(ref MultiLightShadowUpdateInfo info)
+        {
+            if (!_multiLightShadowSetupDone)
+                SetupMultiLightShadow();
+            if (_multiLightShadowMaterials == null || _multiLightShadowMaterials.Length == 0)
+                return;
+
+            Vector3 front = Quaternion.Euler(info.ShadowForward) * Vector3.forward;
+            for (int i = 0; i < _multiLightShadowMaterials.Length; i++)
+            {
+                Material material = _multiLightShadowMaterials[i];
+                if (material == null)
+                    continue;
+                if (!info.IsUseParam)
+                {
+                    material.DisableKeyword(UseShadowParamKeyword);
+                }
+                else
+                {
+                    material.EnableKeyword(UseShadowParamKeyword);
+                    material.SetVector(ShadowFadeCenterId, new Vector4(
+                        info.ShadowCenterPosition.x, info.ShadowCenterPosition.y, info.ShadowCenterPosition.z, 0f));
+                    material.SetVector(ShadowFadeFrontId, new Vector4(front.x, front.y, front.z, 0f));
+                    material.SetColor(ShadowMulColor2Id, Color.white);
+                    material.SetVector(ShadowFadeParamId, new Vector4(
+                        info.ShadowFadeStart, info.ShadowFadeLength,
+                        info.IsUseShadowFront ? 1f : 0f, info.IsShadowNearStart ? 1f : 0f));
+                    material.SetColor(ShadowStartColorId, info.ShadowStartColor);
+                    material.SetColor(ShadowEndColorId, info.ShadowEndColor);
+                }
+                material.SetFloat(AdditionalLightShadowRenderTypeId, info.IsDarkestShadowOnly ? 1f : 0f);
+            }
+
+            if (info.IsUseParam)
+                MultiLightShadowDistance = info.ShadowDistance;
+            Gallop.RenderPipeline.CameraData.GlobalShadowDistance = MultiLightShadowDistance;
+        }
+
+        // Client's StageController.UpdateTransmittedLightMask + TransmittedLightMaskController: writes
+        // `_TransmittedLightMaskScale` on the MATERIAL (instance) of every renderer of the group, each frame
+        // (native TransmittedLightMaskController.Update, JP 0x7ffd592df490). Without it the alpha mask planes
+        // (alpha_logo_uma_summer, alpha_roof_*, alpha_center_monitor_*...) keep the prefab scale 1 and let far
+        // too much transmitted light through (bright background in Live 1093).
+        private static readonly int TransmittedLightMaskScaleShaderId = Shader.PropertyToID("_TransmittedLightMaskScale");
+        private readonly Dictionary<LiveTimelineTransmittedLightMaskData, Material[]> _transmittedLightMaskMaterials =
+            new Dictionary<LiveTimelineTransmittedLightMaskData, Material[]>();
+
+        public void UpdateTransmittedLightMask(ref TransmittedLightMaskUpdateInfo updateInfo)
+        {
+            if (updateInfo.Group == null || updateInfo.Scales == null || updateInfo.Key == null)
+                return;
+
+            if (!_transmittedLightMaskMaterials.TryGetValue(updateInfo.Group, out Material[] materials))
+            {
+                materials = BuildTransmittedLightMaskMaterials(updateInfo);
+                if (materials == null)
+                    return; // the group's root object does not exist (yet): retry next frame
+                _transmittedLightMaskMaterials[updateInfo.Group] = materials;
+            }
+
+            int count = Mathf.Min(materials.Length, updateInfo.Scales.Length);
+            for (int i = 0; i < count; i++)
+            {
+                if (materials[i] != null)
+                    materials[i].SetFloat(TransmittedLightMaskScaleShaderId, updateInfo.Scales[i]);
+            }
+        }
+
+        // The group's name is the root object (prefab instance "<name>(Clone)" under the stage); every key/value
+        // names its renderer by hierarchy path relative to that root.
+        private Material[] BuildTransmittedLightMaskMaterials(TransmittedLightMaskUpdateInfo updateInfo)
+        {
+            string rootName = updateInfo.Group.name;
+            Transform root = null;
+            foreach (Transform t in GetComponentsInChildren<Transform>(true))
+            {
+                if (t.name == rootName || t.name == rootName + "(Clone)")
+                {
+                    root = t;
+                    break;
+                }
+            }
+            if (root == null)
+                return null;
+
+            var result = new Material[updateInfo.Scales.Length];
+            for (int i = 0; i < result.Length; i++)
+            {
+                string path = updateInfo.Key.GetHierarchyPath(i);
+                if (string.IsNullOrEmpty(path))
+                    continue;
+                Transform child = root.Find(path.TrimStart('/'));
+                Renderer renderer = child != null ? child.GetComponent<Renderer>() : null;
+                if (renderer != null)
+                    result[i] = renderer.material;
+            }
+            return result;
+        }
+
+        // True while any AdditionalLight of the stage is enabled (see AdditionalLightComponent.IsAnyLightEnabled).
+        public bool IsAdditionalLightEnabled
+        {
+            get { return _addLight != null && _addLight.IsAnyLightEnabled; }
         }
 
         // Client's StageController.UpdateAdditionalLightCount: forwards the track's light count.

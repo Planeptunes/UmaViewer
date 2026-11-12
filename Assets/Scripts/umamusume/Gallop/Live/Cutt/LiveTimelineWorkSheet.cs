@@ -489,6 +489,13 @@ namespace Gallop.Live.Cutt
         // Real stage lights (AdditionalLightComponent). One group per light; the group index is
         // the light index. Native worksheet offset 0x2B8/0x360.
         [SerializeField] public List<LiveTimelineAdditionalLight> AdditionalLightList;
+        // Shadow parameters of the stage DefaultShadow materials (native worksheet offset 0x2C0).
+        [SerializeField] public LiveTimelineKeyMultiLightShadowDataList MultiLightShadowKeys;
+        // _TransmittedLightMaskScale of the stage alpha-mask / light-cone renderers (see
+        // LiveTimelineTransmittedLightMaskData). Name taken from the cutt TypeTree.
+        [SerializeField] public List<LiveTimelineTransmittedLightMaskData> transmittedLightMaskDataList;
+        // Sweat drops of the characters' heads (native worksheet offset 0x290); one group per owner/timeline.
+        [SerializeField] public List<LiveTimelineSweatLocatorData> sweatLocatorList;
         [SerializeField] public List<LiveTimelineMobCyalumeControlData> MobControlKeys;
         [SerializeField] public List<LiveTimelineMobCyalumeControlData> CyalumeControlKeys;
 

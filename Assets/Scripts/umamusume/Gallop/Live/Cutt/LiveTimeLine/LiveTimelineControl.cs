@@ -340,6 +340,15 @@ namespace Gallop.Live.Cutt
         // Fires once per frame with the number of AdditionalLightList groups (light count).
         public event AdditionalLightCountUpdateInfoDelegate OnUpdateAdditionalLightCount;
 
+        // MultiLightShadowKeys track: shadow parameters of the stage DefaultShadow materials.
+        public event MultiLightShadowParamInfoDelegate OnUpdateMultiLightShadowParam;
+
+        // transmittedLightMaskDataList track: per group, the _TransmittedLightMaskScale of its renderers.
+        public event TransmittedLightMaskUpdateInfoDelegate OnUpdateTransmittedLightMask;
+
+        // sweatLocatorList track: sweat drops of a character's head (owner = character index).
+        public event SweatLocatorUpdateInfoDelegate OnUpdateSweatLocator;
+
         public event FacialToonUpdateInfoDelegate OnUpdateFacialToon;
 
         public event EnvironmentMirrorDelegate OnEnvironmentMirror;
@@ -716,6 +725,7 @@ namespace Gallop.Live.Cutt
             AlterUpdate_GlobalLight(camSheet, _currentFrame);
             // Native order: AlterUpdate_MultiLightShadow → AlterUpdate_AdditionalLight →
             // AlterUpdate_FacialToon. The light count update comes before the per-light updates.
+            AlterUpdate_MultiLightShadow(camSheet, _currentFrame);
             AlterUpdate_AdditionalLight(camSheet, _currentFrame);
             AlterUpdate_FacialToon(camSheet, _currentFrame);
             AlterUpdate_EnvironmentMirror(camSheet, _currentFrame);
@@ -737,6 +747,7 @@ namespace Gallop.Live.Cutt
             AlterUpdate_MultiCameraTiltShift(camSheet, _currentFrame);
             AlterUpdate_MultiCameraRadialBlur(camSheet, _currentFrame);
             AlterUpdate_MultiCameraTransmittedLight(camSheet, _currentFrame);
+            AlterUpdate_TransmittedLightMask(camSheet, _currentFrame);
             // [A7b][原生顺序 REPORT §2.5] AlterLateUpdate RVA=0x1ac9460 中
             // AlterUpdate_Exposure(0x1ac9e0f) → AlterUpdate_ToneCurve(0x1ac9e24)
             // 位于 AlterUpdate_PostFilm×3 / MultiCameraPostFilm×3 /
@@ -802,6 +813,7 @@ namespace Gallop.Live.Cutt
                 AlterUpdate_UVScrollLight(ws, _currentFrame);
                 AlterUpdate_Particles(ws, _currentFrame);
                 AlterUpdate_CharaNode(ws, _currentFrame);
+                AlterUpdate_SweatLocator(ws, _currentFrame);
             }
             // Blink is dispatched above in this port's late-update loop; sample its current
             // frame before projection color sync. No key-change gate: paused seeks also apply.
@@ -2882,6 +2894,210 @@ namespace Gallop.Live.Cutt
             }
         }
 
+        // Port of AlterUpdate_MultiLightShadow (JP 0x7ffd592af0f0). The native always fires the event: with no
+        // usable key the update info stays zeroed (IsUseParam = false, which switches the keyword off).
+        private void AlterUpdate_MultiLightShadow(LiveTimelineWorkSheet sheet, float currentFrame)
+        {
+            if (OnUpdateMultiLightShadowParam == null)
+                return;
+
+            var info = default(MultiLightShadowUpdateInfo);
+            LiveTimelineKeyMultiLightShadowDataList keys = sheet != null ? sheet.MultiLightShadowKeys : null;
+            if (keys != null && !keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable) && keys.EnablePlayModeTimeline(_playMode))
+            {
+                FindTimelineKey(out var curKey, out var nextKey, keys, currentFrame);
+                if (curKey is LiveTimelineKeyData_MultiLightShadow cur)
+                {
+                    LiveTimelineKeyData_MultiLightShadow next = nextKey as LiveTimelineKeyData_MultiLightShadow;
+                    if (next != null && next.IsInterpolateKey())
+                    {
+                        float t = CalculateInterpolationValue(cur, next, currentFrame);
+                        info.ShadowCenterPosition = Vector3.LerpUnclamped(cur.ShadowCenterPosition, next.ShadowCenterPosition, t);
+                        info.ShadowForward = Vector3.LerpUnclamped(cur.ShadowForward, next.ShadowForward, t);
+                        info.ShadowFadeStart = (next.ShadowFadeStart - cur.ShadowFadeStart) * t + cur.ShadowFadeStart;
+                        info.ShadowFadeLength = (next.ShadowFadeLength - cur.ShadowFadeLength) * t + cur.ShadowFadeLength;
+                        info.ShadowStartColor = Color.LerpUnclamped(cur.ShadowStartColor, next.ShadowStartColor, t);
+                        info.ShadowEndColor = Color.LerpUnclamped(cur.ShadowEndColor, next.ShadowEndColor, t);
+                        info.ShadowDistance = (next.ShadowDistance - cur.ShadowDistance) * t + cur.ShadowDistance;
+                    }
+                    else
+                    {
+                        info.ShadowCenterPosition = cur.ShadowCenterPosition;
+                        info.ShadowForward = cur.ShadowForward;
+                        info.ShadowFadeStart = cur.ShadowFadeStart;
+                        info.ShadowFadeLength = cur.ShadowFadeLength;
+                        info.ShadowStartColor = cur.ShadowStartColor;
+                        info.ShadowEndColor = cur.ShadowEndColor;
+                        info.ShadowDistance = cur.ShadowDistance;
+                    }
+                    info.IsUseParam = cur.IsUseParam;
+                    info.IsUseShadowFront = cur.IsUseShadowFront;
+                    info.IsShadowNearStart = cur.IsShadowNearStart;
+                    info.IsDarkestShadowOnly = cur.IsDarkestShadowOnly;
+                }
+            }
+            OnUpdateMultiLightShadowParam.Invoke(ref info);
+        }
+
+        // Single update-info object reused by every sweat group (native LiveTimelineControl +0xAF8, created with
+        // 5 locators) and the scratch index list of the random-visibility pass (native +0xB00).
+        private readonly SweatLocatorUpdateInfo _sweatLocatorUpdateInfo =
+            new SweatLocatorUpdateInfo(LiveTimelineKeySweatLocatorData.LocatorCount);
+        private readonly List<int> _sweatLocatorRandomIndex = new List<int>();
+
+        // Port of AlterUpdate_SweatLocator (JP 0x7ffd592b45b0). Per group: current key (+ next key when it is an
+        // interpolate key) -> alpha and per-locator offset / offsetAngle are lerped component by component,
+        // isVisible / offsetType / owner come from the current key. A key with randomVisibleCount > 0 then
+        // replaces the visibility of ALL locators by a random subset of that size (kept in the group between
+        // frames) and zeroes every offset. The event fires once per group with a usable key.
+        private void AlterUpdate_SweatLocator(LiveTimelineWorkSheet sheet, float currentFrame)
+        {
+            if (OnUpdateSweatLocator == null || sheet == null || sheet.sweatLocatorList == null)
+                return;
+
+            SweatLocatorUpdateInfo info = _sweatLocatorUpdateInfo;
+            for (int g = 0; g < sheet.sweatLocatorList.Count; g++)
+            {
+                LiveTimelineSweatLocatorData group = sheet.sweatLocatorList[g];
+                LiveTimelineKeySweatLocatorDataList keys = group != null ? group.keys : null;
+                if (keys == null)
+                    continue;
+                if (keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable) || !keys.EnablePlayModeTimeline(_playMode))
+                    continue;
+
+                FindTimelineKey(out var curKey, out var nextKey, keys, currentFrame);
+                if (!(curKey is LiveTimelineKeySweatLocatorData cur))
+                    continue;
+                LiveTimelineKeySweatLocatorData next = nextKey as LiveTimelineKeySweatLocatorData;
+
+                if (next != null && next.IsInterpolateKey())
+                {
+                    float t = CalculateInterpolationValue(cur, next, currentFrame);
+                    info.alpha = (next.alpha - cur.alpha) * t + cur.alpha;
+                    for (int i = 0; i < LiveTimelineKeySweatLocatorData.LocatorCount; i++)
+                    {
+                        Vector3 a = cur.GetOffset(i), b = next.GetOffset(i);
+                        Vector3 aa = cur.GetOffsetAngle(i), ba = next.GetOffsetAngle(i);
+                        info.locatorInfo[i].offset = new Vector3(
+                            (b.x - a.x) * t + a.x, (b.y - a.y) * t + a.y, (b.z - a.z) * t + a.z);
+                        info.locatorInfo[i].offsetAngle = new Vector3(
+                            (ba.x - aa.x) * t + aa.x, (ba.y - aa.y) * t + aa.y, (ba.z - aa.z) * t + aa.z);
+                    }
+                }
+                else
+                {
+                    info.alpha = cur.alpha;
+                    for (int i = 0; i < LiveTimelineKeySweatLocatorData.LocatorCount; i++)
+                    {
+                        info.locatorInfo[i].offset = cur.GetOffset(i);
+                        info.locatorInfo[i].offsetAngle = cur.GetOffsetAngle(i);
+                    }
+                }
+
+                info.owner = cur.owner;
+                for (int i = 0; i < LiveTimelineKeySweatLocatorData.LocatorCount; i++)
+                {
+                    info.locatorInfo[i].isVisible = cur.GetIsVisible(i);
+                    info.locatorInfo[i].offsetType = cur.GetOffsetType(i);
+                }
+
+                List<int> visible = group.randomVisibleIndex;
+                if (visible == null)
+                    visible = group.randomVisibleIndex = new List<int>();
+                if (visible.Count < cur.randomVisibleCount)
+                {
+                    _sweatLocatorRandomIndex.Clear();
+                    for (int i = 0; i < info.locatorInfo.Length; i++)
+                        _sweatLocatorRandomIndex.Add(i);
+                    do
+                    {
+                        int pick = UnityEngine.Random.Range(0, _sweatLocatorRandomIndex.Count);
+                        int index = _sweatLocatorRandomIndex[pick];
+                        if (!visible.Contains(index))
+                            visible.Add(index);
+                        _sweatLocatorRandomIndex.RemoveAt(pick);
+                        if (visible.Count >= cur.randomVisibleCount)
+                            break;
+                    } while (_sweatLocatorRandomIndex.Count > 0);
+                }
+                else if (cur.randomVisibleCount < visible.Count)
+                {
+                    do
+                    {
+                        visible.RemoveAt(UnityEngine.Random.Range(0, visible.Count));
+                    } while (cur.randomVisibleCount < visible.Count);
+                }
+
+                if (visible.Count > 0)
+                {
+                    for (int i = 0; i < info.locatorInfo.Length; i++)
+                    {
+                        info.locatorInfo[i].isVisible = false;
+                        info.locatorInfo[i].offset = Vector3.zero;
+                        info.locatorInfo[i].offsetAngle = Vector3.zero;
+                    }
+                    for (int i = 0; i < visible.Count; i++)
+                        info.locatorInfo[visible[i]].isVisible = true;
+                }
+
+                OnUpdateSweatLocator.Invoke(info);
+            }
+        }
+
+        // Scale buffers of the mask groups (the native controller allocates its float[] once).
+        private readonly Dictionary<LiveTimelineTransmittedLightMaskData, float[]> _transmittedLightMaskScales =
+            new Dictionary<LiveTimelineTransmittedLightMaskData, float[]>();
+
+        // Port of AlterUpdate_TransmittedLightMask (JP 0x7ffd592b6cd0): for every group the scale of each light
+        // container comes from the current key (GetMaskScale) and, when the NEXT key IsInterpolateKey, is lerped
+        // towards the next key's scale. The stage applies it to the renderers of the group.
+        private void AlterUpdate_TransmittedLightMask(LiveTimelineWorkSheet sheet, float currentFrame)
+        {
+            if (OnUpdateTransmittedLightMask == null || sheet == null || sheet.transmittedLightMaskDataList == null)
+                return;
+
+            for (int g = 0; g < sheet.transmittedLightMaskDataList.Count; g++)
+            {
+                LiveTimelineTransmittedLightMaskData group = sheet.transmittedLightMaskDataList[g];
+                LiveTimelineKeyTransmittedLightMaskDataList keys = group != null ? group.keys : null;
+                if (keys == null)
+                    continue;
+                if (keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable) || !keys.EnablePlayModeTimeline(_playMode))
+                    continue;
+
+                FindTimelineKey(out var curKey, out var nextKey, keys, currentFrame);
+                if (!(curKey is LiveTimelineKeyTransmittedLightMaskData cur))
+                    continue;
+                LiveTimelineKeyTransmittedLightMaskData next = nextKey as LiveTimelineKeyTransmittedLightMaskData;
+
+                int count = Mathf.Max(0, cur.LightContainerCount);
+                if (!_transmittedLightMaskScales.TryGetValue(group, out float[] scales) || scales.Length != count)
+                {
+                    scales = new float[count];
+                    _transmittedLightMaskScales[group] = scales;
+                }
+
+                if (next != null && next.IsInterpolateKey())
+                {
+                    float t = CalculateInterpolationValue(cur, next, currentFrame);
+                    for (int i = 0; i < count; i++)
+                    {
+                        float a = cur.GetMaskScale(i, group.name);
+                        float b = next.GetMaskScale(i, group.name);
+                        scales[i] = (b - a) * t + a;
+                    }
+                }
+                else
+                {
+                    for (int i = 0; i < count; i++)
+                        scales[i] = cur.GetMaskScale(i, group.name);
+                }
+
+                var updateInfo = new TransmittedLightMaskUpdateInfo { Group = group, Key = cur, Scales = scales };
+                OnUpdateTransmittedLightMask.Invoke(ref updateInfo);
+            }
+        }
+
         // Samples the client's AdditionalLight track: one group per real stage light, the group
         // index being the light index inside AdditionalLightComponent._addLightList. IsEnable and
         // Type come from the current key (never interpolated); every other field lerps towards the
@@ -2913,6 +3129,11 @@ namespace Gallop.Live.Cutt
                 updateInfo.Index = i;
                 updateInfo.IsEnable = cur.IsEnable;
                 updateInfo.Type = ToLightType(cur.Type);
+                // Native AlterUpdate_AdditionalLight copies the shadow type (key +0x5c) straight from the
+                // current key into AdditionalLightUpdateInfo (+0x40) and never interpolates it. It was
+                // never assigned here, so every stage light kept LightShadows.None (no character shadow
+                // on the wall/floor in Live 1093).
+                updateInfo.ShadowType = cur.ShadowType;
 
                 LiveTimelineKeyData_AdditionalLight next = nextKey as LiveTimelineKeyData_AdditionalLight;
                 if (next != null && next.interpolateType != 0)

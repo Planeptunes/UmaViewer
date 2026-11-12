@@ -16,6 +16,26 @@ namespace Gallop.Live
 
         private const string CreatedLightName = "SceneLight";
 
+        // True while any real stage light is switched on by its track. The game only lets the characters cast real
+        // shadows while the AdditionalLight is on (probe, Live 1093: bodies/faces/hair/tails of the characters with
+        // FormationOffset IsCastShadow cast at frames 3885-4185 where the light is enabled, and none at 3189 / 5382
+        // where it is disabled).
+        public bool IsAnyLightEnabled
+        {
+            get
+            {
+                if (_addLightList == null)
+                    return false;
+                for (int i = 0; i < _addLightList.Count; i++)
+                {
+                    Light light = _addLightList[i];
+                    if (light != null && light.enabled)
+                        return true;
+                }
+                return false;
+            }
+        }
+
         public IReadOnlyList<Light> LightList
         {
             get { return _addLightList; }

@@ -195,6 +195,12 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
         }
         else UmaViewerMain.Instance.AbList.TryGetValue(UmaDatabaseController.BodyPath + $"bdy{id}_{costumeId}/pfb_bdy{id}_{costumeId}", out asset);
 
+        // ResourcePath.GetLiveBodyFlareCollisionParameterPath: special (own) costume = ast_bdyID_SUB_flare,
+        // generic costume = ast_bdyTYPE_SUB_SETTING_height_shape_bust_flare.
+        umaContainer.FlareBodyPath = genericCostume
+            ? UmaDatabaseController.BodyPath + $"bdy{costumeIdShort}/flares/ast_bdy{costumeId}_{height}_{shape}_{bust}_flare"
+            : UmaDatabaseController.BodyPath + $"bdy{id}_{costumeId}/flares/ast_bdy{id}_{costumeId}_flare";
+
         if (asset == null)
         {
             Debug.LogError("No body, can't load!");
@@ -335,6 +341,10 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
             // Load head CySpring physics.
             //角色实际加载了哪个头，就必须加载同一个头目录下的 cloth。
             string actualHeadCostumeId = isDefaultHead ? "00" : head_costumeId;
+            umaContainer.SweatHeadCharaId = head_id;
+            umaContainer.SweatHeadSubId = actualHeadCostumeId;
+            umaContainer.FlareHeadPath = UmaDatabaseController.HeadPath +
+                $"chr{head_id:0000}_{actualHeadCostumeId}/flares/ast_chr{head_id:0000}_{actualHeadCostumeId}_flare";
 
             string headClothPath =
                 UmaDatabaseController.HeadPath +
@@ -372,6 +382,7 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
             //costume's exclusive tail (named after the BODY character, e.g. tail1013_30) is skipped.
             if (headOverride == null && Main.AbList.TryGetValue(exclusiveTailPfb, out asset))
             {
+                umaContainer.FlareTailPath = $"{exclusiveTailPath}flares/ast_{exclusiveTailName}_flare";
                 umaContainer.LoadExclusiveTail(asset);
 
                 string clothPath = $"{exclusiveTailPath}clothes/pfb_{exclusiveTailName}_cloth00";
@@ -394,6 +405,7 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
                         umaContainer.LoadTextures(asset2);
                     }
 
+                    umaContainer.FlareTailPath = $"{tailPath}flares/ast_{tailName}_flare";
                     umaContainer.LoadTail(asset);
 
                     string clothPath = $"{tailPath}clothes/pfb_{tailName}_cloth00";
@@ -502,6 +514,10 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
         }
         else Main.AbList.TryGetValue($"{UmaDatabaseController.BodyPath}bdy{bodyid}_{costumeId}/pfb_bdy{bodyid}_{costumeId}", out asset);
 
+        umaContainer.FlareBodyPath = genericCostume
+            ? UmaDatabaseController.BodyPath + $"bdy{costumeIdShort}/flares/ast_bdy{costumeId}_{height}_{shape}_{bust}_flare"
+            : UmaDatabaseController.BodyPath + $"bdy{bodyid}_{costumeId}/flares/ast_bdy{bodyid}_{costumeId}_flare";
+
         if (asset == null)
         {
             Debug.LogError("No body, can't load!");
@@ -599,6 +615,12 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
                     umaContainer.LoadTextures(asset1);
                 }
             }
+
+            umaContainer.SweatHeadCharaId = head_id;
+            umaContainer.SweatHeadSubId = head_costumeId;
+            umaContainer.SweatMobFaceId = faceid;
+            umaContainer.FlareHeadPath = UmaDatabaseController.HeadPath +
+                $"chr{head_s}_{head_costumeId}/flares/ast_chr{head_s}_{head_costumeId}_hair{hairid.PadLeft(3, '0')}_flare";
 
             //Load face
             umaContainer.LoadHead(asset);

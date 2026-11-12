@@ -694,6 +694,10 @@ namespace Gallop.Live
             };
 
             SetupCharacterLocator();
+            InitializeSweat();
+            // Director.LoadCharaModel: the flare colliders (body, head, tail) hang from the loaded model.
+            foreach (var character in CharaContainerScript)
+                CharacterFlareCollision.Attach(character);
             foreach (var sheet in _liveTimelineControl.data.worksheetList)
                 sheet?.InitializeProps(_liveTimelineControl);
             var propsLocators = new List<LiveTimelineCharaLocator>(CharaContainerScript.Count);
@@ -778,6 +782,8 @@ namespace Gallop.Live
             for (int i = 0; i < CharaContainerScript.Count; i++)
                 footRoots.Add(ResolveEffectCharacter(i));
             _footLightRuntime = new FootLightRuntime();
+            _footLightRuntime.AdditionalLightEnabledResolver =
+                () => _stageController != null && _stageController.IsAdditionalLightEnabled;
             _footLightRuntime.Initialize(
                 _stageController != null ? _stageController.transform : transform,
                 footRoots,
@@ -1147,6 +1153,29 @@ namespace Gallop.Live
             for (int i = 0; i < lights.Length; i++)
                 if (lights[i] != null && lights[i].type == LightType.Directional) return lights[i];
             return null;
+        }
+
+        // Sweat drops (sweatLocatorList track): one controller per character slot, indexed like the track's `owner`
+        // (client Director.UpdateSweatLocator -> CharacterObject.UpdateSweatLocator).
+        private readonly List<LiveSweatController> _sweatControllers = new List<LiveSweatController>();
+
+        private void InitializeSweat()
+        {
+            _liveTimelineControl.OnUpdateSweatLocator -= UpdateSweatLocator;
+            _sweatControllers.Clear();
+            for (int i = 0; i < CharaContainerScript.Count; i++)
+            {
+                var container = CharaContainerScript[i];
+                _sweatControllers.Add(container != null && !container.IsMini ? LiveSweatController.Create(container) : null);
+            }
+            _liveTimelineControl.OnUpdateSweatLocator += UpdateSweatLocator;
+        }
+
+        private void UpdateSweatLocator(SweatLocatorUpdateInfo updateInfo)
+        {
+            if (updateInfo == null || updateInfo.owner < 0 || updateInfo.owner >= _sweatControllers.Count)
+                return;
+            _sweatControllers[updateInfo.owner]?.UpdateSweatLocator(updateInfo);
         }
 
         private void SetupCharacterLocator()

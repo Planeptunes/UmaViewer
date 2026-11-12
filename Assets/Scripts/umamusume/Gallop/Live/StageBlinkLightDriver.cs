@@ -273,14 +273,43 @@ namespace Gallop.Live
 
             if (_ctl == null || _stage == null) return;
 
+            // The game generates its random ratio table once per Live (Director load).
+            RandomRatioTable.ResetLive();
             _liveNowGetter = BuildLiveNowGetter(_ctl);
             _ctl.OnUpdateBlinkLight += OnBlinkLight;
+            sActive = this;
 
             if (verboseLog) Debug.Log("[StageBlinkLightDriver] bound");
         }
 
+        // Native StageController.TryGetBlinkLightContainerColorPower -> BlinkLightController.TryGetCurrentColorPower
+        // (used by TransmittedLightMask keys linked to the blink colour power, via
+        // LiveTimelineControl.TryGetBlinkLightColorPower): the controller of the group is looked up by name and the
+        // current power of the container is returned; false when the group / container does not exist (power 0).
+        private static StageBlinkLightDriver sActive;
+
+        public static bool TryGetContainerColorPower(string groupName, int containerIndex, out float power)
+        {
+            power = 0f;
+            StageBlinkLightDriver driver = sActive;
+            if (driver == null || string.IsNullOrEmpty(groupName) || containerIndex < 0)
+                return false;
+            foreach (var pair in driver._runtime)
+            {
+                if (pair.Value == null || NormalizeRuntimeRootName(pair.Key) != groupName)
+                    continue;
+                if (!driver._rootCache.TryGetValue(pair.Key, out RootCache rc) || rc == null ||
+                    containerIndex >= rc.slotCount || containerIndex >= kMaxBlinkSlots)
+                    return false;
+                power = pair.Value.slots[containerIndex].currentPower;
+                return true;
+            }
+            return false;
+        }
+
         private void Unbind()
         {
+            if (sActive == this) sActive = null;
             if (_ctl != null) _ctl.OnUpdateBlinkLight -= OnBlinkLight;
 
             _ctl = null;
@@ -1799,23 +1828,10 @@ namespace Gallop.Live
             hasColorPowerMultiply = hasMultiply;
         }
 
+        // Native RandomRatioTable.Get(containerIndex, keyIndex): the Live table (10 x 64) filled with UnityEngine.Random.
         private static float GetOfficialStyleRatio01(int index, int keyIndex)
         {
-            return GetDeterministicRatio01(index, keyIndex);
-        }
-
-        private static float GetDeterministicRatio01(int a, int b)
-        {
-            unchecked
-            {
-                uint x = 2166136261u;
-                x = (x ^ (uint)(a + 1)) * 16777619u;
-                x = (x ^ (uint)(b + 1)) * 16777619u;
-                x ^= x >> 13;
-                x *= 1274126177u;
-                x ^= x >> 16;
-                return (x & 0x00FFFFFFu) / 16777215.0f;
-            }
+            return RandomRatioTable.Live.Get(index, keyIndex);
         }
 
         private static Color GetBlinkColor(Color color0, Color color1, float hueRatio, float saturationRatio, float valueRatio, bool isReverseHue)

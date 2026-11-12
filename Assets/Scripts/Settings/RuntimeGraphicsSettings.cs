@@ -9,6 +9,19 @@ public static class RuntimeGraphicsSettings
     private static UniversalRenderPipelineAsset runtime;
     private static readonly int[] Samples = { 1, 2, 4, 8 };
 
+    // The user's "shadow distance" setting. The game's own per-camera distance (CameraData.GlobalShadowDistance /
+    // MaxShadowDistance) is applied by Gallop.RenderPipeline.GallopRenderer.SetupCullingParameters, with this value
+    // as the upper bound.
+    public static float UserShadowDistance
+    {
+        get { return Config.Instance != null ? Mathf.Clamp(Config.Instance.ShadowDistance, 0f, 150f) : 50f; }
+    }
+
+    private static float EffectiveShadowDistance(Config config)
+    {
+        return Mathf.Clamp(config.ShadowDistance, 0f, 150f);
+    }
+
     // Version2 (viewer/UI): usa el ajuste "UIrenderScale" del panel (por defecto 100 % = nativa).
     public static void Apply()
     {
@@ -50,6 +63,6 @@ public static class RuntimeGraphicsSettings
         }
         runtime.msaaSampleCount = samples;
         runtime.renderScale = Mathf.Clamp(renderScale, 0.5f, 2f);
-        runtime.shadowDistance = Mathf.Clamp(config.ShadowDistance, 0f, 150f);
+        runtime.shadowDistance = EffectiveShadowDistance(config);
     }
 }

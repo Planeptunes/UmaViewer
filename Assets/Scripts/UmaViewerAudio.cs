@@ -294,8 +294,12 @@ public class UmaViewerAudio
     //mayor que 0 (el volumen por defecto de una posición a 0 es 0).
     internal static bool IsSinging(PartEntry data, string part, int row)
     {
-        if (PartValue(data, part, row, 0f) > 0f) return true;
         float volume = PartValue(data, part + "_vol", row, 901f);
+        //Un `_vol` escrito a 0 es silencio a proposito (Live 1093, fila 63.95 s: right=2 con right_vol=0):
+        //esa pista no canta aunque su posicion sea > 0, y no debe gastar un hueco del tope de voces
+        //(antes dejaba muda a left2, la que si debia sonar).
+        if (volume == 0f) return false;
+        if (PartValue(data, part, row, 0f) > 0f) return true;
         return volume > 0f && volume < 900f && SelectorLabel(data, part, row) > 0;
     }
 

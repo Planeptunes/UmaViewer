@@ -27,6 +27,9 @@ namespace Gallop.Live
 
         private readonly List<Binding> _bindings = new List<Binding>();
         private Func<int, Vector3> _groundPositionResolver;
+
+        // Supplied by the Director: true while the stage's AdditionalLight is on. Null = no gate.
+        public Func<bool> AdditionalLightEnabledResolver;
         private Action<Gallop.RenderPipeline.CustomProjector, bool> _projectorRegistrar;
 
         // Optional path resolvers allow an explicitly known per-character resource selection.
@@ -220,14 +223,16 @@ namespace Gallop.Live
                 Vector3 position = _groundPositionResolver(binding.characterIndex);
                 if (binding.spotlight != null) binding.spotlight.AlterLateUpdate(position);
                 if (binding.spotlight != null) binding.spotlight.SetCharacterVisible(active);
-                // La sombra del personaje (shadow map real) solo se dibuja en las ventanas
-                // BgColor1 con LightBlendMode.Multiply: es cuando el juego la muestra. Durante el
-                // fogonazo (los haces barren y el spot se apaga) la sombra desaparece.
-                // Además, la FormationOffset del cutt la apaga por personaje (IsCastShadow).
+                // Sombra real del personaje (shadow map de la AdditionalLight). Medido en el juego (sonda,
+                // Live 1093): los personajes cuya FormationOffset tiene IsCastShadow proyectan (cuerpo, cara,
+                // pelo y cola) SOLO mientras la AdditionalLight esta encendida (frames 3885-4185); con la luz
+                // apagada (3189, 5382) ninguno proyecta. Antes se exigia ademas que el foco de seguimiento
+                // estuviera en LightBlendMode.Multiply, y en esos frames la pista lo pone en Add: no habia sombra.
                 var locator = binding.container != null ? binding.container.LiveLocator : null;
                 bool castByTimeline = locator == null || locator.IsCastShadow;
+                bool lightOn = AdditionalLightEnabledResolver == null || AdditionalLightEnabledResolver();
                 UnityEngine.Rendering.ShadowCastingMode castMode =
-                    castByTimeline && binding.spotlight != null && binding.spotlight.IsShadowMode
+                    castByTimeline && lightOn
                         ? UnityEngine.Rendering.ShadowCastingMode.On
                         : UnityEngine.Rendering.ShadowCastingMode.Off;
                 Renderer[] casters = binding.shadowCasters;

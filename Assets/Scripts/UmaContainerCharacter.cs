@@ -111,6 +111,20 @@ public class UmaContainerCharacter : UmaContainer
     public bool IsMini = false;
     public TextureList MiniHeadTextures = new TextureList();
 
+    // Head model that was actually loaded (client CharacterBuildInfo._charaId / _headModelSubId, plus the
+    // mob face kind): they pick the head's sweatlocator prefab. SweatHeadCharaId = 0 means no head was loaded.
+    [Header("Sweat")]
+    public int SweatHeadCharaId;
+    public string SweatHeadSubId = "00";
+    public string SweatMobFaceId;
+
+    // Paths of the CharacterFlareCollisionParameter assets (body, head, tail) the Live attaches as colliders;
+    // empty when the model has no such asset.
+    [Header("Flare collision")]
+    public string FlareBodyPath;
+    public string FlareHeadPath;
+    public string FlareTailPath;
+
     [Header("Mob")]
     public bool IsMob = false;
     public DataRow MobDressColor;
@@ -145,7 +159,7 @@ public class UmaContainerCharacter : UmaContainer
         InvalidateMirrorLayerCache();
     }
 
-    private void InvalidateMirrorLayerCache()
+    internal void InvalidateMirrorLayerCache()
     {
         RestoreMirrorChangedLayers();
         _mirrorLayerCacheDirty = true;
@@ -281,6 +295,8 @@ public class UmaContainerCharacter : UmaContainer
     // Official CySpring runtime controller.
     // CySpringDataContainer is only data; CySpringController owns simulation.
     private CySpringController _cySpringController;
+    // The wearer's body controller (native CharacterObject.CurrentLiveModelController + 0x330), read by Props.BeginCySpringSimulate.
+    internal CySpringController BodyCySpringController => _cySpringController;
     private bool _cySpringLoaded;
     // Ancla del solver (ver BindCySpringOwnerAnchor) y su resolucion diferida.
     private bool _cySpringAnchorResolved;

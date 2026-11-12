@@ -23,9 +23,24 @@ namespace Gallop.RenderPipeline
             set => _parameter = value;
         }
 
+        // Native CameraData.GLOBAL_SHADOW_DISTANCE (static, JP: written by MultiLightShadowController, 15 by default
+        // inside a Live). Infinity outside a Live (viewer): only the user's shadow distance limits it.
+        public static float GlobalShadowDistance = float.PositiveInfinity;
+
+        // Native fields read by GallopRenderer.SetupCullingParameters (+0x104 / +0x101 / +0x102 / +0x148). The Live
+        // code never writes them (MaxShadowDistance is 0 in every camera of live 1093, probe), so they keep the
+        // native defaults.
+        public float MaxShadowDistance;
+        public bool IsDisableObjectCulling;
+        public bool IsDisableLightCulling;
+        public bool IsUIRendering;
+
         public void Initialize(bool _)
         {
             _ = false;
+            // Native CameraData.Initialize resets these (JP 0x7ffd595b9590).
+            MaxShadowDistance = 0.0f;
+            IsUIRendering = false;
             if (_parameter == null)
                 _parameter = new PostImageEffectFeature.Parameter();
         }
