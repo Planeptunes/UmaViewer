@@ -879,6 +879,11 @@ namespace Gallop.Live
                 UpdateMainCamera();
             };
 
+            // (Trace export) Optional, off by default (Config.LiveTraceExport): only subscribes to the events above
+            // to write the timeline values per frame, in the Hachimi probe's CSV format. It changes nothing.
+            LiveTraceExporter.Attach(_liveTimelineControl, () => _liveCurrentTime, () => _activeCameraIndex,
+                live != null ? live.MusicId : 0, transform);
+            _gridCaptureLiveId = live != null ? live.MusicId : 0;
         }
 
         public void InitializeCamera()
@@ -1402,6 +1407,7 @@ namespace Gallop.Live
             }
             using (LiveRecordMarkers.TimelineUpdate.Auto())
                 _liveTimelineControl.AlterUpdate(_liveCurrentTime);
+            LiveTraceExporter.Tick(_liveCurrentTime);   // optional scene transform log, no-op when off
             if (!_soloMode)
             {
                 using (LiveRecordMarkers.AudioUpdate.Auto())
@@ -1597,8 +1603,13 @@ namespace Gallop.Live
 
                 using (LiveRecordMarkers.RuntimeDiagnostics.Auto())
                     LiveRuntimeDiagnostics.RecordFrame(this);
+
+                //(Image grid, viewer tool) One screenshot every 30 timeline frames while its toggle is on.
+                if (!IsOfflineRender) LiveGridCapture.Tick(_gridCaptureLiveId, _liveCurrentTime);
             }
         }
+
+        private int _gridCaptureLiveId;
 
         private void LateUpdate()
         {
@@ -2324,6 +2335,7 @@ namespace Gallop.Live
         }
         private void UnbindTimelineEvents()
         {
+            LiveTraceExporter.Detach();
             if (_liveTimelineControl == null)
                 return;
 

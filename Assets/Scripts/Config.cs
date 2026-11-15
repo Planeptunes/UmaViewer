@@ -55,6 +55,12 @@ public class Config
     public string FfmpegPathTip = "Optional: full path to ffmpeg.exe used to encode Live recordings to MP4. Leave empty to look next to the project/executable and in the PATH.";
     public string FfmpegPath = "";
 
+    public string LiveTraceExportTip = "Developer: writes the Live timeline parameters of the viewer, per frame, to LiveTrace/<run>/render_*.csv in the same format as the Hachimi probe, to compare them with the original game. Off by default.";
+    public bool LiveTraceExport = false;
+
+    public string LiveTraceTransformStepTip = "Developer: with LiveTraceExport on, the scene transform log (scene_nodes.csv / scene_changes.csv) is sampled every N timeline frames. Use the same N as the probe's probe_tlog_step.txt (default 30).";
+    public int LiveTraceTransformStep = 30;
+
     public string WorkModeTip = "Affects how application work, options: 0 - work with game client, 1 - work without game client(slow), Database needs to be updated manually";
     public WorkMode WorkMode = WorkMode.Default;
 
@@ -94,6 +100,9 @@ public class Config
 
     public string RecordSettingsTip = "Last values accepted in the RECORD panel (fps, resolution, quality, post effects...). The panel starts from them every time it opens; the start/end times are not kept.";
     public LiveRecordSettings RecordSettings = new LiveRecordSettings();
+
+    public string LiveSlotPresetTip = "Characters/costumes of the Live CharaSelect slots saved with Ctrl+Shift+F1 (applied with Ctrl+F1 while that panel is open). Voice selectors are not stored.";
+    public List<LiveSlotPresetEntry> LiveSlotPreset = new List<LiveSlotPresetEntry>();
 
     public bool RegionDetectionPassed = false;
 

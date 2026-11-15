@@ -1775,6 +1775,8 @@ public class UmaContainerCharacter : UmaContainer
             _footLightBlock.SetColor(HightLightColorId, lightColor);
             renderer.SetPropertyBlock(_footLightBlock);
         }
+        // Probe capture (no-op unless a capture is collecting): what was written, twin of the game's foot_light_apply.
+        LiveTraceExporter.OnFootLightApply(heightMax, lightColor, blendMode, easing, transform, rootY);
     }
 
     // Renderers de la cabeza que reciben la luz de cara (ModelController.UpdateFaceLight: piel de la

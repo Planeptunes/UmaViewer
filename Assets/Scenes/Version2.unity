@@ -26076,7 +26076,7 @@ MonoBehaviour:
       m_Calls:
       - m_Target: {fileID: 1564959567}
         m_TargetAssemblyTypeName: UmaViewerUI, umamusume
-        m_MethodName: SetLiveRecordMode
+        m_MethodName: SetLiveGridCapture
         m_Mode: 0
         m_Arguments:
           m_ObjectArgument: {fileID: 0}

@@ -410,6 +410,9 @@ public class UmaViewerUI : MonoBehaviour
         // aquí con Input.inputString y se dibuja en el propio rótulo del desplegable.)
         UpdateVocalSearch();
 
+        //(Live: Ctrl+Shift+F1 guarda los personajes de los slots, Ctrl+F1 los aplica.)
+        UpdateLiveSlotPresetHotkeys();
+
         //(Misma búsqueda por teclado para el desplegable "Other Characters".)
         UpdateOtherCharacterSearch();
 
@@ -2195,7 +2198,10 @@ public class UmaViewerUI : MonoBehaviour
             ShowLiveSelectPanel(currentLive, false);
     }
 
-    public void SetLiveRecordMode(bool val) { isRecordVMD = val; }
+    //Toggle Canvas/UI/Panels/CharaSelect/VMDToggle: no longer the VMD recording mode (isRecordVMD stays off); it
+    //switches the live image grid (LiveGridCapture: one screenshot every 30 timeline frames in Screenshots/<live id>).
+    public bool liveGridCapture;
+    public void SetLiveGridCapture(bool val) { liveGridCapture = val; }
 
     public void SetLiveRequireStage(bool val) { isRequireStage = val; }
 
@@ -3129,6 +3135,112 @@ public class UmaViewerUI : MonoBehaviour
 
         button.onClick = new Button.ButtonClickedEvent();
         button.onClick.AddListener(onClick);
+    }
+
+    // ---- Live slot preset (hotkeys) -------------------------------------------------------------
+    // Ctrl+Shift+F1 stores the character/costume of every slot of the CharaSelect panel in Config.json.
+    // Ctrl+F1 writes them back into the slots (only the first N when the current live has N slots).
+    // Only active while that panel is open. The voice selectors are not touched.
+    void UpdateLiveSlotPresetHotkeys()
+    {
+        if (!Input.GetKeyDown(KeyCode.F1)) return;
+        if (LiveSelectList == null || !LiveSelectList.gameObject.activeInHierarchy) return;
+        bool ctrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+        if (!ctrl) return;
+        bool shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+        if (shift) SaveLiveSlotPreset();
+        else ApplyLiveSlotPreset();
+    }
+
+    void SaveLiveSlotPreset()
+    {
+        var slots = LiveSelectList.content.GetComponentsInChildren<LiveCharacterSelect>();
+        var list = new List<LiveSlotPresetEntry>(slots.Length);
+        foreach (var slot in slots)
+        {
+            var e = new LiveSlotPresetEntry();
+            if (slot.CharaEntry != null)
+            {
+                e.CharaId = slot.CharaEntry.Id;
+                e.CharaIsMob = slot.CharaEntry.IsMob;
+                if (slot.BodyCharaEntry != null)
+                {
+                    e.BodyCharaId = slot.BodyCharaEntry.Id;
+                    e.BodyCharaIsMob = slot.BodyCharaEntry.IsMob;
+                }
+                e.CostumeId = slot.CostumeId ?? "";
+                e.HeadCostumeId = slot.HeadCostumeId ?? "";
+                e.CostumeColorIndex = slot.CostumeColorIndex;
+            }
+            list.Add(e);
+        }
+        Config.Instance.LiveSlotPreset = list;
+        Config.Instance.UpdateConfig(false);
+        Debug.Log($"[LiveSlotPreset] Saved {list.Count} slots.");
+    }
+
+    void ApplyLiveSlotPreset()
+    {
+        var saved = Config.Instance.LiveSlotPreset;
+        if (saved == null || saved.Count == 0)
+        {
+            Debug.LogWarning("[LiveSlotPreset] Nothing saved. Use Ctrl+Shift+F1 first.");
+            return;
+        }
+
+        var slots = LiveSelectList.content.GetComponentsInChildren<LiveCharacterSelect>();
+        int count = Mathf.Min(slots.Length, saved.Count);
+        int applied = 0;
+        for (int i = 0; i < count; i++)
+        {
+            var e = saved[i];
+            if (e == null || e.CharaId < 0 || string.IsNullOrEmpty(e.CostumeId)) continue;   //slot was empty
+
+            var chara = FindCharaEntry(e.CharaId, e.CharaIsMob);
+            if (chara == null) continue;
+            var body = e.BodyCharaId != 0 ? FindCharaEntry(e.BodyCharaId, e.BodyCharaIsMob) : null;
+
+            //Same icon the costume panel gives the slot (the body owner's, see ListCostumes).
+            var icon = ResolveSlotCostumeIcon(body ?? chara, e.CostumeId, e.CostumeColorIndex);
+            slots[i].SetValue(chara, e.CostumeId, icon, e.HeadCostumeId, e.CostumeColorIndex, body);
+            applied++;
+        }
+        Debug.Log($"[LiveSlotPreset] Applied {applied}/{count} slots.");
+    }
+
+    CharaEntry FindCharaEntry(int id, bool isMob)
+    {
+        var pool = isMob ? Main.MobCharacters : Main.Characters;
+        return pool == null ? null : pool.FirstOrDefault(c => c != null && c.Id == id);
+    }
+
+    //Icon of a costume as ListCostumes assigns it to the item (own costume = short id, common = XXXX_XX_XX).
+    Sprite ResolveSlotCostumeIcon(CharaEntry bodyChara, string costumeId, int colorIndex)
+    {
+        if (!TrajeComun.IsMatch(costumeId))
+        {
+            int sub;
+            if (!int.TryParse(costumeId, out sub)) sub = int.MinValue;
+            var dress = Main.Costumes.FirstOrDefault(a => a.CharaId == bodyChara.Id && a.BodyTypeSub == sub);
+            return CustomCostumeIcons.Get(bodyChara.Id, costumeId, false)
+                ?? (dress == null ? CostumeIconDefault : dress.Icon);
+        }
+
+        if (colorIndex > 0 && !bodyChara.IsMob)
+        {
+            var colors = Main.GetCostumeColors(costumeId);
+            var color = colors == null ? null : colors.FirstOrDefault(c => c.Index == colorIndex);
+            if (color != null)
+                return CustomCostumeIcons.Get(costumeId + "_" + colorIndex.ToString("D2")) ?? color.Icon;
+        }
+
+        var data = costumeId.Split('_');
+        int bodytype, bodysub;
+        int.TryParse(data[0], out bodytype);
+        int.TryParse(data[1], out bodysub);
+        var commonDress = Main.Costumes.FirstOrDefault(a => a.BodyType == bodytype && a.BodyTypeSub == bodysub);
+        return CustomCostumeIcons.Get(bodyChara.Id, costumeId, true)
+            ?? (commonDress == null ? CostumeIconDefault : commonDress.Icon);
     }
 
     //Botón "copiar slot 1": pone el MISMO modelo y el MISMO traje de la posición 1 en todas las demás.
