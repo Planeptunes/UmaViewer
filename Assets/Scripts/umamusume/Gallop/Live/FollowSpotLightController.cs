@@ -20,6 +20,10 @@ namespace Gallop.Live
         // StaticVariableDefine.Live.FollowSpotLightScale: Initialize puts it on the renderer's
         // transform; the authored disc (radius 1) becomes a pool 1.7 times wider.
         private static readonly Vector3 FollowSpotLightScale = new Vector3(1.7f, 1f, 1.7f);
+        // FollowSpotLightController.Initialize (RVA 0x7ffd5923bbd0): Renderer.set_sortingOrder(0x6e) on the pool renderer.
+        // Transparents sort by order in layer before queue / distance, so the pool (DstColor / One) draws AFTER mirror00
+        // (order 31) and multiplies floor + reflection, as in the game (live 1195 f1452: floor equal to the game with it).
+        private const int FollowSpotLightSortingOrder = 110;
         private bool _illuminated;
         private float _power;
         private Cutt.LiveTimelineDefine.LightBlendMode _blendMode = Cutt.LiveTimelineDefine.LightBlendMode.Addition;
@@ -35,7 +39,11 @@ namespace Gallop.Live
             _renderers = GetComponentsInChildren<Renderer>(true);
             _block = new MaterialPropertyBlock();
             Renderer pool = GetComponentInChildren<Renderer>();
-            if (pool != null) pool.transform.localScale = FollowSpotLightScale;
+            if (pool != null)
+            {
+                pool.transform.localScale = FollowSpotLightScale;
+                pool.sortingOrder = FollowSpotLightSortingOrder;
+            }
             CreateMaterials();
             ApplyLight(Color.white, 0f, 1f);
         }

@@ -1486,6 +1486,12 @@ namespace Gallop.Live.Cutt
             if (!chara) return;
 
 
+            // The FormationOffset key's visible flag drives the locator (liveCharaVisible), which the
+            // attached props (IsVisibleAttachedCharaLinked) and the foot shadows follow, like the game's
+            // OnLiveCharaVisible. It must be set in every mode, not only in ControlMode.
+            if (chara.LiveLocator != null && chara.LiveLocator.liveCharaVisible != curKey.visible)
+                chara.LiveLocator.liveCharaVisible = curKey.visible;
+
             if (ControlMode)
             {
                 if (chara.LiveVisible != curKey.visible)
@@ -1588,7 +1594,15 @@ namespace Gallop.Live.Cutt
         {
             LiveTimelineKeyIndex curKey = keys.TimeKeyIndex;
 
-            if (curKey.index == -1 || Director.instance.sliderControl.is_Touched)
+            // UpdateCurrentKey only steps one key forward and never goes back, and FindCurrentKey leaves the cached
+            // index untouched when it finds nothing: after any seek that is not flagged by is_Touched (backwards, or
+            // more than one key ahead) the cached key is wrong and the result depends on the seek history. The game
+            // resolves the key from the frame alone, so re-find whenever the cached key does not bracket curTime.
+            bool cachedKeyValid = curKey.index != -1 && curKey.key != null
+                && curTime >= curKey.key.FrameSecond
+                && (curKey.nextKey == null || curTime < curKey.nextKey.FrameSecond);
+
+            if (!cachedKeyValid || Director.instance.sliderControl.is_Touched)
             {
                 FindTimelineKeyCurrent(out curKey, keys, curTime);
             }

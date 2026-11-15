@@ -1779,6 +1779,9 @@ public class UmaContainerCharacter : UmaContainer
     {
         if (Renderers == null) return;
         if (_footLightBlock == null) _footLightBlock = new MaterialPropertyBlock();
+        // The game clamps the height to a 1e-6 floor before writing it (SetFootLightParameter, .rdata float
+        // 0x7ffd5a640d34 = 9.99999997e-7), so the shader never divides by zero.
+        heightMax = Mathf.Max(heightMax, 1e-6f);
         float rootY = transform.position.y;
         Vector4 param = new Vector4(rootY, heightMax, easing, blendMode);
         foreach (var renderer in Renderers)

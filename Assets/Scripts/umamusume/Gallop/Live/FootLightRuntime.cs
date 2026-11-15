@@ -209,7 +209,8 @@ namespace Gallop.Live
             for (int i = 0; i < _bindings.Count; i++)
             {
                 Binding binding = _bindings[i];
-                bool active = binding.character != null && binding.character.gameObject.activeInHierarchy;
+                bool active = binding.character != null && binding.character.gameObject.activeInHierarchy
+                    && (binding.container == null || binding.container.LiveLocator == null || binding.container.LiveLocator.liveCharaVisible);
                 if (binding.spotlight != null && binding.spotlight.gameObject.activeSelf != active)
                     binding.spotlight.gameObject.SetActive(active);
                 // OnLiveCharaVisible: foot shadows follow the character visibility.

@@ -18,6 +18,17 @@ Newest entries go at the top. Everything in this file is written in English.
 
 ## Entries
 
+- 15 November 2026
+  - Live: General (found on 1195)
+  - Frame: General
+  - Description: `FollowSpotLightController.cs` (per-character spotlight pool) has viewer-only logic with no counterpart in the game's
+    `Gallop.Live.FollowSpotLightController`: `ShadowPowerThreshold = 0.5` and `IsShadowMode` decide when the character's shadow is drawn.
+    The game's rule for that shadow has to be found (code_JP) and ported instead. Also, the viewer's `materials.csv` exporter does not
+    record the MaterialPropertyBlock of these renderers (`_MulColor0` / `_ColorPower`), which makes comparisons misleading.
+  - Tried:
+    - Only the sortingOrder 110 of `FollowSpotLightController.Initialize` (RVA 0x7ffd5923bbd0) was ported (dark floor of live 1195 fixed).
+    - Details: Logs/261115-Live 1195 floor dark BgColor1 blink sync.md
+
 - 10 November 2026
   - Live: 1156 (checked there; likely General)
   - Frame: General
