@@ -448,6 +448,10 @@ namespace Gallop.Live.Cutt
         [SerializeField] public List<LiveTimelineVolumeLightData> volumeLightKeys;
         [SerializeField] public List<LiveTimelineLightShaftsData> lightShaftsKeysLine;
 
+        // Per-character motion time offset ("motion noise"). Native worksheet offset 0x1C8.
+        [SerializeField] public LiveTimelineKeyCharaMotionNoiseDataList charaMotionNoiseKeys;
+        // Audience objects of the stage (pfb_env_live_cmn_audience*_toon). Native worksheet offset 0xD0.
+        [SerializeField] public List<LiveTimelineAudienceData> audienceList;
         [SerializeField] public List<LiveTimelineCharaMotSeqData> charaMotSeqList;
         [SerializeField] public List<LiveTimelineAnimationData> animationList = new List<LiveTimelineAnimationData>();
         // Colisiones de entorno del cutt (suelo/atrezzo) que se aplican al pelo, la ropa y la cola.

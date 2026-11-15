@@ -587,7 +587,15 @@ namespace Gallop.Live.Cutt
                 sheet.InitializeLightProjection(this);
                 sheet.InitializeProjector(this);
                 sheet.InitializeCharaCollision(this);
+                var noiseKeys = sheet.charaMotionNoiseKeys != null ? sheet.charaMotionNoiseKeys.thisList : null;
+                if (noiseKeys != null)
+                {
+                    for (int i = 0; i < noiseKeys.Count; i++)
+                        noiseKeys[i]?.OnLoad(this);
+                }
             }
+            // Native LiveTimelineControl.Initialize (0x7ffd592c2370) calls InitCharaMotionNoise right after BeginPublish.
+            InitCharaMotionNoise();
         }
 
         private static Transform EnsureMotionTransform(Transform parent, string name)
@@ -864,10 +872,223 @@ namespace Gallop.Live.Cutt
 
         public void AlterUpdate_CharaMotionSequence(float liveTime)
         {
-            foreach (var motion in _motionSequenceArray)
+            var sheet = data.worksheetList[0];
+            // Native AlterUpdate_CharaMotionSequence (0x7ffd5929bca0): the noise update runs first and its per-character
+            // result (_charaMotionNoiseAddTimeArray) is handed to MotionSequence.AlterUpdate of each character.
+            AlterUpdate_CharaMotionNoise(sheet, _currentFrame);
+            for (int i = 0; i < _motionSequenceArray.Length; i++)
             {
-                motion.AlterUpdate(liveTime, data.worksheetList[0].timescaleKeys);
+                _motionSequenceArray[i].AlterUpdate(liveTime, sheet.timescaleKeys, _charaMotionNoiseAddTimeArray[i]);
             }
+        }
+
+        // --------------------------------------------------------------------------------------
+        // Per-character motion time offset (track CharaMotionNoise, type 27). Port of
+        // LiveTimelineControl.AlterUpdate_CharaMotionNoise (0x7ffd5929bc60) with its Basic (0x7ffd5929b580) and
+        // Detail (0x7ffd5929b930) variants, InitCharaMotionNoise (0x7ffd592c1820) and GetBaseNoiseArray (0x7ffd592bf430).
+        // UpdateCharaMotionNoiseCySpring (0x7ffd592ca3f0), called by both variants, drives the CySpring (tail, skirt)
+        // per character.
+        // --------------------------------------------------------------------------------------
+
+        private const int CharaMotionNoiseMax = LiveTimelineKeyCharaMotionNoiseData.CharaMax;
+        private const float TwoPi = 6.28318530718f;
+
+        // ctor defaults of the native fields (0x34..0x48).
+        private float _sideChrMotNoiseBaseBias;                      // 0x34
+        private float _sideChrMotNoiseRange = 0.07f;                 // 0x38
+        private float _sideChrMotNoiseFrequency = 10f;               // 0x3C
+        private float _backChrMotNoiseBaseBias;                      // 0x40
+        private float _backChrMotNoiseRange = 0.0875f;               // 0x44
+        private float _backChrMotNoiseFrequency = 10f;               // 0x48
+        private readonly float[] _charaMotNoiseInitTimeArray = new float[CharaMotionNoiseMax];   // 0x50
+        private readonly float[] _charaMotNoiseTimeArray = new float[CharaMotionNoiseMax];       // 0x58
+        private readonly float[] _charaMotionNoiseAddTimeArray = new float[CharaMotionNoiseMax]; // 0x60
+
+        // GetBaseNoiseArray: i / (n - 1), then a Fisher-Yates shuffle of elements 1..n-1 (element 0 stays 0).
+        // The phases are random per session in the game too.
+        private static float[] GetBaseNoiseArray()
+        {
+            var array = new float[CharaMotionNoiseMax];
+            for (int i = 0; i < array.Length; i++)
+                array[i] = (float)i / (float)(array.Length - 1);
+            for (int i = array.Length - 1; i > 1; i--)
+            {
+                int j = UnityEngine.Random.Range(1, i + 1);
+                float tmp = array[i];
+                array[i] = array[j];
+                array[j] = tmp;
+            }
+            return array;
+        }
+
+        // InitCharaMotionNoise: index 0 -> 0, indices 1 and 2 -> side frequency, the rest -> back frequency
+        // (as in the native code, even though the update below uses the side parameters for indices 1..4).
+        private void InitCharaMotionNoise()
+        {
+            float[] baseArray = GetBaseNoiseArray();
+            for (int i = 0; i < CharaMotionNoiseMax; i++)
+            {
+                float factor;
+                if (i == 0) factor = 0f;
+                else if (i == 1 || i == 2) factor = _sideChrMotNoiseFrequency;
+                else factor = _backChrMotNoiseFrequency;
+                _charaMotNoiseInitTimeArray[i] = factor * baseArray[i];
+                _charaMotNoiseTimeArray[i] = _charaMotNoiseInitTimeArray[i];
+            }
+        }
+
+        private void AlterUpdate_CharaMotionNoise(LiveTimelineWorkSheet sheet, float frame)
+        {
+            var list = sheet != null ? sheet.charaMotionNoiseKeys : null;
+            if (list == null)
+            {
+                // Native code dereferences the list unconditionally; a cutt without the track has no offset.
+                System.Array.Clear(_charaMotionNoiseAddTimeArray, 0, _charaMotionNoiseAddTimeArray.Length);
+                return;
+            }
+
+            list.FindKey(out FindKeyResult found, out FindKeyResult _, frame);
+            var key = found.key as LiveTimelineKeyCharaMotionNoiseData;
+            if (!list.UsePerItemSettingsForAll)
+                AlterUpdate_CharaMotionNoise_Basic(key);
+            else
+                AlterUpdate_CharaMotionNoise_Detail(list, key);
+        }
+
+        private void AlterUpdate_CharaMotionNoise_Basic(LiveTimelineKeyCharaMotionNoiseData key)
+        {
+            bool enabled = true;
+            bool left = true, right = true, fourth = true, fifth = true;
+            bool negativeCheck = true;
+            if (key != null)
+            {
+                enabled = !key.IsEnableAttribute(LiveTimelineKeyCharaMotionNoiseData.kAttrDisableAll);
+                left = key.IsEnableAttribute(LiveTimelineKeyCharaMotionNoiseData.kAttrEnableLeft);
+                right = key.IsEnableAttribute(LiveTimelineKeyCharaMotionNoiseData.kAttrEnableRight);
+                fourth = key.IsEnableAttribute(LiveTimelineKeyCharaMotionNoiseData.kAttrEnable4th);
+                fifth = key.IsEnableAttribute(LiveTimelineKeyCharaMotionNoiseData.kAttrEnable5th);
+                negativeCheck = true;
+                if (enabled)
+                {
+                    if (key.sideChrMotNoiseBaseBias != _sideChrMotNoiseBaseBias ||
+                        key.sideChrMotNoiseFrequency != _sideChrMotNoiseFrequency ||
+                        key.backChrMotNoiseBaseBias != _backChrMotNoiseBaseBias ||
+                        key.backChrMotNoiseFrequency != _backChrMotNoiseFrequency)
+                    {
+                        _sideChrMotNoiseBaseBias = key.sideChrMotNoiseBaseBias;
+                        _sideChrMotNoiseFrequency = key.sideChrMotNoiseFrequency;
+                        _backChrMotNoiseBaseBias = key.backChrMotNoiseBaseBias;
+                        _backChrMotNoiseFrequency = key.backChrMotNoiseFrequency;
+                        InitCharaMotionNoise();
+                    }
+                    _sideChrMotNoiseRange = key.sideChrMotNoiseRange;
+                    _backChrMotNoiseRange = key.backChrMotNoiseRange;
+                    negativeCheck = key.isNegativeCheck;
+                }
+            }
+
+            UpdateCharaMotionNoiseCySpring(key, false);
+
+            for (int i = 0; i < CharaMotionNoiseMax; i++)
+            {
+                float value = 0f;
+                if (enabled && i != 0)
+                {
+                    _charaMotNoiseTimeArray[i] += _deltaTime;
+                    float bias = _sideChrMotNoiseBaseBias;
+                    float range = _sideChrMotNoiseRange;
+                    float frequency = _sideChrMotNoiseFrequency;
+                    bool skip = false;
+                    if (i == 1) skip = !left;
+                    else if (i == 2) skip = !right;
+                    else if (i == 3) skip = !fourth;
+                    else if (i == 4) skip = !fifth;
+                    else
+                    {
+                        bias = _backChrMotNoiseBaseBias;
+                        range = _backChrMotNoiseRange;
+                        frequency = _backChrMotNoiseFrequency;
+                    }
+
+                    if (!skip)
+                    {
+                        value = Mathf.Cos(TwoPi / frequency * _charaMotNoiseTimeArray[i]) * range;
+                        if (negativeCheck && value < 0f)
+                            value *= -1f;
+                        value = bias + 0f + value;
+                        if (value < 0f)
+                            value = 0f;
+                    }
+                }
+                _charaMotionNoiseAddTimeArray[i] = value;
+            }
+        }
+
+        // UpdateCharaMotionNoiseCySpring (0x7ffd592ca3f0): for each character, tail / skirt reflect flags and the gravity
+        // / skirt-collision override of the current key (a null key means everything enabled and no override).
+        private void UpdateCharaMotionNoiseCySpring(LiveTimelineKeyCharaMotionNoiseData key, bool usePerItem)
+        {
+            if (_liveCharactorLocators == null)
+                return;
+
+            for (int i = 0; i < CharaMotionNoiseMax && i < _liveCharactorLocators.Length; i++)
+            {
+                var chara = (_liveCharactorLocators[i] as LiveTimelineCharaLocator)?.UmaContainer;
+                if (chara == null)
+                    continue;
+
+                bool tail = true, skirt = true;
+                var gravityType = LiveTimelineKeyCharaMotionNoiseData.GravityType.None;
+                if (key != null)
+                {
+                    tail = key.GetEnableCySpringTail(i, usePerItem);
+                    skirt = key.GetEnableCySpringSkirt(i, usePerItem);
+                    gravityType = key.cySpringGravityScaleType[i];
+                }
+
+                chara.ApplyLiveCharaMotionNoiseCySpring(tail, skirt, gravityType,
+                    key != null ? key.cySpringGravityScaleBoneName[i] : null,
+                    key != null ? key.cySpringGravityScale[i] : 1f,
+                    key != null ? key.cySpringExpressionKneeCollisionRadius[i] : 0f,
+                    key != null ? key.cySpringExpressionAnkleCollisionRadius[i] : 0f,
+                    key != null ? key.cySpringExpressionInfluenceAngle[i] : 0f,
+                    key != null ? key.cySpringExpressionInfluenceMaxAngle[i] : 0f);
+            }
+        }
+
+        private void AlterUpdate_CharaMotionNoise_Detail(LiveTimelineKeyCharaMotionNoiseDataList list, LiveTimelineKeyCharaMotionNoiseData key)
+        {
+            if (key == null)
+            {
+                UpdateCharaMotionNoiseCySpring(null, true);
+                return;
+            }
+
+            if (!list.IsInitializedOffsetTime)
+            {
+                float factor = list.OffsetTimeFactor;
+                float[] baseArray = GetBaseNoiseArray();
+                for (int i = 0; i < CharaMotionNoiseMax; i++)
+                {
+                    _charaMotNoiseInitTimeArray[i] = factor * baseArray[i];
+                    _charaMotNoiseTimeArray[i] = _charaMotNoiseInitTimeArray[i];
+                }
+                list.IsInitializedOffsetTime = true;
+            }
+
+            for (int i = 0; i < CharaMotionNoiseMax; i++)
+            {
+                float value = 0f;
+                if (key.TryGetNoiseParam(i, out float bias, out float range, out float frequency))
+                {
+                    _charaMotNoiseTimeArray[i] += _deltaTime;
+                    value = (Mathf.Cos(TwoPi / frequency * _charaMotNoiseTimeArray[i]) + 1f) * range + bias;
+                    if (value <= 0f)
+                        value = 0f;
+                }
+                _charaMotionNoiseAddTimeArray[i] = value;
+            }
+            UpdateCharaMotionNoiseCySpring(key, true);
         }
 
         // --------------------------------------------------------------------------------------

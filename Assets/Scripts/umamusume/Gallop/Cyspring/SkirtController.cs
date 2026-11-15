@@ -187,6 +187,12 @@ namespace Gallop
             InitializeSkirtData();
             InitializeNativeWorkingStaticFlags();
 
+            // Native Create (0x7ffd58e1b020) copies the four collider values into the native arg at its end.
+            NativeArg.KneeColliderRadius = _kneeColliderRadius;
+            NativeArg.AnkleColliderRadius = _ankleColliderRadius;
+            NativeArg.InfluenceAngle = _influenceAngle;
+            NativeArg.InfluenceMaxAngle = _influenceMaxAngle;
+
             // La referencia de reposo (Init*) se captura AQUI, en el bind, igual que hace la
             // fisica de CySpring: si se capturase en el primer frame de juego la pose podria ser
             // cualquiera (los personajes que entran a mitad de cancion ya estan girados/posados).
@@ -360,12 +366,27 @@ namespace Gallop
 
                 float ankle = (_defaultAnkleColliderRadius * ModelScale) * 1000.0f;
                 _ankleColliderRadius = Gallop.Math.Floor(ankle) / 1000.0f;
+
+                // Native UpdateScale (0x7ffd58e1bd00): only the radii, only when the collision is scaled, and no
+                // _UpdateSkirtArg call.
+                NativeArg.KneeColliderRadius = _kneeColliderRadius;
+                NativeArg.AnkleColliderRadius = _ankleColliderRadius;
             }
+        }
 
-            NativeArg.KneeColliderRadius = _kneeColliderRadius;
-            NativeArg.AnkleColliderRadius = _ankleColliderRadius;
+        // LiveModelController.Set / Mul / Add / ResetCySpringSkirt*FromCutt write the four native arg values directly.
+        // The caller passes the final values (Mul / Add combine them with the controller's own radii first).
+        public void SetNativeArgFromCutt(float knee, float ankle, float influenceAngle, float influenceMaxAngle)
+        {
+            NativeArg.KneeColliderRadius = knee;
+            NativeArg.AnkleColliderRadius = ankle;
+            NativeArg.InfluenceAngle = influenceAngle;
+            NativeArg.InfluenceMaxAngle = influenceMaxAngle;
+        }
 
-            _UpdateSkirtArg();
+        public void ResetNativeArgFromCutt()
+        {
+            SetNativeArgFromCutt(_kneeColliderRadius, _ankleColliderRadius, _influenceAngle, _influenceMaxAngle);
         }
 
         public void UpdateSkirtArgForCySpring()
@@ -403,11 +424,9 @@ namespace Gallop
             if (_ankleR != null)
                 NativeArg.AnkleRPos = _ankleR.position;
 
-            NativeArg.KneeColliderRadius = _kneeColliderRadius;
-            NativeArg.AnkleColliderRadius = _ankleColliderRadius;
-
-            NativeArg.InfluenceAngle = _influenceAngle;
-            NativeArg.InfluenceMaxAngle = _influenceMaxAngle;
+            // The native _UpdateSkirtArg (0x7ffd58e1c4d0) does not write the radii / influence angles: they are set in
+            // Create and UpdateScale (from the controller fields) and overridden by the live cutt
+            // (LiveModelController.*CySpring*FromCutt), so they must not be refreshed here.
 
             if (_skirtDataArray == null)
                 return;

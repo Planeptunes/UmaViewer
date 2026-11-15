@@ -1085,6 +1085,133 @@ namespace Gallop
                 SetEnableCySpringBone(boneEnables[i], boneNames[i], false);
         }
 
+        // ---- Live cutt overrides (track CharaMotionNoise): LiveModelController.*FromCutt ----
+        // State of LiveModelController 0x880..0x89C. Constructor values: scale 1, add 0, set -1, reset true, name "".
+        private readonly List<CySpringBoneBase> _cuttGravityTargets = new List<CySpringBoneBase>();
+        private string _cuttGravityTargetName = string.Empty;
+        private float _cuttGravityScale = 1f;
+        private float _cuttGravityAdd;
+        private float _cuttGravityValue = -1f;
+        private bool _cuttGravityReset = true;
+
+        // SetEnableCySpringFromCutt (0x7ffd59b3a910): tail root and skirt roots reflect their result or not.
+        public void SetEnableCySpringFromCutt(bool tail, bool skirt)
+        {
+            if (_springArray == null)
+                return;
+
+            CySpringRootBone[] tailRoots = FindRootSpring(TailRootName, Parts.Tail, false);
+            if (tailRoots.Length > 0)
+                tailRoots[0]?.SetShouldReflectCalcResult(tail);
+            for (int i = 0; i < SkirtRootPrefixes.Length; i++)
+                SetRootsReflect(FindRootSpring(SkirtRootPrefixes[i], Parts.Body, true), skirt);
+        }
+
+        // Gallop.Math.IsFloatEqualLight (0x7ffd563cae80): |a - b| <= 1e-6.
+        private static bool IsFloatEqualLightNative(float a, float b)
+        {
+            const float epsilon = 1e-6f;
+            return !(a < b - epsilon) && a <= b + epsilon;
+        }
+
+        // CollectGravityScaleTargetBone (0x7ffd59b35aa0) with isIncludeRoot = false: every spring bone of the Body, Head
+        // and Tail parts whose name contains the target name (IsCySpringGravityTarget, 0x7ffd59b38110), root bones removed.
+        private void CollectCuttGravityTargets(string targetName)
+        {
+            _cuttGravityTargetName = targetName;
+            _cuttGravityTargets.Clear();
+            Func<string, bool> contains = boneName => boneName.Contains(_cuttGravityTargetName);
+            FindSpring(_cuttGravityTargets, contains, Parts.Body, false);
+            FindSpring(_cuttGravityTargets, contains, Parts.Head, false);
+            FindSpring(_cuttGravityTargets, contains, Parts.Tail, false);
+            for (int i = _cuttGravityTargets.Count - 1; i >= 0; i--)
+            {
+                if (_cuttGravityTargets[i] is CySpringRootBone)
+                    _cuttGravityTargets.RemoveAt(i);
+            }
+        }
+
+        // Mul / Add / SetCySpringGravityValueFromCutt (0x7ffd59b389e0 / 0x7ffd59b349b0 / 0x7ffd59b3a690): same body, a
+        // different stored value (0x890 / 0x894 / 0x898) and a different bone call.
+        private void ApplyCuttGravity(string targetName, float value, ref float stored, Action<CySpringBoneBase, float> apply)
+        {
+            if (string.IsNullOrEmpty(targetName))
+                return;
+
+            bool sameName = _cuttGravityTargetName == targetName;
+            if (sameName && IsFloatEqualLightNative(stored, value))
+                return;
+
+            if (!sameName)
+                CollectCuttGravityTargets(targetName);
+            for (int i = 0; i < _cuttGravityTargets.Count; i++)
+                apply(_cuttGravityTargets[i], value);
+            stored = value;
+            _cuttGravityReset = false;
+        }
+
+        public void MulCySpringGravityFromCutt(string targetName, float scale)
+        {
+            ApplyCuttGravity(targetName, scale, ref _cuttGravityScale, (bone, v) => bone.MulGravityScale(v));
+        }
+
+        public void AddCySpringGravityValueFromCutt(string targetName, float value)
+        {
+            ApplyCuttGravity(targetName, value, ref _cuttGravityAdd, (bone, v) => bone.AddGravityValue(v));
+        }
+
+        public void SetCySpringGravityValueFromCutt(string targetName, float value)
+        {
+            ApplyCuttGravity(targetName, value, ref _cuttGravityValue, (bone, v) => bone.SetGravityValue(v));
+        }
+
+        // ResetCySpringGravityValueFromCutt (0x7ffd59b3a1a0).
+        public void ResetCySpringGravityValueFromCutt()
+        {
+            if (_cuttGravityReset)
+                return;
+            _cuttGravityReset = true;
+            _cuttGravityValue = -1f;
+            _cuttGravityScale = 1f;
+            _cuttGravityAdd = 0f;
+            for (int i = 0; i < _cuttGravityTargets.Count; i++)
+                _cuttGravityTargets[i].MulGravityScale(_cuttGravityScale);
+        }
+
+        // *CySpringSkirt*FromCutt (0x7ffd59b38b40 / 0x7ffd59b34b10 / 0x7ffd59b3a7f0 / Reset 0x7ffd59b3a270): only with a
+        // skirt controller; Mul / Add / Set also return when the gravity target list is empty (native checks that list).
+        public void MulCySpringSkirtFromCutt(float knee, float ankle, float influenceAngle, float influenceMaxAngle)
+        {
+            if (_skirtController == null || _cuttGravityTargets.Count == 0)
+                return;
+            _skirtController.SetNativeArgFromCutt(knee * _skirtController.KneeColliderRadius,
+                ankle * _skirtController.AnkleColliderRadius, influenceAngle * _skirtController.InfluenceAngle,
+                influenceMaxAngle * _skirtController.InfluenceMaxAngle);
+        }
+
+        public void AddCySpringSkirtValueFromCutt(float knee, float ankle, float influenceAngle, float influenceMaxAngle)
+        {
+            if (_skirtController == null || _cuttGravityTargets.Count == 0)
+                return;
+            _skirtController.SetNativeArgFromCutt(knee + _skirtController.KneeColliderRadius,
+                ankle + _skirtController.AnkleColliderRadius, influenceAngle + _skirtController.InfluenceAngle,
+                influenceMaxAngle + _skirtController.InfluenceMaxAngle);
+        }
+
+        public void SetCySpringSkirtValueFromCutt(float knee, float ankle, float influenceAngle, float influenceMaxAngle)
+        {
+            if (_skirtController == null || _cuttGravityTargets.Count == 0)
+                return;
+            _skirtController.SetNativeArgFromCutt(knee, ankle, influenceAngle, influenceMaxAngle);
+        }
+
+        public void ResetCySpringSkirtValueFromCutt()
+        {
+            if (_skirtController == null)
+                return;
+            _skirtController.ResetNativeArgFromCutt();
+        }
+
         private static void SetRootsReflect(CySpringRootBone[] roots, bool enable)
         {
             for (int i = 0; i < roots.Length; i++)

@@ -1400,6 +1400,38 @@ public class UmaContainerCharacter : UmaContainer
         _cySpringController.ApplyCharaNode(key, head, ear, body, tail, skirt, boneNames, boneEnables);
     }
 
+    // Pista CharaMotionNoise del live (LiveTimelineControl.UpdateCharaMotionNoiseCySpring, por personaje y frame):
+    // cola / falda reflejan o no su resultado y la gravedad / colision de falda se escalan, suman o fijan.
+    public void ApplyLiveCharaMotionNoiseCySpring(bool tail, bool skirt,
+        Gallop.Live.Cutt.LiveTimelineKeyCharaMotionNoiseData.GravityType gravityType,
+        string gravityBoneName, float gravityScale, float knee, float ankle, float influenceAngle, float influenceMaxAngle)
+    {
+        if (IsMini || _cySpringController == null)
+            return;
+
+        var c = _cySpringController;
+        c.SetEnableCySpringFromCutt(tail, skirt);
+        switch (gravityType)
+        {
+            case Gallop.Live.Cutt.LiveTimelineKeyCharaMotionNoiseData.GravityType.None:
+                c.ResetCySpringGravityValueFromCutt();
+                c.ResetCySpringSkirtValueFromCutt();
+                break;
+            case Gallop.Live.Cutt.LiveTimelineKeyCharaMotionNoiseData.GravityType.Scale:
+                c.MulCySpringGravityFromCutt(gravityBoneName, gravityScale);
+                c.MulCySpringSkirtFromCutt(knee, ankle, influenceAngle, influenceMaxAngle);
+                break;
+            case Gallop.Live.Cutt.LiveTimelineKeyCharaMotionNoiseData.GravityType.AddValue:
+                c.AddCySpringGravityValueFromCutt(gravityBoneName, gravityScale);
+                c.AddCySpringSkirtValueFromCutt(knee, ankle, influenceAngle, influenceMaxAngle);
+                break;
+            case Gallop.Live.Cutt.LiveTimelineKeyCharaMotionNoiseData.GravityType.SetValue:
+                c.SetCySpringGravityValueFromCutt(gravityBoneName, gravityScale);
+                c.SetCySpringSkirtValueFromCutt(knee, ankle, influenceAngle, influenceMaxAngle);
+                break;
+        }
+    }
+
     public void ConfigureLivePhysics()
     {
         if (!IsLive || IsMini || cySpringDataContainers == null) return;
