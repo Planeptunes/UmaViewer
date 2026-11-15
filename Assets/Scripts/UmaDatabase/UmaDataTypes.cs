@@ -170,6 +170,37 @@ public class LiveEntry
         }
         return _mirrorScanLightTextureIds;
     }
+
+    public struct CharacterExpansion
+    {
+        public int SourceSlot;   // slot (0-based) whose character is copied
+        public int DressId;      // dress_data id the copy wears (forced by the live)
+    }
+
+    private List<CharacterExpansion> _characterExpansions;
+
+    // `livesettings` row type 13 (Gallop.Live.Master3dLive.LiveSettings.DataType.CharacterExpansion): the extra
+    // characters of the song. Row layout: [index, 13, source slot, dress id, ...]. Expansion j becomes slot
+    // MemberCount + j (Live3DSettings.ApplyCharaExpansion copies the source character and applies the dress).
+    // Live 1092: rows 13|0..5|6 -> six copies of slots 0-5 in dress 6 (body 0003_01, tracksuit); probe confirmed bdy0003_01.
+    // The column layout is read from the decompile (CharacterExpansionArray / dress label list); the optional
+    // colour index of the label is not used.
+    public List<CharacterExpansion> GetCharacterExpansions()
+    {
+        if (_characterExpansions != null) return _characterExpansions;
+        _characterExpansions = new List<CharacterExpansion>();
+        if (LiveSettings == null) return _characterExpansions;
+        foreach (var row in LiveSettings)
+        {
+            if (row == null || row.Length <= 3 || row[1].Trim() != "13") continue;
+            if (int.TryParse(row[2].Trim(), System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture, out int source) &&
+                int.TryParse(row[3].Trim(), System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture, out int dress))
+                _characterExpansions.Add(new CharacterExpansion { SourceSlot = source, DressId = dress });
+        }
+        return _characterExpansions;
+    }
 }
 
 public class PartEntry

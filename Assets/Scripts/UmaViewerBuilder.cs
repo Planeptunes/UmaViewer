@@ -937,6 +937,20 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
 
         bool requireStage = UI.isRequireStage;
         int liveMode = UI.LiveMode;
+
+        // Extra characters of the song (livesettings row 13), built like Live3DSettings.ApplyCharaExpansion: copy of the source slot in the
+        // dress the live forces. Appended before the resources are registered so their bodies are preloaded. Full mode only: the
+        // simple mode lists those slots itself (LiveAutoSelection.ForceCharacterExpansions).
+        if (liveMode == 1 && liveCharacters.Count == live.MemberCount)
+        {
+            int expansionCount = live.GetCharacterExpansions().Count;
+            for (int i = 0; i < expansionCount; i++)
+            {
+                var extra = LiveAutoSelection.CreateExpansionCharacter(Main, live, liveCharacters, live.MemberCount + i, UI.CostumeIconDefault);
+                if (extra == null) break;
+                liveCharacters.Add(extra);
+            }
+        }
         // Opt-in diagnostics begin before root registration, then follow the
         // exact dependency-expanded request count shown by the progress UI.
         LiveRuntimeDiagnostics.BeginPreload(live, liveCharacters, requireStage);

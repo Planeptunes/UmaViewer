@@ -14,9 +14,18 @@ public static class LiveAutoSelection
         public int BodyTypeSub;
     }
 
-    // Existing character, body costume and head costume choices are never replaced.
+    // Empty slots get defaults (existing character, body costume and head costume choices are not replaced), then the
+    // extra characters of the song are forced like the game does (Live3DSettings.ApplyCharaExpansion).
     public static bool FillMissing(UmaViewerMain main, LiveEntry live,
         IList<LiveCharacterSelect> slots, Sprite fallbackIcon = null)
+    {
+        if (!FillEmptySlots(main, live, slots, fallbackIcon)) return false;
+        ForceCharacterExpansions(main, live, slots, fallbackIcon);
+        return true;
+    }
+
+    private static bool FillEmptySlots(UmaViewerMain main, LiveEntry live,
+        IList<LiveCharacterSelect> slots, Sprite fallbackIcon)
     {
         if (main == null || live == null || slots == null) return false;
         bool needsDefaults = false;
@@ -42,8 +51,9 @@ public static class LiveAutoSelection
         Shuffle(singers);
         Shuffle(others);
 
-        foreach (var slot in slots)
+        for (int index = 0; index < slots.Count; index++)
         {
+            var slot = slots[index];
             if (slot == null) continue;
             bool missingCharacter = slot.CharaEntry == null || slot.CharaEntry.Id <= 0;
             bool missingCostume = string.IsNullOrEmpty(slot.CostumeId);
@@ -76,6 +86,111 @@ public static class LiveAutoSelection
                 slot.CostumeImage.sprite = selected.Icon;
         }
         return true;
+    }
+
+    // Full mode keeps only MemberCount UI slots, so the extra characters do not exist there as slots: they are appended to the load
+    // data (UmaViewerBuilder.LoadLive) as the game builds them. Returns null when `index` is not an expansion of this live, its
+    // source is missing or its dress has no body for that character (the caller then keeps the old identity cycling).
+    public static LiveCharacterLoadData CreateExpansionCharacter(UmaViewerMain main, LiveEntry live,
+        IList<LiveCharacterLoadData> characters, int index, Sprite fallbackIcon)
+    {
+        if (main == null || live == null || characters == null) return null;
+        var expansions = live.GetCharacterExpansions();
+        int e = index - live.MemberCount;
+        if (e < 0 || e >= expansions.Count) return null;
+        int sourceIndex = expansions[e].SourceSlot;
+        if (sourceIndex < 0 || sourceIndex >= characters.Count || sourceIndex >= index) return null;
+        var source = characters[sourceIndex];
+        if (source == null || source.CharaEntry == null || source.CharaEntry.Id <= 0 || source.CharaEntry.IsMob) return null;
+        if (!TryGetDressCostume(main, source.CharaEntry, expansions[e].DressId, fallbackIcon, out string costumeId, out Sprite _))
+            return null;
+        return new LiveCharacterLoadData
+        {
+            CharaEntry = source.CharaEntry,
+            BodyCharaEntry = null,
+            CostumeId = costumeId,
+            HeadCostumeId = "",
+            CostumeColorIndex = 0
+        };
+    }
+
+    // Live3DSettings.ApplyCharaExpansion (probe 1794756197, live 1092): extra character j sits at slot MemberCount + j and is a
+    // copy of slot CharacterExpansionArray[j] (livesettings row 13, column 2) wearing the live's dress (column 3; the game
+    // gives it colour -1, head -1). It overrides whatever the slot had, as in the game; the source slot is not changed.
+    // A copy whose dress has no body for that character is left as it was.
+    private static void ForceCharacterExpansions(UmaViewerMain main, LiveEntry live,
+        IList<LiveCharacterSelect> slots, Sprite fallbackIcon)
+    {
+        if (main == null || live == null || slots == null) return;
+        var expansions = live.GetCharacterExpansions();
+        for (int e = 0; e < expansions.Count; e++)
+        {
+            int index = live.MemberCount + e;
+            if (index >= slots.Count) break;
+            var slot = slots[index];
+            int sourceIndex = expansions[e].SourceSlot;
+            if (slot == null || sourceIndex < 0 || sourceIndex >= index) continue;
+            var source = slots[sourceIndex];
+            if (source == null || source.CharaEntry == null || source.CharaEntry.Id <= 0 || source.CharaEntry.IsMob) continue;
+            if (!TryGetDressCostume(main, source.CharaEntry, expansions[e].DressId, fallbackIcon,
+                    out string costumeId, out Sprite icon)) continue;
+
+            slot.CharaEntry = source.CharaEntry;
+            slot.BodyCharaEntry = null;
+            slot.CostumeId = costumeId;
+            slot.HeadCostumeId = "";
+            slot.CostumeColorIndex = 0;
+            if (slot.CharaImage != null)
+            {
+                slot.CharaImage.enabled = true;
+                slot.CharaImage.sprite = slot.CharaEntry.Icon;
+            }
+            if (slot.CostumeImage != null) slot.CostumeImage.sprite = icon;
+        }
+    }
+
+    // dress_data id -> costume id the viewer loads. Common dresses (chara_id 0) are "<body_type:0000>_<sub:00>_<variant:00>"
+    // (first variant that has a body for this character); character-owned dresses use the body_type_sub, as in
+    // GetWinningCostumes.
+    private static bool TryGetDressCostume(UmaViewerMain main, CharaEntry character, int dressId,
+        Sprite fallbackIcon, out string costumeId, out Sprite icon)
+    {
+        costumeId = null;
+        icon = fallbackIcon;
+        var rows = UmaDatabaseController.Instance.DressData;
+        if (rows == null) return false;
+        foreach (DataRow row in rows)
+        {
+            if (Convert.ToInt32(row["id"]) != dressId) continue;
+            int owner = Convert.ToInt32(row["chara_id"]);
+            int bodyType = Convert.ToInt32(row["body_type"]);
+            int sub = Convert.ToInt32(row["body_type_sub"]);
+            if (owner > 0)
+            {
+                if (owner != character.Id || Convert.ToInt32(row["costume_type"]) != 1) return false;
+                string owned = sub.ToString("D2", CultureInfo.InvariantCulture);
+                if (!HasBody(main, character, owned)) return false;
+                costumeId = owned;
+            }
+            else
+            {
+                for (int variant = 0; variant < 10 && costumeId == null; variant++)
+                {
+                    string common = string.Format(CultureInfo.InvariantCulture, "{0:0000}_{1:00}_{2:00}", bodyType, sub, variant);
+                    if (HasBody(main, character, common)) costumeId = common;
+                }
+                if (costumeId == null) return false;
+            }
+            foreach (var costume in main.Costumes)
+            {
+                if (owner > 0 ? (costume.CharaId != owner || costume.BodyTypeSub != sub)
+                              : (costume.BodyType != bodyType || costume.BodyTypeSub != sub)) continue;
+                if (costume.Icon != null) icon = costume.Icon;
+                break;
+            }
+            return true;
+        }
+        return false;
     }
 
     private static Dictionary<int, Candidate> GetWinningCostumes(UmaViewerMain main, Sprite fallbackIcon)
