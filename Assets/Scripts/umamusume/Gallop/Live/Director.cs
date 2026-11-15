@@ -43,8 +43,6 @@ namespace Gallop.Live
         private Spotlight3dRuntime _spotlightRuntime;
         private MaterialPropertyBlock _characterLightingBlock;
         private Light _liveDirectionalLight;
-        // Elevacion minima de la luz (caida vertical del vector director): 0.5 = ~30 grados.
-        private const float MinLightDrop = 0.5f;
         private Gallop.RenderPipeline.RecoveredLensFlareController _stageFlares;
         private LightProjectionRuntimeController _lightProjectionController;
         private MirrorScanLightRuntime _mirrorScanLightRuntime;
@@ -608,25 +606,14 @@ namespace Gallop.Live
                         }
                     }
                 }
-                // La orientacion de la luz direccional (la que proyecta la SOMBRA real) la manda la
-                // pista GlobalLight. Sin esto la luz se queda con la rotacion del prefab (~70 grados,
-                // casi vertical) y la sombra sale diminuta. Se limita la elevacion: varias claves
-                // dejan la luz bajo el horizonte y con ella la sombra se estiraria hasta el infinito.
+                // The game never renders a main-light shadow map (probe, Live 1092/1195: MainLightShadowCasterPass
+                // hits = 0 over the whole run); character shadows come only from the AdditionalLight spot lights
+                // (AdditionalLightsShadowCasterPass). The viewer's scene directional light was rotated by GlobalLight
+                // with a clamped elevation just to cast a shadow of its own, which painted black silhouettes of the
+                // characters on the floor. It is kept (it is not a game object we can remove) but casts no shadow.
                 if (_liveDirectionalLight == null) _liveDirectionalLight = ResolveDirectionalLight();
-                if (_liveDirectionalLight != null && updateInfo.lightRotation != Quaternion.identity)
-                {
-                    Vector3 forward = updateInfo.lightRotation * Vector3.forward;
-                    Vector3 flat = new Vector3(forward.x, 0f, forward.z);
-                    if (flat.sqrMagnitude < 1e-4f)
-                        forward = new Vector3(0.35f, -0.6f, 0.35f);
-                    else if (-forward.y < MinLightDrop)
-                    {
-                        flat.Normalize();
-                        float horizontal = Mathf.Sqrt(Mathf.Max(0f, 1f - MinLightDrop * MinLightDrop));
-                        forward = flat * horizontal + Vector3.down * MinLightDrop;
-                    }
-                    _liveDirectionalLight.transform.rotation = Quaternion.LookRotation(forward, Vector3.up);
-                }
+                if (_liveDirectionalLight != null && _liveDirectionalLight.shadows != LightShadows.None)
+                    _liveDirectionalLight.shadows = LightShadows.None;
             };
 
             // (FacialToon) Aplica los parametros de sombreado facial del timeline al personaje
@@ -662,21 +649,23 @@ namespace Gallop.Live
                 // (HASH_CHARA_*); the key's flags only matter for "CharaColor". 1091's "CharaLeft"
                 // keys carry flags = 1, so reading flags painted the centre with the left colours
                 // and left the left position with the material defaults.
-                int charaMask;
+                // UpdateCharaColor1 (0x7ffd5926edf0): for CharaColor the mask is CurrentFlags (0 = everyone) and the next-key
+                // mask NextFlags (0 = everyone); the named tracks use one fixed mask for both.
+                int charaMask, nextCharaMask;
                 switch (updateInfo.TimelineName)
                 {
-                    case "CharaCenter": charaMask = 0x1; break;
-                    case "CharaLeft": charaMask = 0x2; break;
-                    case "CharaRight": charaMask = 0x4; break;
-                    case "CharaBack": charaMask = 0xFFFF8; break;
-                    case "CharaOther": charaMask = 0xFFFFE; break;
+                    case "CharaCenter": charaMask = 0x1; nextCharaMask = charaMask; break;
+                    case "CharaLeft": charaMask = 0x2; nextCharaMask = charaMask; break;
+                    case "CharaRight": charaMask = 0x4; nextCharaMask = charaMask; break;
+                    case "CharaBack": charaMask = 0xFFFF8; nextCharaMask = charaMask; break;
+                    case "CharaOther": charaMask = 0xFFFFE; nextCharaMask = charaMask; break;
                     case "CharaColor":
-                        if (updateInfo.flags == 0) charaMask = 0xFFFFF;
-                        else if (updateInfo.flags < 1) return;
-                        else charaMask = updateInfo.flags;
+                        charaMask = updateInfo.CurrentFlags != 0 ? updateInfo.CurrentFlags : 0xFFFFF;
+                        nextCharaMask = updateInfo.NextFlags != 0 ? updateInfo.NextFlags : 0xFFFFF;
                         break;
                     default: return;
                 }
+                if (charaMask <= 0) return;
                 foreach (var locator in _liveTimelineControl.liveCharactorLocators)
                 {
                     var EFlags = (LiveCharaPositionFlag)charaMask;
@@ -685,11 +674,53 @@ namespace Gallop.Live
                         var container = charaLocator.UmaContainer;
                         if (container)
                         {
+                            // Port of StageController.UpdateCharaColor1 (JP 0x7ffd5926edf0), per character.
+                            // Current colour: the key colour (CurrentColor), replaced by the character's master colour
+                            // for ColorType 1..6 (LiveTimelineDefine.TryGetExtraColor 0x7ffd592e97a0).
+                            int charaIndex = (int)locator.liveCharaStandingPosition;
+                            Color charaColor = updateInfo.CurrentColor;
+                            TryGetExtraColor((int)updateInfo.CurrentColorType, charaIndex, ref charaColor);
+                            // The interpolation to the next key happens HERE in the game (AlterUpdate_BgColor1 leaves the
+                            // colour of a character timeline un-lerped): only when the ratio is > 0; the next colour is the
+                            // current one when the next key syncs to a blink light, and only the characters in NextFlags
+                            // get their own extra colour for the next key (index -1 otherwise).
+                            if (updateInfo.InterpolateRatio > 0f)
+                            {
+                                bool nextHasChara = (nextCharaMask & (1 << charaIndex)) != 0;
+                                Color nextColor = updateInfo.IsSyncBlinkLightNext ? charaColor : updateInfo.NextColor;
+                                TryGetExtraColor((int)updateInfo.NextColorType, nextHasChara ? charaIndex : -1, ref nextColor);
+                                float ratio = Mathf.Clamp01(updateInfo.InterpolateRatio);
+                                charaColor = new Color(
+                                    (nextColor.r - charaColor.r) * ratio + charaColor.r,
+                                    (nextColor.g - charaColor.g) * ratio + charaColor.g,
+                                    (nextColor.b - charaColor.b) * ratio + charaColor.b,
+                                    (nextColor.a - charaColor.a) * ratio + charaColor.a);
+                            }
+                            Color finalCharaColor = charaColor * updateInfo.colorPower;
+                            // SetLightProbeColor (0x7ffd5967ce90): white by default (probe, game MPB = (1,1,1,1)); a key synced
+                            // to a blink light replaces the RGB with TryGetBlinkLightColorRGB (0x7ffd592c8550).
+                            Color lightProbeColor = Color.white;
+                            if (updateInfo.IsSyncBlinkLight &&
+                                _liveTimelineControl.TryGetBlinkLightColorRGB(null, updateInfo.BlinkLightNameHash,
+                                    updateInfo.BlinkLightContainerIndex, updateInfo.IsAdjustedBlinkLightColor,
+                                    out var probeRgb, out _, updateInfo.BlinkLightBrightnessPower))
+                            {
+                                lightProbeColor.r = probeRgb.r;
+                                lightProbeColor.g = probeRgb.g;
+                                lightProbeColor.b = probeRgb.b;
+                            }
+
+                            // ModelController.SetCharacterColor / SetToonColor: the props linked to the character read these.
+                            container.LiveCharaColor = finalCharaColor;
+                            container.LiveToonDarkColor = updateInfo.toonDarkColor;
+                            container.LiveToonBrightColor = updateInfo.toonBrightColor;
                             var propertyBlock = _characterLightingBlock ?? (_characterLightingBlock = new MaterialPropertyBlock());
                             foreach (var renderer in container.Renderers)
                             {
                                 renderer.GetPropertyBlock(propertyBlock);
-                                propertyBlock.SetColor("_CharaColor", updateInfo.color * updateInfo.colorPower);
+                                propertyBlock.SetColor("_CharaColor", finalCharaColor);
+                                propertyBlock.SetColor("_LightProbeColor", lightProbeColor);
+                                propertyBlock.SetFloat("_Silhouette", updateInfo.IsSilhouette ? 1f : 0f);
                                 propertyBlock.SetColor("_ToonDarkColor", updateInfo.toonDarkColor);
                                 propertyBlock.SetColor("_ToonBrightColor", updateInfo.toonBrightColor);
                                 propertyBlock.SetColor("_OutlineColor", updateInfo.outlineColor);
@@ -1189,6 +1220,31 @@ namespace Gallop.Live
             if (updateInfo == null || updateInfo.owner < 0 || updateInfo.owner >= _sweatControllers.Count)
                 return;
             _sweatControllers[updateInfo.owner]?.UpdateSweatLocator(updateInfo);
+        }
+
+        // LiveTimelineDefine.TryGetExtraColor (JP 0x7ffd592e97a0): colour types 1..6 read the master colour of the character at
+        // the given index (CharaData Main / Sub / UIMain / UISub / UITraining1 / UITraining2); anything else (or a missing
+        // character) leaves the colour untouched.
+        private bool TryGetExtraColor(int colorType, int charaIndex, ref Color color)
+        {
+            string column;
+            switch (colorType)
+            {
+                case 1: column = "image_color_main"; break;
+                case 2: column = "image_color_sub"; break;
+                case 3: column = "ui_color_main"; break;
+                case 4: column = "ui_color_sub"; break;
+                case 5: column = "ui_training_color_1"; break;
+                case 6: column = "ui_training_color_2"; break;
+                default: return false;
+            }
+            if (charaIndex < 0 || CharaContainerScript == null || charaIndex >= CharaContainerScript.Count)
+                return false;
+            var row = CharaContainerScript[charaIndex]?.CharaData;
+            if (row == null || !row.Table.Columns.Contains(column)) return false;
+            if (!ColorUtility.TryParseHtmlString("#" + row[column], out var parsed)) return false;
+            color = parsed;
+            return true;
         }
 
         private void SetupCharacterLocator()

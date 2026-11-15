@@ -1747,6 +1747,17 @@ public class UmaContainerCharacter : UmaContainer
     }
 
     // (LUZ) La pista GlobalLight llega del Director: rotacion de la luz de todo el modelo.
+    // ModelController._originalLightRotation (+0x530) as read by Props.SetDirectionalLightParameter
+    // (@0x7ffd5925d300) for LinkDirectionalLightAttachedCharacter props.
+    public Quaternion GlobalLightRotation => _globalLightRotation;
+
+    // ModelController._charaColor (+0x3f8), _toonBrightColor (+0x5a4) and _toonDarkColor (+0x5b4): the values the
+    // game's Props.ChangeRenderState (@0x7ffd5925a3b0) copies into a prop with LinkColorAttachedCharacter.
+    // Written from the BgColor1 (CharaColor) track by Director.
+    public Color LiveCharaColor = Color.white;
+    public Color LiveToonBrightColor = Color.white;
+    public Color LiveToonDarkColor = Color.white;
+
     public void SetGlobalLightRotation(Quaternion rotation)
     {
         _useGlobalLight = true;

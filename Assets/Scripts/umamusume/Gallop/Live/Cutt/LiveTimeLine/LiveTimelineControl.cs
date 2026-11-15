@@ -24,8 +24,16 @@ namespace Gallop.Live.Cutt
             raw = Color.black;
             ++_postFilmBlinkAttempts;
             if (_postFilmBlinkDriver == null || containerIndex < 0) return false;
-            bool found = _postFilmBlinkDriver.TryGetCurrentBlinkColor(name, hash, containerIndex, out raw, out _);
-            if (found) ++_postFilmBlinkSuccesses;
+            bool found = _postFilmBlinkDriver.TryGetCurrentBlinkColor(name, hash, containerIndex, out raw, out float power);
+            if (found)
+            {
+                // JP StageController.TryGetBlinkLightContainerColor (0x7ffd5926d820) -> BlinkLightController.TryGetCurrentColor
+                // (0x7ffd59226020) returns the container's current colour, which BlinkLightController.Update (0x7ffd592265d0)
+                // stores already multiplied by the container's current power (rgb * power, alpha 0). The viewer keeps colour and
+                // power apart, so a light that is currently off (power 0) must give black here, not its raw colour.
+                raw = new Color(raw.r * power, raw.g * power, raw.b * power, raw.a);
+                ++_postFilmBlinkSuccesses;
+            }
             return found;
         }
 
@@ -2848,6 +2856,32 @@ namespace Gallop.Live.Cutt
                         quaternion = GetCamera(sheet.targetCameraIndex).cacheTransform.rotation;
                     }
                     updateInfo.flags = lightData.flags;
+
+                    // (BLINK LIGHT) Native AlterUpdate_GlobalLight (JP 0x7ffd592a2f60): when the key has
+                    // the sync attributes, the RGB of rimColor / rimColor2 is replaced by the blink light
+                    // colour of BlinkLightName/NameHash/ContainerIndex (TryGetBlinkLightColorRGB, called
+                    // with brightness power 1 and isAdjusted = false -> the raw blink RGB; the key alpha
+                    // is kept). If the light cannot be resolved the authored colours stand.
+                    Color rimColor = lightData.rimColor;
+                    Color rimColor2 = lightData.rimColor2;
+                    if ((lightData.IsSyncBlinkLightToRimColor || lightData.IsSyncBlinkLightToRimColor2) &&
+                        TryGetBlinkLightColorRGB(lightData.BlinkLightName, lightData.BlinkLightNameHash,
+                            lightData.BlinkLightContainerIndex, false, out var blinkRim, out _, 1f))
+                    {
+                        if (lightData.IsSyncBlinkLightToRimColor)
+                        {
+                            rimColor.r = blinkRim.r;
+                            rimColor.g = blinkRim.g;
+                            rimColor.b = blinkRim.b;
+                        }
+                        if (lightData.IsSyncBlinkLightToRimColor2)
+                        {
+                            rimColor2.r = blinkRim.r;
+                            rimColor2.g = blinkRim.g;
+                            rimColor2.b = blinkRim.b;
+                        }
+                    }
+
                     if (lightData2 != null && lightData2.interpolateType != 0)
                     {
                         float ratio = CalculateInterpolationValue(lightData, lightData2, currentFrame);
@@ -2855,7 +2889,11 @@ namespace Gallop.Live.Cutt
                         Quaternion b = Quaternion.Euler(lightData2.lightDir);
                         updateInfo.lightRotation = Quaternion.Lerp(a, b, ratio) * quaternion;
                         updateInfo.globalRimShadowRate = LerpWithoutClamp(lightData.globalRimShadowRate, lightData2.globalRimShadowRate, ratio);
-                        updateInfo.rimColor = Color.Lerp(lightData.rimColor, lightData2.rimColor, ratio);
+                        // Native: the colour lerp is SKIPPED when the next key has the matching sync
+                        // attribute (its colour will come from its own blink light), and the resolved
+                        // current colour holds.
+                        updateInfo.rimColor = lightData2.IsSyncBlinkLightToRimColor
+                            ? rimColor : Color.Lerp(rimColor, lightData2.rimColor, ratio);
                         updateInfo.rimStep = LerpWithoutClamp(lightData.rimStep, lightData2.rimStep, ratio);
                         updateInfo.rimFeather = LerpWithoutClamp(lightData.rimFeather, lightData2.rimFeather, ratio);
                         updateInfo.rimSpecRate = LerpWithoutClamp(lightData.rimSpecRate, lightData2.rimSpecRate, ratio);
@@ -2864,7 +2902,8 @@ namespace Gallop.Live.Cutt
                         updateInfo.RimVerticalOffset = LerpWithoutClamp(lightData.RimVerticalOffset, lightData2.RimVerticalOffset, ratio);
                         updateInfo.RimHorizonOffset2 = LerpWithoutClamp(lightData.RimHorizonOffset2, lightData2.RimHorizonOffset2, ratio);
                         updateInfo.RimVerticalOffset2 = LerpWithoutClamp(lightData.RimVerticalOffset2, lightData2.RimVerticalOffset2, ratio);
-                        updateInfo.rimColor2 = Color.Lerp(lightData.rimColor2, lightData2.rimColor2, ratio);
+                        updateInfo.rimColor2 = lightData2.IsSyncBlinkLightToRimColor2
+                            ? rimColor2 : Color.Lerp(rimColor2, lightData2.rimColor2, ratio);
                         updateInfo.rimStep2 = LerpWithoutClamp(lightData.rimStep2, lightData2.rimStep2, ratio);
                         updateInfo.rimFeather2 = LerpWithoutClamp(lightData.rimFeather2, lightData2.rimFeather2, ratio);
                         updateInfo.rimSpecRate2 = LerpWithoutClamp(lightData.rimSpecRate2, lightData2.rimSpecRate2, ratio);
@@ -2874,7 +2913,7 @@ namespace Gallop.Live.Cutt
                     {
                         updateInfo.lightRotation = Quaternion.Euler(lightData.lightDir) * quaternion;
                         updateInfo.globalRimShadowRate = lightData.globalRimShadowRate;
-                        updateInfo.rimColor = lightData.rimColor;
+                        updateInfo.rimColor = rimColor;
                         updateInfo.rimStep = lightData.rimStep;
                         updateInfo.rimFeather = lightData.rimFeather;
                         updateInfo.rimSpecRate = lightData.rimSpecRate;
@@ -2883,7 +2922,7 @@ namespace Gallop.Live.Cutt
                         updateInfo.RimVerticalOffset = lightData.RimVerticalOffset;
                         updateInfo.RimHorizonOffset2 = lightData.RimHorizonOffset2;
                         updateInfo.RimVerticalOffset2 = lightData.RimVerticalOffset2;
-                        updateInfo.rimColor2 = lightData.rimColor2;
+                        updateInfo.rimColor2 = rimColor2;
                         updateInfo.rimStep2 = lightData.rimStep2;
                         updateInfo.rimFeather2 = lightData.rimFeather2;
                         updateInfo.rimSpecRate2 = lightData.rimSpecRate2;
@@ -3373,12 +3412,35 @@ namespace Gallop.Live.Cutt
                 updateInfo.CurrentColor = bgColorData != null ? bgColorData.color : Color.white;
                 updateInfo.CurrentFlags = bgColorData != null ? bgColorData.flags : 0;
 
+                // JP LiveTimelineControl.AlterUpdate_BgColor1 (0x7ffd59296d90): for a non-character timeline
+                // (StageController.IsCharaTimeline 0x7ffd59266250) whose current key syncs to a blink light, the key's
+                // RGB is replaced by TryGetBlinkLightColorRGB (0x7ffd592c8550) with the key's brightness power and
+                // adjusted flag; alpha stays. If the lookup fails the authored colour is kept.
+                bool isCharaTimeline = IsCharaTimelineHash(updateInfo.TimelineNameHash);
+                Color baseColor = bgColorData.color;
+                if (!isCharaTimeline && bgColorData.IsSyncBlinkLight)
+                {
+                    BindPostFilmBlinkDriver();
+                    if (ResolvePostFilmBlinkColor(bgColorData.BlinkLightName, bgColorData.BlinkLightNameHash,
+                        bgColorData.BlinkLightContainerIndex, out var blinkRaw))
+                    {
+                        blinkRaw = LivePostFilmTimeline.AdjustBlinkRgb(blinkRaw, bgColorData.BlinkLightBrightnessPower,
+                            bgColorData.IsAdjustedBlinkLightColor);
+                        baseColor.r = blinkRaw.r;
+                        baseColor.g = blinkRaw.g;
+                        baseColor.b = blinkRaw.b;
+                    }
+                }
+
                 if (bgColorData2 != null && bgColorData2.interpolateType != 0)
                 {
                     float t = CalculateInterpolationValue(bgColorData, bgColorData2, currentFrame);
                     updateInfo.InterpolateRatio = t;
                     updateInfo.flags = bgColorData.flags;
-                    updateInfo.color = Color.Lerp(bgColorData.color, bgColorData2.color, t);
+                    // The game lerps the colour only for a non-character timeline whose next key is not synced.
+                    updateInfo.color = !isCharaTimeline && !bgColorData2.IsSyncBlinkLight
+                        ? Color.Lerp(baseColor, bgColorData2.color, t)
+                        : baseColor;
                     updateInfo.colorPower = LerpWithoutClamp(bgColorData.power, bgColorData2.power, t);
                     updateInfo.toonDarkColor = Color.Lerp(bgColorData.toonDarkColor, bgColorData2.toonDarkColor, t);
                     updateInfo.toonBrightColor = Color.Lerp(bgColorData.toonBrightColor, bgColorData2.toonBrightColor, t);
@@ -3393,7 +3455,7 @@ namespace Gallop.Live.Cutt
                 else
                 {
                     updateInfo.flags = bgColorData.flags;
-                    updateInfo.color = bgColorData.color;
+                    updateInfo.color = baseColor;
                     updateInfo.toonDarkColor = bgColorData.toonDarkColor;
                     updateInfo.toonBrightColor = bgColorData.toonBrightColor;
                     updateInfo.outlineColor = bgColorData.outlineColor;
@@ -3407,7 +3469,26 @@ namespace Gallop.Live.Cutt
             }
         }
 
-        private bool TryGetBlinkLightColorRGB(string blinkLightName, int blinkLightNameHash, int blinkLightContainerIndex, bool isAdjustedBlinkLightColor, out Color color, out float colorPower)
+        // Native StageController.IsCharaTimeline (JP 0x7ffd59266250): true when the timeline hash is one of the six
+        // HASH_CHARA_* statics (CharaCenter / Left / Right / Back / Other / Color).
+        private static readonly int[] CharaTimelineHashes =
+        {
+            FNVHash.Generate("CharaCenter"), FNVHash.Generate("CharaLeft"), FNVHash.Generate("CharaRight"),
+            FNVHash.Generate("CharaBack"), FNVHash.Generate("CharaOther"), FNVHash.Generate("CharaColor"),
+        };
+
+        private static bool IsCharaTimelineHash(int hash)
+        {
+            for (int i = 0; i < CharaTimelineHashes.Length; i++)
+                if (CharaTimelineHashes[i] == hash) return true;
+            return false;
+        }
+
+        // Native LiveTimelineControl.TryGetBlinkLightColorRGB (JP 0x7ffd592c8550): the brightness power
+        // comes from the CALLER (the key's BlinkLightBrightnessPower; the GlobalLight sync passes 1.0,
+        // i.e. the raw blink RGB). brightnessPower < 0 keeps the legacy behaviour of using the driver's
+        // current color power.
+        internal bool TryGetBlinkLightColorRGB(string blinkLightName, int blinkLightNameHash, int blinkLightContainerIndex, bool isAdjustedBlinkLightColor, out Color color, out float colorPower, float brightnessPower = -1f)
         {
             color = Color.black;
             colorPower = 0f;
@@ -3440,7 +3521,14 @@ namespace Gallop.Live.Cutt
 
                 colorPower = rawColorPower;
 
-                color = ApplyOfficialBlinkLightColorRGB( rawColor, rawColorPower, isAdjustedBlinkLightColor);
+                // Native: StageController.TryGetBlinkLightContainerColor (0x7ffd5926d820) -> BlinkLightController.TryGetCurrentColor
+                // returns the container's CURRENT colour, already multiplied by the container's current power (rgb * power), as
+                // ResolvePostFilmBlinkColor does. The caller's brightness power is applied on top of that (HSV value, skipped
+                // when it is 1). A negative brightnessPower (legacy callers) means no extra brightness.
+                var containerColor = new Color(rawColor.r * rawColorPower, rawColor.g * rawColorPower,
+                    rawColor.b * rawColorPower, rawColor.a);
+                color = ApplyOfficialBlinkLightColorRGB(containerColor, brightnessPower >= 0f ? brightnessPower : 1f,
+                    isAdjustedBlinkLightColor);
 
                 return true;
             }

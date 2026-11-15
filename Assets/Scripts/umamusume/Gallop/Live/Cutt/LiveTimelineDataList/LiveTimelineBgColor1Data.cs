@@ -23,8 +23,11 @@ namespace Gallop.Live.Cutt
                 return LiveTimelineKeyDataType.BgColor1;
             }
         }
-        private const int ATTR_SILHOUETTE = 1 << 15;
-        private const int ATTR_SYNC_BLINKLIGHT = 1 << 16;
+        // JP LiveTimelineKeyBgColor1Data getters: they read the base key `attribute` (+0x14), NOT `flags` (+0x48):
+        // get_IsSilhouette 0x7ffd592d7490 (& 0x10000), get_IsSyncBlinkLight 0x7ffd592d7480 (& 0x20000),
+        // get_IsEnabledFakeLight (& 0x40000).
+        private const int ATTR_SILHOUETTE = 0x10000;
+        private const int ATTR_SYNC_BLINKLIGHT = 0x20000;
 
         public Color color;
         public float power;
@@ -58,8 +61,8 @@ namespace Gallop.Live.Cutt
         public int _loopIntervalFrame;
         public bool _isChangeLoopInterpolate;
 
-        public bool IsSilhouette => (flags & ATTR_SILHOUETTE) != 0;
-        public bool IsSyncBlinkLight => (flags & ATTR_SYNC_BLINKLIGHT) != 0;
+        public bool IsSilhouette => ((int)attribute & ATTR_SILHOUETTE) != 0;
+        public bool IsSyncBlinkLight => ((int)attribute & ATTR_SYNC_BLINKLIGHT) != 0;
     }
 
     [Serializable]

@@ -45,8 +45,28 @@ namespace Gallop.Live.Cutt
         public bool isChangeLoopInterpolate;
 
         // Properties
-        public bool IsSyncBlinkLightToRimColor { get; set; }
-        public bool IsSyncBlinkLightToRimColor2 { get; set; }
+        // (BLINK LIGHT) Native get_IsSyncBlinkLightToRimColor / ...RimColor2 (JP 0x7ffd592f0610 /
+        // 0x7ffd592f0650) read attribute bits of the key (FlagUtil.HasAnyFlag(attribute, 0x10000 /
+        // 0x20000)) and the setters write them back (LiveTimelineKeyAttribute.Ext.addFlag). They
+        // were plain auto-properties here, so the sync never ran and the authored rim colours stood.
+        private const int ATTR_SYNC_BLINKLIGHT_TO_RIMCOLOR = 0x10000;
+        private const int ATTR_SYNC_BLINKLIGHT_TO_RIMCOLOR2 = 0x20000;
+
+        public bool IsSyncBlinkLightToRimColor
+        {
+            get => ((int)attribute & ATTR_SYNC_BLINKLIGHT_TO_RIMCOLOR) != 0;
+            set => attribute = (LiveTimelineKeyAttribute)(value
+                ? (int)attribute | ATTR_SYNC_BLINKLIGHT_TO_RIMCOLOR
+                : (int)attribute & ~ATTR_SYNC_BLINKLIGHT_TO_RIMCOLOR);
+        }
+
+        public bool IsSyncBlinkLightToRimColor2
+        {
+            get => ((int)attribute & ATTR_SYNC_BLINKLIGHT_TO_RIMCOLOR2) != 0;
+            set => attribute = (LiveTimelineKeyAttribute)(value
+                ? (int)attribute | ATTR_SYNC_BLINKLIGHT_TO_RIMCOLOR2
+                : (int)attribute & ~ATTR_SYNC_BLINKLIGHT_TO_RIMCOLOR2);
+        }
     }
 
     [Serializable]
