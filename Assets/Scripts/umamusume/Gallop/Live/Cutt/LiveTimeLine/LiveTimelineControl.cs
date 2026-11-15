@@ -3333,6 +3333,7 @@ namespace Gallop.Live.Cutt
                 updateInfo.OriginalDirectionalLightDir = cur.OriginalDirectionalLightDir;
                 updateInfo.EyeToonStep = cur.EyeToonStep;
                 updateInfo.EyeToonFeather = cur.EyeToonFeather;
+                updateInfo.EyeSaturation = cur.EyeSaturation;
 
                 if (nextKey is LiveTimelineKeyFacialToonData next && next.interpolateType != 0)
                 {
@@ -3344,6 +3345,7 @@ namespace Gallop.Live.Cutt
                     updateInfo.OriginalDirectionalLightDir = Vector3.Lerp(cur.OriginalDirectionalLightDir, next.OriginalDirectionalLightDir, t);
                     updateInfo.EyeToonStep = LerpWithoutClamp(cur.EyeToonStep, next.EyeToonStep, t);
                     updateInfo.EyeToonFeather = LerpWithoutClamp(cur.EyeToonFeather, next.EyeToonFeather, t);
+                    updateInfo.EyeSaturation = LerpWithoutClamp(cur.EyeSaturation, next.EyeSaturation, t);
                     // UseOriginalDirectionalLight no se interpola (igual que el cliente: toma la key actual).
                 }
 

@@ -35,6 +35,12 @@ namespace Gallop.Live.Cutt
         public Color EmissiveColor;
         public float EmissiveScrollTimeScale = 1f;
         public float EmissiveScrollEnergyScale = 1f;
+
+        // Key attribute flags, same bits as the game's LiveTimelineKeyPropsData getters
+        // (get_LinkColorAttachedCharacter 0x7ffd592f0650: 0x20000, get_LinkDirectionalLightAttachedCharacter
+        // 0x7ffd592f0130: 0x40000).
+        public bool LinkColorAttachedCharacter => ((int)attribute & 0x20000) != 0;
+        public bool LinkDirectionalLightAttachedCharacter => ((int)attribute & 0x40000) != 0;
     }
 
     [Serializable]

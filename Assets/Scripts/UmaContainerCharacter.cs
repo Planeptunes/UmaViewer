@@ -253,6 +253,9 @@ public class UmaContainerCharacter : UmaContainer
     private static readonly int ID_HairNormalBlend = Shader.PropertyToID("_HairNormalBlend");
     private static readonly int ID_ToonStep = Shader.PropertyToID("_ToonStep");
     private static readonly int ID_ToonFeather = Shader.PropertyToID("_ToonFeather");
+    // Game: CharaPartsHolder.SetEyeSaturation writes the eye material's float property ShaderManager.PropertyId 0xAF
+    // (= `_Saturation`, the 176th member of the enum in dump_jp.cs), clamped to [0, 1].
+    private static readonly int ID_EyeSaturation = Shader.PropertyToID("_Saturation");
     private static readonly int ID_UseOriginalDirectionalLight = Shader.PropertyToID("_UseOriginalDirectionalLight");
     private static readonly int ID_OriginalDirectionalLightDir = Shader.PropertyToID("_OriginalDirectionalLightDir");
 
@@ -1898,6 +1901,9 @@ public class UmaContainerCharacter : UmaContainer
             {
                 mat.SetFloat(ID_ToonStep, eyeToonStep);
                 mat.SetFloat(ID_ToonFeather, eyeToonFeather);
+                // (OJO) CharaPartsHolder.SetEyeSaturation: `_Saturation` clamped to [0, 1]. Only where the shader has it.
+                if (mat.HasProperty(ID_EyeSaturation))
+                    mat.SetFloat(ID_EyeSaturation, Mathf.Clamp01(info.EyeSaturation));
                 mat.SetFloat(ID_CylinderBlend, info.CylinderBlend);
                 continue;
             }

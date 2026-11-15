@@ -16,6 +16,7 @@ namespace Gallop.Live.Cutt
         public Vector3 OriginalDirectionalLightDir;
         public float EyeToonStep;
         public float EyeToonFeather;
+        public float EyeSaturation;   // game FacialToonDataUpdateInfo.EyeSaturation (+0x3C in the dump)
     }
 
     public delegate void FacialToonUpdateInfoDelegate(ref FacialToonDataUpdateInfo updateInfo);

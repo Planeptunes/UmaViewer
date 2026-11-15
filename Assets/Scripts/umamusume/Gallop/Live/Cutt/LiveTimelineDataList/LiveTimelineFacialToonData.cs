@@ -25,6 +25,11 @@ namespace Gallop.Live.Cutt
         public Vector3 OriginalDirectionalLightDir;
         public float EyeToonStep;
         public float EyeToonFeather;
+        // In the game's key (dump_jp.cs: LiveTimelineKeyFacialToonData.EyeSaturation, +0x58). Consumed by
+        // ModelController.UpdateFaceLight -> CharaPartsHolder.SetEyeSaturation (eye material `_Saturation`).
+        // Default 1.0 like the game's constructor (LiveTimelineKeyFacialToonData..ctor, JP 0x7ffd592f1310, +0x58 = 0x3f800000):
+        // a key serialized without the field must mean "neutral saturation", not 0 (which would turn the eyes grey).
+        public float EyeSaturation = 1f;
     }
 
     [Serializable]

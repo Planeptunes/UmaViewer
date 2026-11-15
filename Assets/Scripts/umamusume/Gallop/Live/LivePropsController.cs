@@ -91,7 +91,28 @@ namespace Gallop.Live
             public Transform[] PoseNodes;
             public Vector3[] PosePositions, PoseScales;
             public Quaternion[] PoseRotations;
+            // Props.SetupLinkBornComponent / LinkHandBoneTransformProcess: wearer bone -> same-named prop bone.
+            public Transform[] LinkSource, LinkTarget;
+            public int LinkAttachHash;
         }
+
+        // Props..ctor builds _attachJointHandDictionary (Dictionary<int,bool>, FNV hash of the attach joint -> isLeft)
+        // from two string literals (JP 0x7ffd5925f2d0). The literals are not in the decompiled export; Elbow_L / Elbow_R
+        // are what every link-bone prop in the authored cutts (prop1504 / prop1505) is attached to
+        // (verified with the probe: AddLinkHandBoneComponent isLeft=0 for Elbow_R, 1 for Elbow_L).
+        private static readonly Dictionary<int, bool> AttachJointHand = new Dictionary<int, bool>
+        {
+            { FNVHash.Generate("Elbow_L"), true },
+            { FNVHash.Generate("Elbow_R"), false }
+        };
+
+        // CharacterPropLinkBoneDefine.LeftHandLinkBoneNameArray / RightHandLinkBoneNameArray (JP .cctor RVA 0x58DAFA0).
+        // The string literals are not in the decompiled export. Measured with the Hachimi probe (live 1092,
+        // render_prop_link_bones.csv, AddLinkBone): the wearer subtrees linked per side are ArmRoll_X and Wrist_X
+        // (with every finger below it); the game also hides exactly those bones (AddHideReferenceBone, not ported).
+        // The isLeft dictionary of Props..ctor was measured too: Elbow_R -> 0, Elbow_L -> 1.
+        private static readonly string[] LeftHandLinkBoneNames = { "ArmRoll_L", "Wrist_L" };
+        private static readonly string[] RightHandLinkBoneNames = { "ArmRoll_R", "Wrist_R" };
 
         public LivePropsController(Transform owner, LiveTimelinePropsSettings settings,
             IList<UmaContainerCharacter> characters, IList<LiveTimelineCharaLocator> locators)
@@ -726,19 +747,19 @@ namespace Gallop.Live
                 position = Vector3.LerpUnclamped(a._offsetPosition, b._offsetPosition, t);
                 rotation = Vector3.LerpUnclamped(a.OffsetRotate, b.OffsetRotate, t);
                 scale = Vector3.LerpUnclamped(a.OffsetScale, b.OffsetScale, t);
-                if (a.IsLinkAttachBone)
-                    Warn("IsLinkAttachBone transform-link override is unrecovered; requested bone parenting and offsets remain active.");
             }
             if (target == null)
             {
                 Warn("Requested props attachment joint/node is missing; prop hidden until attachment resolves.");
                 foreach (var renderer in prop.Renderers) renderer.Renderer.enabled = false;
+                ClearLink(prop);
                 return;
             }
             if (target == prop.Anchor || target.IsChildOf(prop.Anchor))
             {
                 Warn("Cyclic prop-to-prop attachment rejected.");
                 foreach (var renderer in prop.Renderers) renderer.Renderer.enabled = false;
+                ClearLink(prop);
                 return;
             }
             if (prop.Anchor.parent != target) prop.Anchor.SetParent(target, false);
@@ -754,6 +775,65 @@ namespace Gallop.Live
             if (!prop.Setting.isInfluenceOfCharaHeight && characterParent && inheritsHeight && bodyScale > 0f) scale /= bodyScale;
             prop.Anchor.localScale = scale;
             if (copy != null) prop.Anchor.position = copy.position + target.TransformVector(position);
+            UpdateLink(prop, a);
+        }
+
+        // Port of Props.SetupLinkBornComponent (JP 0x7ffd5925e520): with _isLinkAttachHandBone and a visible prop whose
+        // attach joint is in _attachJointHandDictionary, ModelController.AddLinkHandBoneComponent registers the prop; otherwise
+        // RemoveLinkBoneComponent. LinkHandBoneTransformProcess.SetupLinkBone pairs every transform of the wearer's
+        // hand subtree (GetComponentsInChildren, root included) with the prop transform of the same name
+        // (Props._transformDic, FNV hash of the name), and LinkBoneTransformProcess.OnProcess copies local
+        // position / rotation / scale (all three on by default, .ctor 0x7ffd595918c0) wearer -> prop every frame.
+        // Not ported: IsHideReferenceBone (HideReferenceCharacterBone scales the wearer's linked bones down) and
+        // LinkHandBoneTransformProcess.OnProcess (resets a wearer bone scale above 1); both need the string
+        // literals of CharacterPropLinkBoneDefine, which are not in the decompiled export.
+        private void UpdateLink(RuntimeProp prop, LiveTimelineKeyPropsAttachData a)
+        {
+            bool visible = prop.Appearance != null && prop.Appearance.rendererEnable;
+            bool isLeft = false;
+            int hash = 0;
+            bool want = a != null && a.IsLinkAttachBone && visible;
+            if (want)
+            {
+                hash = a._attachJointHash != 0 ? a._attachJointHash : FNVHash.Generate(a._attachJointName ?? string.Empty);
+                want = AttachJointHand.TryGetValue(hash, out isLeft);
+            }
+            if (!want) { ClearLink(prop); return; }
+            if (prop.LinkSource == null || prop.LinkAttachHash != hash)
+            {
+                prop.LinkAttachHash = hash;
+                var sources = new List<Transform>();
+                var targets = new List<Transform>();
+                foreach (string name in isLeft ? LeftHandLinkBoneNames : RightHandLinkBoneNames)
+                {
+                    var root = CharacterJoint(prop.CharacterIndex, name);
+                    if (root == null) continue;
+                    foreach (var node in root.GetComponentsInChildren<Transform>(true))
+                        if (prop.Nodes.TryGetValue(node.name, out var propNode) && propNode != node)
+                        {
+                            sources.Add(node);
+                            targets.Add(propNode);
+                        }
+                }
+                prop.LinkSource = sources.ToArray();
+                prop.LinkTarget = targets.ToArray();
+                if (sources.Count == 0) Warn("IsLinkAttachBone prop found no matching wearer bones to link.");
+            }
+            for (int i = 0; i < prop.LinkSource.Length; i++)
+            {
+                var source = prop.LinkSource[i];
+                var target = prop.LinkTarget[i];
+                if (source == null || target == null) continue;
+                target.localPosition = source.localPosition;
+                target.localRotation = source.localRotation;
+                target.localScale = source.localScale;
+            }
+        }
+
+        private static void ClearLink(RuntimeProp prop)
+        {
+            prop.LinkSource = prop.LinkTarget = null;
+            prop.LinkAttachHash = 0;
         }
 
         private void ApplyAppearance(RuntimeProp prop)
@@ -776,7 +856,8 @@ namespace Gallop.Live
                 renderer.shadowCastingMode = a.IsCastShadowForced || (prop.Setting.hasShadow && a.IsCastShadow)
                     ? ShadowCastingMode.On : ShadowCastingMode.Off;
                 renderer.GetPropertyBlock(state.Global.Block);
-                ApplyMaterial(state.Global, a, b, t);
+                var chara = prop.CharacterIndex >= 0 && prop.CharacterIndex < characters.Count ? characters[prop.CharacterIndex] : null;
+                ApplyMaterial(state.Global, a, b, t, chara);
                 renderer.SetPropertyBlock(state.Global.Block);
                 for (int m = 0; m < state.Slots.Length; m++)
                 {
@@ -785,24 +866,35 @@ namespace Gallop.Live
                     // would mask unrelated renderer-wide lighting parameters.
                     if (!slot.HasIndexedBlock) continue;
                     renderer.GetPropertyBlock(slot.Block, m);
-                    ApplyMaterial(slot, a, b, t);
+                    ApplyMaterial(slot, a, b, t, chara);
                     renderer.SetPropertyBlock(slot.Block, m);
                 }
             }
         }
 
         private static void ApplyMaterial(MaterialSlot slot, LiveTimelineKeyPropsData a,
-            LiveTimelineKeyPropsData b, float t)
+            LiveTimelineKeyPropsData b, float t, UmaContainerCharacter chara)
         {
             Color color = Color.LerpUnclamped(a.color, b.color, t);
             float power = Mathf.LerpUnclamped(a.colorPower, b.colorPower, t);
+            Color toonDark = Color.LerpUnclamped(a.ToonDarkColor, b.ToonDarkColor, t);
+            Color toonBright = Color.LerpUnclamped(a.ToonBrightColor, b.ToonBrightColor, t);
+            // Props.ChangeRenderState (JP 0x7ffd5925a3b0): with LinkColorAttachedCharacter the character colour and
+            // toon dark / bright colours of the attached model replace the key's values.
+            if (a.LinkColorAttachedCharacter && chara != null)
+            {
+                color = chara.LiveCharaColor;
+                power = 1f;
+                toonDark = chara.LiveToonDarkColor;
+                toonBright = chara.LiveToonBrightColor;
+            }
             SetColor(slot, 0, color);
             SetColor(slot, 1, color * power);
             SetColor(slot, 2, Color.LerpUnclamped(a.rootColor, b.rootColor, t));
             SetColor(slot, 3, Color.LerpUnclamped(a.tipColor, b.tipColor, t));
             SetFloat(slot, 4, power);
-            SetColor(slot, 5, Color.LerpUnclamped(a.ToonDarkColor, b.ToonDarkColor, t));
-            SetColor(slot, 6, Color.LerpUnclamped(a.ToonBrightColor, b.ToonBrightColor, t));
+            SetColor(slot, 5, toonDark);
+            SetColor(slot, 6, toonBright);
             SetFloat(slot, 7, a.IsUpdateOutline ? Mathf.LerpUnclamped(a.OutlineWidth, b.OutlineWidth, t) : slot.OutlineWidth);
             SetColor(slot, 8, a.IsUpdateOutline ? Color.LerpUnclamped(a.OutlineColor, b.OutlineColor, t) : slot.OutlineColor);
             SetColor(slot, 9, a.IsEmissive ? Color.LerpUnclamped(a.EmissiveColor, b.EmissiveColor, t) : slot.EmissiveColor);
@@ -810,7 +902,14 @@ namespace Gallop.Live
             SetFloat(slot, 11, a.IsEmissive ? Mathf.LerpUnclamped(a.EmissiveScrollEnergyScale, b.EmissiveScrollEnergyScale, t) : slot.EmissiveEnergy);
             SetFloat(slot, 12, 1f);
             if ((slot.Properties & (1 << 13)) != 0)
-                slot.Block.SetVector(PropertyIds[13], -(Quaternion.Euler(Vector3.LerpUnclamped(a._directionalLightAngle, b._directionalLightAngle, t)) * Vector3.forward).normalized);
+            {
+                // Props.SetDirectionalLightParameter (JP 0x7ffd5925d300): LinkDirectionalLightAttachedCharacter takes
+                // the attached model's light rotation instead of the key's angle; the direction is rotation * back.
+                Quaternion lightRotation = a.LinkDirectionalLightAttachedCharacter && chara != null
+                    ? chara.GlobalLightRotation
+                    : Quaternion.Euler(Vector3.LerpUnclamped(a._directionalLightAngle, b._directionalLightAngle, t));
+                slot.Block.SetVector(PropertyIds[13], -(lightRotation * Vector3.forward).normalized);
+            }
         }
 
         private static void SetColor(MaterialSlot slot, int index, Color value)
