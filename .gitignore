@@ -66,6 +66,10 @@ Thumbs.db
 # Contains machine-specific game paths and preferences
 /Config.json
 
+# Per-user favorites (costumes, characters, songs); the old costumes-only file is kept ignored too
+/favorites.json
+/favorite_costumes.json
+
 # Local web viewer dependencies
 /web/pmx-viewer/node_modules/
 

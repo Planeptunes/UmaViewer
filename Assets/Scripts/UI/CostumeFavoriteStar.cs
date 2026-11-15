@@ -25,6 +25,35 @@ public static class CostumeFavoriteStar
     /// <summary>Adds (or refreshes) the star on a costume item. `onChanged` runs after each toggle.</summary>
     public static void Attach(UmaUIContainer container, int charaId, string costumeId, Action onChanged)
     {
+        AttachCustom(container,
+            () => CostumeFavorites.IsFavorite(charaId, costumeId),
+            () => CostumeFavorites.Toggle(charaId, costumeId, container.Name),
+            onChanged);
+    }
+
+    /// <summary>Star on a character item (Characters list). `onChanged` runs after each toggle.</summary>
+    public static void AttachChara(UmaUIContainer container, int charaId, Action onChanged)
+    {
+        AttachCustom(container,
+            () => CostumeFavorites.IsCharaFavorite(charaId),
+            () => CostumeFavorites.ToggleChara(charaId),
+            onChanged);
+    }
+
+    /// <summary>Star on a song item (Shows list). `onChanged` runs after each toggle.</summary>
+    public static void AttachSong(UmaUIContainer container, int musicId, Action onChanged)
+    {
+        AttachCustom(container,
+            () => CostumeFavorites.IsSongFavorite(musicId),
+            () => CostumeFavorites.ToggleSong(musicId),
+            onChanged);
+    }
+
+    /// <summary>Space reserved at the top of the row by the star (other top-right widgets go right under it).</summary>
+    public const float ReservedHeight = Size + Margin;
+
+    private static void AttachCustom(UmaUIContainer container, Func<bool> isFavorite, Func<bool> toggle, Action onChanged)
+    {
         if (container == null) return;
         var old = container.transform.Find(StarName);
         if (old != null) UnityEngine.Object.Destroy(old.gameObject);
@@ -50,12 +79,12 @@ public static class CostumeFavoriteStar
         button.targetGraphic = image;
         button.onClick.AddListener(() =>
         {
-            bool nowFavorite = CostumeFavorites.Toggle(charaId, costumeId, container.Name);
+            bool nowFavorite = toggle();
             SetState(image, nowFavorite);
             if (onChanged != null) onChanged();
         });
 
-        SetState(image, CostumeFavorites.IsFavorite(charaId, costumeId));
+        SetState(image, isFavorite());
     }
 
     //Sprites built once from the game icons exported under Resources (same pattern as CustomCostumeIcons).

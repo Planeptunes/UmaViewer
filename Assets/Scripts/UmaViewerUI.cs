@@ -682,6 +682,10 @@ public class UmaViewerUI : MonoBehaviour
                 container3.Image.enabled = true;
             }
 
+            //(FAVORITES) Star in the top-right corner: favorite characters are listed first.
+            charaListItems[chara.Id] = container3;
+            CostumeFavoriteStar.AttachChara(container3, chara.Id, ApplyCharaFavoriteOrder);
+
             var container4 = Instantiate(UmaContainerPrefab,AnimationSetList.content).GetComponent<UmaUIContainer>();
 
             container4.UseLocalizedText();
@@ -699,6 +703,8 @@ public class UmaViewerUI : MonoBehaviour
                 container4.Image.enabled = true;
             }
         }
+
+        ApplyCharaFavoriteOrder();
 
         //La lista de mobs tenía su propio PageManager (paginación + buscador). El buscador
         //"SearchCharacter" ya cubre la búsqueda, así que si el PageManager de mobs NO existe en la
@@ -981,7 +987,14 @@ public class UmaViewerUI : MonoBehaviour
             var container = Instantiate(containerPrefab, parent.content).GetComponent<UmaUIContainer>();
             container.Name = " " + live.MusicId + " " + live.SongName;
             //(Indicador de verificación: tick verde si el live está comprobado, WIP si no.)
-            if (parent == LiveList) LiveVerificationStatus.AttachBadge(container, live.MusicId);
+            if (parent == LiveList)
+            {
+                //(FAVORITES) Star in the top-right corner (the status badge moves left of it); favorite
+                //songs are listed first.
+                LiveVerificationStatus.AttachBadge(container, live.MusicId, CostumeFavoriteStar.ReservedHeight);
+                liveListItems[live.MusicId] = container;
+                CostumeFavoriteStar.AttachSong(container, live.MusicId, ApplyLiveFavoriteOrder);
+            }
             container.Image.sprite = live.Icon;
             container.Image.enabled = container.Image.sprite;
             container.Button.onClick.AddListener(() =>
@@ -996,6 +1009,33 @@ public class UmaViewerUI : MonoBehaviour
             createContainer(live, UmaContainerLivePrefab, LiveList, () => { selectedLiveSound = live; selectedShowLive = live; ShowLiveSelectPanel(live); });
             createContainer(live, UmaContainerLivePrefab, LiveSoundList, () => { selectedLiveSound = live; ListLiveSounds(live.MusicId); });
         }
+        ApplyLiveFavoriteOrder();
+    }
+
+    //(FAVORITES) Items of the Characters list / Shows list by id, to move the favorites to the top.
+    private readonly Dictionary<int, UmaUIContainer> charaListItems = new Dictionary<int, UmaUIContainer>();
+    private readonly Dictionary<int, UmaUIContainer> liveListItems = new Dictionary<int, UmaUIContainer>();
+
+    void ApplyCharaFavoriteOrder()
+    {
+        ReorderFavoritesFirst(charaListItems, CostumeFavorites.IsCharaFavorite);
+        searchCharacterSignature = string.Empty;   //force the search dropdown to re-read the new order
+    }
+
+    void ApplyLiveFavoriteOrder()
+    {
+        ReorderFavoritesFirst(liveListItems, CostumeFavorites.IsSongFavorite);
+        searchLiveSignature = string.Empty;
+    }
+
+    //Favorites first (by id), then the rest (by id): the same order the lists were built in.
+    static void ReorderFavoritesFirst(Dictionary<int, UmaUIContainer> items, Func<int, bool> isFavorite)
+    {
+        int index = 0;
+        foreach (var id in items.Keys.Where(isFavorite).OrderBy(i => i).ToList())
+            if (items[id] != null) items[id].transform.SetSiblingIndex(index++);
+        foreach (var id in items.Keys.Where(i => !isFavorite(i)).OrderBy(i => i).ToList())
+            if (items[id] != null) items[id].transform.SetSiblingIndex(index++);
     }
 
     public void LoadNormalSoundPanels()
@@ -1595,6 +1635,10 @@ public class UmaViewerUI : MonoBehaviour
             //Favorites): if the outfit is unique, it carries the star. Common costumes never get one.
             if (!mini)
                 CostumeFavoriteStar.Attach(container, bodyChara.Id, costumeId, OnFavoriteStarChanged);
+
+            //(FAVORITES) Only in the Favorites list: second line with the character the costume comes from.
+            if (favoritesMode)
+                CostumeOriginLabel.Attach(container, bodyChara.GetName());
         }
 
         if (favoritesMode)
@@ -3842,6 +3886,18 @@ public class UmaViewerUI : MonoBehaviour
     void OnModelDropdownChanged(int value)
     {
         costumeListMode = (CostumeListMode)value;
+
+        //(FAVORITES) Entering 'Other Characters' always starts on the 'Favorites' entry.
+        if (costumeListMode == CostumeListMode.OtherCharacters)
+        {
+            otherFavoritesSelected = true;
+            otherSearchFilter = "";
+            otherSearchActive = false;
+            otherListQuiere = false;
+            pendingOtherChara = null;
+            pendingOtherFavorites = false;
+            RebuildOtherCharactersOptions();
+        }
 
         //El desplegable de "otros personajes" sólo se ve en su modo.
         if (OtherCharactersDropdown != null)

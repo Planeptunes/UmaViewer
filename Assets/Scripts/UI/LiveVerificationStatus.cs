@@ -13,6 +13,7 @@ public static class LiveVerificationStatus
         1001,
         1083,
         1156,
+        1195,
     };
 
     private const string BadgeName = "StatusBadge";
@@ -26,7 +27,8 @@ public static class LiveVerificationStatus
     //Adds the status indicator (green tick or WIP) to the list item, pinned to the right edge of the
     //row. It sits in the TOP-right corner on purpose: the bottom-right one is where the row's
     //selection tick is drawn, so the badge used to cover it.
-    public static void AttachBadge(UmaUIContainer container, int musicId)
+    //`topInset` moves it down to leave the top-right corner to the favorite star (the badge goes right under it).
+    public static void AttachBadge(UmaUIContainer container, int musicId, float topInset = 0f)
     {
         if (container == null) return;
         var old = container.transform.Find(BadgeName);
@@ -60,6 +62,6 @@ public static class LiveVerificationStatus
         rect.anchorMin = rect.anchorMax = new Vector2(1f, 1f);
         rect.pivot = new Vector2(1f, 1f);
         rect.sizeDelta = new Vector2(label.preferredWidth, Height);
-        rect.anchoredPosition = new Vector2(-Margin, 0f);
+        rect.anchoredPosition = new Vector2(-Margin, -topInset);
     }
 }
