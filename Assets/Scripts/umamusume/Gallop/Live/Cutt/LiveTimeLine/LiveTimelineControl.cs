@@ -376,6 +376,7 @@ namespace Gallop.Live.Cutt
 
         public event MobCyalumeUpdateInfoDelegate OnUpdateMobControl;
         public event MobCyalumeUpdateInfoDelegate OnUpdateCyalumeControl;
+        public event AudienceUpdateInfoDelegate OnUpdateAudience;
 
         public event BlinkLightUpdateInfoDelegate OnUpdateBlinkLight;
         public event WashLightUpdateInfoDelegate OnUpdateWashLight;
@@ -821,6 +822,7 @@ namespace Gallop.Live.Cutt
                 AlterUpdate_TransformControl(ws, _currentFrame);
                 AlterUpdate_ObjectControl(ws, _currentFrame);
                 AlterUpdate_AnimationControl(ws, Mathf.RoundToInt(_currentFrame));
+                AlterUpdate_Audience(ws, _currentFrame);
                 AlterUpdate_MobControl(ws, _currentFrame);
                 AlterUpdate_CyalumeControl(ws, _currentFrame);
                 AlterUpdate_BlinkLight(ws, _currentFrame);
@@ -3890,6 +3892,132 @@ namespace Gallop.Live.Cutt
                 OnUpdateBgColor2?.Invoke(ref updateInfo);
             }
         }
+
+        // Port of LiveTimelineControl.AlterUpdate_Audience (0x7ffd59295e20): per audience group, the current key (lerped
+        // to the next one when that key interpolates) becomes an AudienceUpdateInfo handed to OnUpdateAudience
+        // (StageController.UpdateAudience). timelineIndex is the group index inside the worksheet.
+        private void AlterUpdate_Audience(LiveTimelineWorkSheet sheet, float currentFrame)
+        {
+            var groups = sheet != null ? sheet.audienceList : null;
+            if (OnUpdateAudience == null || groups == null)
+                return;
+
+            for (int g = 0; g < groups.Count; g++)
+            {
+                var keys = groups[g] != null ? groups[g].keys : null;
+                if (keys == null || keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable) ||
+                    !keys.EnablePlayModeTimeline(_playMode))
+                    continue;
+
+                FindTimelineKey(out var curKey, out var nextKey, keys, currentFrame);
+                var cur = curKey as LiveTimelineKeyAudienceData;
+                if (cur == null)
+                    continue;
+                var next = nextKey as LiveTimelineKeyAudienceData;
+
+                // Directional light follows the camera: rotation = lightRotation * cameraRotation (identity otherwise).
+                Quaternion cameraRotation = Quaternion.identity;
+                if (cur.AudienceDirectionalLightCameraFollow)
+                {
+                    var cacheCamera = GetCamera(sheet.targetCameraIndex);
+                    if (cacheCamera != null && cacheCamera.cacheTransform != null)
+                        cameraRotation = cacheCamera.cacheTransform.rotation;
+                }
+
+                var info = new Gallop.Cyalume.AudienceUpdateInfo();
+                info.isEnabledRender = cur.IsEnabledRender;
+                info.AnimationSetting = cur.animationSetting;
+                info.AnimationRootIndex = cur.animationRootIndex;
+                info.AnimationBodyRegion = cur.animationBodyRegion;
+                info.AnimationCategory = cur.animationCategory;
+                info.AnimationIndex = cur.animationIndex;
+                info.AnimationWrapMode = cur.animationWrapMode;
+                info.AnimationOffsetTime = cur.animationOffsetTime;
+                info.UseAnimationTime = cur.UseAnimationTime;
+                info.AudienceOutlineColorBlend = cur.AudienceOutlineColorBlend;
+                info.AudienceUseDirectionalLight = cur.AudienceUseDirectionalLight;
+
+                Quaternion lightRotation;
+                if (next == null || !next.IsInterpolateKey())
+                {
+                    info.position = cur.position;
+                    info.rotation = cur.Rotation;
+                    info.scale = cur.scale;
+                    info.cyalumeBodyColor = cur.cyalumeColor;
+                    info.cyalumeGlowColor = cur.cyalumeGlowColor;
+                    info.cyalumeGlowColorPower = cur.cyalumeGlowColorPower;
+                    info.cyalumeMaskRadius = cur.cyalumeMaskRadius;
+                    info.AnimationSpeed = cur.animationSpeed;
+                    info.AnimationTime = cur.AnimationTime;
+                    info.AudienceColor = cur.AudienceColor;
+                    info.AudienceColorPower = cur.AudienceColorPower;
+                    info.AudienceToonBrightColor = cur.AudienceToonBrightColor;
+                    info.AudienceToonDarkColor = cur.AudienceToonDarkColor;
+                    info.AudienceVertexColorToonPower = cur.AudienceVertexColorToonPower;
+                    info.AudienceOutlineWidthPower = cur.AudienceOutlineWidthPower;
+                    info.AudienceOutlineColor = cur.AudienceOutlineColor;
+                    info.AudienceRimColor = cur.AudienceRimColor;
+                    info.AudienceRimStep = cur.AudienceRimStep;
+                    info.AudienceRimFeather = cur.AudienceRimFeather;
+                    info.AudienceRimSpecRate = cur.AudienceRimSpecRate;
+                    info.AudienceRimShadowRate = cur.AudienceRimShadowRate;
+                    info.AudienceRimHorizonOffset = cur.AudienceRimHorizonOffset;
+                    info.AudienceRimVerticalOffset = cur.AudienceRimVerticalOffset;
+                    info.AudienceRimColor2 = cur.AudienceRimColor2;
+                    info.AudienceRimStep2 = cur.AudienceRimStep2;
+                    info.AudienceRimFeather2 = cur.AudienceRimFeather2;
+                    info.AudienceRimSpecRate2 = cur.AudienceRimSpecRate2;
+                    info.AudienceRimShadowRate2 = cur.AudienceRimShadowRate2;
+                    info.AudienceRimHorizonOffset2 = cur.AudienceRimHorizonOffset2;
+                    info.AudienceRimVerticalOffset2 = cur.AudienceRimVerticalOffset2;
+                    lightRotation = cur.AudienceDirectionalLightRotation;
+                }
+                else
+                {
+                    // Every float / colour / vector is a plain unclamped lerp; both quaternions use Quaternion.Lerp.
+                    float t = CalculateInterpolationValue(cur, next, currentFrame);
+                    info.position = LerpU(cur.position, next.position, t);
+                    info.rotation = Quaternion.Lerp(cur.Rotation, next.Rotation, t);
+                    info.scale = LerpU(cur.scale, next.scale, t);
+                    info.cyalumeBodyColor = Color.LerpUnclamped(cur.cyalumeColor, next.cyalumeColor, t);
+                    info.cyalumeGlowColor = Color.LerpUnclamped(cur.cyalumeGlowColor, next.cyalumeGlowColor, t);
+                    info.cyalumeGlowColorPower = LerpU(cur.cyalumeGlowColorPower, next.cyalumeGlowColorPower, t);
+                    info.cyalumeMaskRadius = LerpU(cur.cyalumeMaskRadius, next.cyalumeMaskRadius, t);
+                    info.AnimationSpeed = LerpU(cur.animationSpeed, next.animationSpeed, t);
+                    info.AnimationTime = LerpU(cur.AnimationTime, next.AnimationTime, t);
+                    info.AudienceColor = Color.LerpUnclamped(cur.AudienceColor, next.AudienceColor, t);
+                    info.AudienceColorPower = LerpU(cur.AudienceColorPower, next.AudienceColorPower, t);
+                    info.AudienceToonBrightColor = Color.LerpUnclamped(cur.AudienceToonBrightColor, next.AudienceToonBrightColor, t);
+                    info.AudienceToonDarkColor = Color.LerpUnclamped(cur.AudienceToonDarkColor, next.AudienceToonDarkColor, t);
+                    info.AudienceVertexColorToonPower = LerpU(cur.AudienceVertexColorToonPower, next.AudienceVertexColorToonPower, t);
+                    info.AudienceOutlineWidthPower = LerpU(cur.AudienceOutlineWidthPower, next.AudienceOutlineWidthPower, t);
+                    info.AudienceOutlineColor = Color.LerpUnclamped(cur.AudienceOutlineColor, next.AudienceOutlineColor, t);
+                    info.AudienceRimColor = Color.LerpUnclamped(cur.AudienceRimColor, next.AudienceRimColor, t);
+                    info.AudienceRimStep = LerpU(cur.AudienceRimStep, next.AudienceRimStep, t);
+                    info.AudienceRimFeather = LerpU(cur.AudienceRimFeather, next.AudienceRimFeather, t);
+                    info.AudienceRimSpecRate = LerpU(cur.AudienceRimSpecRate, next.AudienceRimSpecRate, t);
+                    info.AudienceRimShadowRate = LerpU(cur.AudienceRimShadowRate, next.AudienceRimShadowRate, t);
+                    info.AudienceRimHorizonOffset = LerpU(cur.AudienceRimHorizonOffset, next.AudienceRimHorizonOffset, t);
+                    info.AudienceRimVerticalOffset = LerpU(cur.AudienceRimVerticalOffset, next.AudienceRimVerticalOffset, t);
+                    info.AudienceRimColor2 = Color.LerpUnclamped(cur.AudienceRimColor2, next.AudienceRimColor2, t);
+                    info.AudienceRimStep2 = LerpU(cur.AudienceRimStep2, next.AudienceRimStep2, t);
+                    info.AudienceRimFeather2 = LerpU(cur.AudienceRimFeather2, next.AudienceRimFeather2, t);
+                    info.AudienceRimSpecRate2 = LerpU(cur.AudienceRimSpecRate2, next.AudienceRimSpecRate2, t);
+                    info.AudienceRimShadowRate2 = LerpU(cur.AudienceRimShadowRate2, next.AudienceRimShadowRate2, t);
+                    info.AudienceRimHorizonOffset2 = LerpU(cur.AudienceRimHorizonOffset2, next.AudienceRimHorizonOffset2, t);
+                    info.AudienceRimVerticalOffset2 = LerpU(cur.AudienceRimVerticalOffset2, next.AudienceRimVerticalOffset2, t);
+                    lightRotation = Quaternion.Lerp(cur.AudienceDirectionalLightRotation, next.AudienceDirectionalLightRotation, t);
+                }
+
+                info.AudienceDirectionalLightRotation = lightRotation * cameraRotation;
+                info.progressTime = (currentFrame - cur.frame) / 60f;     // GetTimeFromFrame(frame - key.frame)
+                info.timelineIndex = g;
+                OnUpdateAudience(ref info);
+            }
+        }
+
+        private static float LerpU(float a, float b, float t) => (b - a) * t + a;
+        private static Vector3 LerpU(Vector3 a, Vector3 b, float t) => new Vector3(LerpU(a.x, b.x, t), LerpU(a.y, b.y, t), LerpU(a.z, b.z, t));
 
         private void AlterUpdate_MobControl(LiveTimelineWorkSheet sheet, float currentFrame)
         {

@@ -563,6 +563,28 @@ namespace Gallop.Cyalume
             return false;
         }
 
+        private static readonly int CyalumeMaskPosArrayPropertyId = Shader.PropertyToID("_CyalumeMaskPosArray");
+
+        // Port of CyalumeControllerBase.SetAudienceWorldPositionArray (0x7ffd59316e80): with cyalume and audience enabled the
+        // positions become _CyalumeMaskPosArray (ShaderManager id 0x11e) and, when a mob controller exists, its mask array.
+        public void SetAudienceWorldPositionArray(Vector4[] worldPositions)
+        {
+            if (!_isEnabledCyalume || !_isEnabledAudience || worldPositions == null || worldPositions.Length == 0)
+                return;
+            Shader.SetGlobalVectorArray(CyalumeMaskPosArrayPropertyId, worldPositions);
+            OnAudienceWorldPositionArray(worldPositions);
+        }
+
+        protected virtual void OnAudienceWorldPositionArray(Vector4[] worldPositions)
+        {
+        }
+
+        // Current choreography type of the cyalume playback; AudienceController.UpdateAnimation (SyncCyalume setting).
+        public bool TryGetCurrentChoreographyType(out int choreographyType)
+        {
+            return TryGetCurrentPlayback(out _, out _, out _, out choreographyType, out _);
+        }
+
         protected float GetCurrentLiveTime()
         {
             if (Director.instance != null && Director.instance._liveTimelineControl != null)

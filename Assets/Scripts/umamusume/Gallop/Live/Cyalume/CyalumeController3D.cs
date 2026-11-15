@@ -118,8 +118,19 @@ namespace Gallop.Live.Cyalume
             _setupCoroutine = null;
         }
 
+        public MobShadowController MobShadow => _mobShadowController;
+
+        // (+0x88 _isMobController) the mask array object is shared with the mob shadow controller.
+        protected override void OnAudienceWorldPositionArray(Vector4[] worldPositions)
+        {
+            if (_mobShadowController != null)
+                _mobShadowController.MaskPosArray = worldPositions;
+        }
+
         private void Update()
         {
+            // AudienceController.CyalumeController3D (static, set 0x4F93960): the controller the audience objects sync to.
+            AudienceController.CyalumeController3D = this;
             TryBindGroupTimeline();
 
             if (!_isEnabledCyalume || !_initializedObjects || !_isInitialized)

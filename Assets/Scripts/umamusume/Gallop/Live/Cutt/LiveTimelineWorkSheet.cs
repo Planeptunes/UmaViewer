@@ -540,6 +540,8 @@ namespace Gallop.Live.Cutt
         {
             InitializePropsGroups(propsList, control);
             InitializePropsGroups(propsAttachList, control);
+            // LiveTimelineKeyAudienceData.OnLoad: rotation quaternions from the authored euler angles.
+            InitializePropsGroups(audienceList, control);
         }
 
         /// <summary>

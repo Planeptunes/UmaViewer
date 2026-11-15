@@ -620,6 +620,8 @@ namespace Gallop.Live
             if (!_laserSetupDone && _boundTimelineControl != null)
                 TrySetupLaserObject(_boundTimelineControl);
 
+            PostUpdateAudience();
+
             if (_laserControllerArray == null)
                 return;
 
@@ -662,6 +664,7 @@ namespace Gallop.Live
             ctl.OnUpdateAdditionalLightCount -= UpdateAdditionalLightCount;
             ctl.OnUpdateTransmittedLightMask -= UpdateTransmittedLightMask;
             ctl.OnUpdateMultiLightShadowParam -= UpdateMultiLightShadowParam;
+            ctl.OnUpdateAudience -= UpdateAudience;
 
             ctl.OnUpdateTransform += UpdateTransform;
             ctl.OnUpdateObject += UpdateObject;
@@ -676,6 +679,7 @@ namespace Gallop.Live
             ctl.OnUpdateAdditionalLightCount += UpdateAdditionalLightCount;
             ctl.OnUpdateTransmittedLightMask += UpdateTransmittedLightMask;
             ctl.OnUpdateMultiLightShadowParam += UpdateMultiLightShadowParam;
+            ctl.OnUpdateAudience += UpdateAudience;
 
             _laserSetupDone = false;
             _laserSetupTimelineControl = ctl;
@@ -769,6 +773,8 @@ namespace Gallop.Live
             if (ctl.data.UseDepthOnlyCube && ctl.data.DepthOnlyCubeCount > 0 && _depthOnlyCubeTransformArray == null)
                 CreateDepthOnlyCube(transform, ctl.data.DepthOnlyCubeCount);
 
+            // Native SetupLiveTimelineControl calls SetupAudienceObject (0x7ffd592694f0) in the same block.
+            SetupAudienceObject(ctl.data);
 
             if (_laserControllerArray != null)
             {
@@ -1345,6 +1351,107 @@ namespace Gallop.Live
             ctl.OnUpdateAdditionalLightCount -= UpdateAdditionalLightCount;
             ctl.OnUpdateTransmittedLightMask -= UpdateTransmittedLightMask;
             ctl.OnUpdateMultiLightShadowParam -= UpdateMultiLightShadowParam;
+            ctl.OnUpdateAudience -= UpdateAudience;
+        }
+
+        // ---- Audience objects (StageController._audienceObjects / _audienceControllerArray / _audienceWorldPositionArray) ----
+        // Serialized prefab list (native +0x60); the cutt's audienceList groups pick one by _objectIndex.
+        [SerializeField] private GameObject[] _audienceObjects;
+        // Native AudienceAnimations (+0x188): the clips of the live's `livesettings` AudienceAnimation rows (type 10).
+        public AnimationClip[] AudienceAnimations { get; set; }
+        private Gallop.Cyalume.AudienceController[] _audienceControllerArray;   // +0x68
+        private Vector4[] _audienceWorldPositionArray;                          // +0x70
+        private bool _audienceSetupDone;
+
+        // Ordered clip list of the live's AudienceAnimation settings rows (row layout: [index, 10, clip name, ...]).
+        private AnimationClip[] LoadAudienceAnimationClips()
+        {
+            var live = Director.instance != null ? Director.instance.live : null;
+            if (live == null || live.LiveSettings == null)
+                return null;
+
+            var clips = new List<AnimationClip>();
+            foreach (var row in live.LiveSettings)
+            {
+                if (row == null || row.Length <= 2 || row[1].Trim() != "10")
+                    continue;
+                string clipName = row[2].Trim();
+                if (string.IsNullOrEmpty(clipName))
+                    continue;
+                // ResourcePath.LIVE_AUDIENCE_ANIMATION_ROOT_PATH ("3d/Env/Live/Common/Cyalume_audience/Motions/") + name.
+                string path = "3d/env/live/common/cyalume_audience/motions/" + clipName;
+                var entry = LiveEffectController.FindResourceEntry(path);
+                if (entry == null)
+                {
+                    Debug.LogWarning("[StageController] audience animation not found: " + path);
+                    continue;
+                }
+                var bundle = UmaAssetManager.LoadAssetBundle(entry);
+                var clip = bundle != null ? bundle.LoadAsset<AnimationClip>(clipName) : null;
+                if (clip != null)
+                    clips.Add(clip);
+            }
+            return clips.Count > 0 ? clips.ToArray() : null;
+        }
+
+        // Port of StageController.SetupAudienceObject (0x7ffd592694f0): one AudienceController per audienceList group of
+        // every worksheet, instantiated from _audienceObjects[group._objectIndex] under the stage controller.
+        private void SetupAudienceObject(LiveTimelineData data)
+        {
+            if (_audienceSetupDone)
+                return;
+            _audienceControllerArray = null;
+            if (_audienceObjects == null || _audienceObjects.Length == 0 || data == null || data.worksheetList == null)
+                return;
+            _audienceSetupDone = true;
+
+            if (AudienceAnimations == null)
+                AudienceAnimations = LoadAudienceAnimationClips();
+
+            var controllers = new List<Gallop.Cyalume.AudienceController>();
+            foreach (var sheet in data.worksheetList)
+            {
+                if (sheet == null || sheet.audienceList == null)
+                    continue;
+                for (int i = 0; i < sheet.audienceList.Count; i++)
+                {
+                    var controller = new Gallop.Cyalume.AudienceController();
+                    var group = sheet.audienceList[i];
+                    if (group != null && group.ObjectIndex >= 0 && group.ObjectIndex < _audienceObjects.Length)
+                        controller.Initialize(_audienceObjects[group.ObjectIndex], transform, AudienceAnimations, true);
+                    controllers.Add(controller);
+                }
+            }
+            _audienceControllerArray = controllers.ToArray();
+            _audienceWorldPositionArray = new Vector4[_audienceControllerArray.Length];
+        }
+
+        // Audience part of StageController.PostUpdateAllTimeline (0x7ffd592681b0): after the timelines ran, the audience
+        // world positions (xyz, w = 1 / mask radius) go to the cyalume controller, which publishes them as
+        // _CyalumeMaskPosArray and hands them to the MobShadowController (_MobMaskPosArray): the mob quads under an audience
+        // model are masked out.
+        private void PostUpdateAudience()
+        {
+            var cyalume = Gallop.Cyalume.AudienceController.CyalumeController3D;
+            if (cyalume != null && _audienceWorldPositionArray != null)
+                cyalume.SetAudienceWorldPositionArray(_audienceWorldPositionArray);
+        }
+
+        // Port of StageController.UpdateAudience (0x7ffd5926e1e0).
+        public void UpdateAudience(ref Gallop.Cyalume.AudienceUpdateInfo updateInfo)
+        {
+            if (_audienceControllerArray == null || _audienceControllerArray.Length == 0)
+                return;
+            int index = updateInfo.timelineIndex;
+            if (index < 0 || index >= _audienceControllerArray.Length)
+                return;
+
+            _audienceWorldPositionArray[index] = Vector4.zero;
+            var controller = _audienceControllerArray[index];
+            if (controller == null)
+                return;
+            controller.UpdateInfo(ref updateInfo);
+            _audienceWorldPositionArray[index] = controller.GetWorldPosition();
         }
 
         // Client's StageController.SetupAdditionalLight: the light root is the StageController
@@ -2296,7 +2403,23 @@ namespace Gallop.Live
                 UpdateAmbientColor1(ref updateInfo);
                 return;
             }
-            if (!_objectsWorkInfoDictionary.TryGetValue(updateInfo.TimelineNameHash, out var works)) return;
+            // Native UpdateBgColor1 (JP 0x7ffd5926e4f0), stage-object branch: when the timeline hash is the
+            // prefabHash of a StageObjectInfo (one per stage prefab, StartStageObject 0x7ffd5926b590; the
+            // _stageObjectHashToID / _stageObjectInfos pair) the colour goes to every child object hash first
+            // (UpdateStageObjectColor1 0x7ffd59275580 -> 0x7ffd59275680 per child), then to the hash itself.
+            if (_stageObjectInfoChildHashes.TryGetValue(updateInfo.TimelineNameHash, out var childHashes))
+            {
+                for (int i = 0; i < childHashes.Length; i++)
+                    UpdateStageObjectColor1(childHashes[i], ref updateInfo);
+            }
+            UpdateStageObjectColor1(updateInfo.TimelineNameHash, ref updateInfo);
+        }
+
+        // Native UpdateStageObjectColor1(hash) (JP 0x7ffd59275680): every work info registered under the hash gets
+        // _MulColor0 (colour) and _ColorPower (colorPower) on its renderer.
+        private void UpdateStageObjectColor1(int hash, ref BgColor1UpdateInfo updateInfo)
+        {
+            if (!_objectsWorkInfoDictionary.TryGetValue(hash, out var works)) return;
             for (int i = 0; i < works.Count; i++)
             {
                 var renderers = works[i].renderers;
@@ -2315,6 +2438,11 @@ namespace Gallop.Live
         private void UpdateAmbientColor1(ref BgColor1UpdateInfo updateInfo)
         {
             _currentAmbientColor = updateInfo.color * updateInfo.colorPower;
+            // Native UpdateBgColor1 (0x7ffd5926e4f0) / UpdateShaderParamColor1 (0x7ffd59274ef0), BgBL branch: the mob shadow
+            // controller gets the same ambient colour (MobShadowController.SetAmbientColor -> _MobColor = ambient * mobColor).
+            var mobShadow = (Gallop.Cyalume.AudienceController.CyalumeController3D as Gallop.Live.Cyalume.CyalumeController3D)?.MobShadow;
+            if (mobShadow != null)
+                mobShadow.SetAmbientColor(_currentAmbientColor);
             for (int i = 0; i < _ambientColorRenderers.Count; i++)
             {
                 var renderer = _ambientColorRenderers[i];

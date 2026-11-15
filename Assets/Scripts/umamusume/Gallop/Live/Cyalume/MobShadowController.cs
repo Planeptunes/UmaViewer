@@ -6,6 +6,7 @@ namespace Gallop.Cyalume
     public class MobShadowController : MonoBehaviour
     {
         private static readonly int MobGroupMatrixPropertyId = Shader.PropertyToID("_MobGroupMatrix");
+        private static readonly int MobMaskPosArrayPropertyId = Shader.PropertyToID("_MobMaskPosArray");
 
         [SerializeField] private string _mobColorPropertyName = "_MobColor";
         [SerializeField] private string _maskPosArrayPropertyName = "_MaskPosArray";
@@ -128,8 +129,10 @@ namespace Gallop.Cyalume
             if (_mobColorPropertyId >= 0)
                 Shader.SetGlobalColor(_mobColorPropertyId, finalColor);
 
-            if (_maskPosArray != null && _maskPosArrayPropertyId >= 0)
-                Shader.SetGlobalVectorArray(_maskPosArrayPropertyId, _maskPosArray);
+            // Native _UpdateShaderParamColor (0x7ffd59318a40) uses ShaderManager id 0x11d (_MobMaskPosArray), the vertex
+            // shader's array of masked audience positions; the serialized name field does not take part.
+            if (_maskPosArray != null)
+                Shader.SetGlobalVectorArray(MobMaskPosArrayPropertyId, _maskPosArray);
         }
 
         private void OnDestroy()
