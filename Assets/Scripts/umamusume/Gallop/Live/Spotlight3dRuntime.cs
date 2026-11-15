@@ -14,11 +14,19 @@ namespace Gallop.Live
         private readonly int _layer;
         private readonly List<Spotlight3dController>[] _controllers;
 
-        public Spotlight3dRuntime(IList<Transform> characterRoots, Transform mainCamera, int layer)
+        // Base position of a light: CharacterObject.liveCharaPosition, or the model node of info.TargetNodeName
+        // (ModelControllerBehaviour.TryFindTransform) when the character has one by that name.
+        private readonly Func<int, Vector3> _characterPosition;
+        private readonly Func<int, string, Transform> _findNode;
+
+        public Spotlight3dRuntime(IList<Transform> characterRoots, Transform mainCamera, int layer,
+            Func<int, Vector3> characterPosition = null, Func<int, string, Transform> findNode = null)
         {
             _characterRoots = characterRoots ?? throw new ArgumentNullException(nameof(characterRoots));
             _mainCamera = mainCamera;
             _layer = layer;
+            _characterPosition = characterPosition;
+            _findNode = findNode;
             _controllers = new List<Spotlight3dController>[System.Math.Min(characterRoots.Count, 20)];
             for (int i = 0; i < _controllers.Length; i++)
                 _controllers[i] = new List<Spotlight3dController>();
@@ -69,7 +77,16 @@ namespace Gallop.Live
                     var controller = controllers[i];
                     if (controller != null && controller.TimelineIndex == info.timelineIndex)
                     {
-                        controller.SetUpdateInfo(ref info);
+                        // JP Director.OnUpdateSpotlight3d (Ghidra 0x7ffd591f6fb0): base = liveCharaPosition, replaced by the
+                        // world position of the model node TargetNodeName when the character has it. An empty name never
+                        // matches (keys authored before this field existed keep the old behaviour).
+                        Vector3 basePosition = _characterPosition != null ? _characterPosition(character) : Vector3.zero;
+                        if (_findNode != null && !string.IsNullOrEmpty(info.TargetNodeName))
+                        {
+                            Transform node = _findNode(character, info.TargetNodeName);
+                            if (node != null) basePosition = node.position;
+                        }
+                        controller.SetUpdateInfo(ref info, basePosition);
                         break;
                     }
                 }

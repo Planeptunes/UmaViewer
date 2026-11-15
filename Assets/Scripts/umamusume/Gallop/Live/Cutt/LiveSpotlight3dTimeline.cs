@@ -32,8 +32,15 @@ namespace Gallop.Live.Cutt
             info.color = Color.LerpUnclamped(a.color, b.color, t);
             info.colorPower = Mathf.LerpUnclamped(a.colorPower, b.colorPower, t);
             info.localHeight = Mathf.LerpUnclamped(a.localHeight, b.localHeight, t);
-            info.position = Vector3.LerpUnclamped(a.position, b.position, t) +
-                Vector3.LerpUnclamped(a.characterPosition, b.characterPosition, t);
+            // JP AlterUpdate_Spotlight3d (Ghidra 0x7ffd592b3f00): the three new fields come from the current key, and
+            // characterPosition is added to position ONLY for PositionType.Key (the base position of Character /
+            // World lights is resolved later, in Director.OnUpdateSpotlight3d / Spotlight3dController.SetUpdateInfo).
+            info.PositionType = (int)a.PositionTypeValue;
+            info.EnableLookAt = a.EnableLookAt;
+            info.TargetNodeName = a.TargetNodeName;
+            info.position = Vector3.LerpUnclamped(a.position, b.position, t);
+            if (a.PositionTypeValue == LiveTimelineKeySpotlight3dData.PositionType.Key)
+                info.position += Vector3.LerpUnclamped(a.characterPosition, b.characterPosition, t);
             info.rotation = Vector3.LerpUnclamped(a.rotation, b.rotation, t);
             info.scale = Vector3.LerpUnclamped(a.scale, b.scale, t);
             info.TargetCameraTransform = mainCamera;

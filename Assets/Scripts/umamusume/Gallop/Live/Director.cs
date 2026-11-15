@@ -289,7 +289,15 @@ namespace Gallop.Live
             var roots = new List<Transform>(CharaContainerScript.Count);
             for (int i = 0; i < CharaContainerScript.Count; ++i) roots.Add(ResolveEffectCharacter(i));
             _spotlightRuntime = new Spotlight3dRuntime(roots, MainCameraTransform,
-                GraphicSettings.GetLayer(GraphicSettings.LayerIndex.LayerBG));
+                GraphicSettings.GetLayer(GraphicSettings.LayerIndex.LayerBG),
+                characterIndex =>
+                {
+                    var locators = _liveTimelineControl.liveCharactorLocators;
+                    return characterIndex >= 0 && characterIndex < locators.Length && locators[characterIndex] != null
+                        ? locators[characterIndex].liveCharaPosition : Vector3.zero;
+                },
+                (characterIndex, nodeName) => _livePropsController != null
+                    ? _livePropsController.FindCharacterNode(characterIndex, nodeName) : null);
             _spotlightRuntime.CreateControllers(groups, TimelinePlayerMode.Default,
                 id => holder.Get<GameObject>(LiveTimelineSpotlight3dData.GetAssetName(id)));
             _liveTimelineControl.OnUpdateSpotlight3d += _spotlightRuntime.Update;

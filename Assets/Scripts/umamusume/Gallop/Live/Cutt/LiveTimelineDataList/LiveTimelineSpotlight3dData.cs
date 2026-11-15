@@ -22,6 +22,14 @@ namespace Gallop.Live.Cutt
         public string assetName = "spotlight3d000";
         public int characterIndex = -1;
 
+        // JP build keys (dump_jp.cs, LiveTimelineKeySpotlight3dData +0x84 / +0x88 / +0x90). Names match the bundle's TypeTree.
+        // Key = `position` (+ characterPosition) is authored in the stage; Character = relative to the character's position
+        // (or to the model node TargetNodeName); World = absolute. EnableLookAt makes the light face that position.
+        public enum PositionType { Key = 0, Character = 1, World = 2 }
+        public PositionType PositionTypeValue;
+        public bool EnableLookAt;
+        public string TargetNodeName;
+
         // Native 0x1af80e0/0x1af80f0: bit 16 disables billboarding.
         public bool IsEnabledBillboard
         {
