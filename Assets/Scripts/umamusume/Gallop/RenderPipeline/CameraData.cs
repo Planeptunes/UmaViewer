@@ -61,6 +61,47 @@ namespace Gallop.RenderPipeline
                 Gallop.RenderPipeline.PostEffectSelection.IsEnabled(Gallop.RenderPipeline.PostEffectId.Dof));
         }
 
+        private Camera _camera;
+
+        private static readonly int GlobalCameraFovId = Shader.PropertyToID("_GlobalCameraFov");
+        private static readonly int GlobalOutlineWidthId = Shader.PropertyToID("_GlobalOutlineWidth");
+        private static readonly int GlobalOutlineOffsetId = Shader.PropertyToID("_GlobalOutlineOffset");
+
+        // Native CameraData.OnBeforeCameraRendering (JP 0x7ffd595b9df0), not-adjust-fov branch:
+        // GraphicSettings.SetGlobalCameraFov(camera.fieldOfView) (0x7ffd58e9c540): _GlobalCameraFov = min(1, fov / 30).
+        // The Outline and SHADOWCASTER passes of the character / prop toon shaders (TSER...) read that global to push
+        // vertices (xy) and depth (z); the SHADOWCASTER one is what DepthOnlyPass draws, so a wrong value moves the
+        // props in the depth the DOF / fog read. GraphicSettings.UpdateCharacterEnv (0x7ffd58e9ccd0) also publishes
+        // _GlobalOutlineWidth / _GlobalOutlineOffset, whose defaults are 1.0 (GraphicSettings fields 0x208 / 0x20C, probe globals.csv). Inside a
+        // Live the viewer's own model-viewer hacks (scene values 0.1, UmaViewerGlobalShader.FixedUpdate) are replaced
+        // by the game's values.
+        public void OnBeforeCameraRendering()
+        {
+            if (Gallop.Live.Director.instance == null || _camera == null)
+                return;
+
+            Shader.SetGlobalFloat(GlobalCameraFovId, Mathf.Min(1f, _camera.fieldOfView / 30f));
+            Shader.SetGlobalFloat(GlobalOutlineWidthId, 1f);
+            Shader.SetGlobalFloat(GlobalOutlineOffsetId, 1f);
+        }
+
+        private void OnBeginCameraRendering(UnityEngine.Rendering.ScriptableRenderContext context, Camera camera)
+        {
+            if (camera == _camera)
+                OnBeforeCameraRendering();
+        }
+
+        private void OnEnable()
+        {
+            _camera = GetComponent<Camera>();
+            UnityEngine.Rendering.RenderPipelineManager.beginCameraRendering += OnBeginCameraRendering;
+        }
+
+        private void OnDisable()
+        {
+            UnityEngine.Rendering.RenderPipelineManager.beginCameraRendering -= OnBeginCameraRendering;
+        }
+
         private void Awake()
         {
             Initialize(false);

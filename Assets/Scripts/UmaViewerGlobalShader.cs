@@ -136,6 +136,10 @@ public class UmaViewerGlobalShader : MonoBehaviour
 
     private void FixedUpdate()
     {
+        // Inside a Live the game's CameraData.OnBeforeCameraRendering publishes _GlobalCameraFov per camera.
+        if (Gallop.Live.Director.instance != null)
+            return;
+
         //Used to calculate the correct outline
         //Outline need more adjust in live
         var umaContainer = UmaViewerBuilder.Instance.CurrentUMAContainer;
