@@ -479,6 +479,24 @@ public class MirrorReflection : MonoBehaviour
             gameObject.SetActive(active);
     }
 
+    // Native MirrorReflection.SetEnableBlur (0x7ffd5820ba60) / SetBlurDownSample (0x7ffd5820ba30):
+    // write BlurOptimized.IsEnable (+0x24) / Downsample (+0x28) of the mirror camera's CameraData.
+    public void SetEnableBlur(bool isEnable)
+    {
+        if (_mirrorCamera == null || !_mirrorCamera.TryGetComponent(out Gallop.RenderPipeline.CameraData data)) return;
+        var blur = data.Parameter.BlurOptimized;
+        blur.IsEnable = isEnable;
+        data.Parameter.BlurOptimized = blur;
+    }
+
+    public void SetBlurDownSample(int downSample)
+    {
+        if (_mirrorCamera == null || !_mirrorCamera.TryGetComponent(out Gallop.RenderPipeline.CameraData data)) return;
+        var blur = data.Parameter.BlurOptimized;
+        blur.Downsample = downSample;
+        data.Parameter.BlurOptimized = blur;
+    }
+
     public void SetLightMirrorShader(bool isEnable)
     {
         // Native RVA 0x19b7f90 writes CameraData.MirrorCasterQuality (0/1).
@@ -595,6 +613,20 @@ public class MirrorReflection : MonoBehaviour
         _mirrorCamera.clearFlags = CameraClearFlags.Color;
         _mirrorCamera.cullingMask = _finalRenderLayers;
         _mirrorCamera.stereoTargetEye = StereoTargetEyeMask.None;
+
+        // Native MirrorReflection camera setup (JP Ghidra 0x7ffd5820xxxx, decompiled in
+        // Gallop.MirrorReflection.c): CameraData.ImageEffectParameter.BlurOptimized =
+        // { IsEnable 1, Downsample 0, BlurSize 1.0, BlurIterations 1 } (BlurType / RenderPassEvent stay Default).
+        // PostImageEffectFeature then runs SetSourceRTPass -> BlurOptimizePass on this camera.
+        var mirrorCameraData = go.GetComponent<Gallop.RenderPipeline.CameraData>();
+        if (mirrorCameraData == null)
+            mirrorCameraData = go.AddComponent<Gallop.RenderPipeline.CameraData>();
+        var blur = mirrorCameraData.Parameter.BlurOptimized;
+        blur.IsEnable = true;
+        blur.Downsample = 0;
+        blur.BlurSize = 1f;
+        blur.BlurIterations = 1;
+        mirrorCameraData.Parameter.BlurOptimized = blur;
 
         Log("CreateMirrorCamera done.");
     }

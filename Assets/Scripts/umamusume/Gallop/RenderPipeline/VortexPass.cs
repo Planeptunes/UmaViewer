@@ -56,8 +56,8 @@ namespace Gallop.RenderPipeline
             _feature = feature;
             if (!parameter.IsValid) return false;
             // JP AddRenderPasses counts the Vortex validity among the effects that request the depth
-            // texture (the shader compares _DepthClip with the scene depth).
-            ConfigureInput(ScriptableRenderPassInput.Depth);
+            // texture (the shader compares _DepthClip with the scene depth): PostImageEffectFeature
+            // schedules DepthOnlyPass for it.
             Shader shader = ShaderManager.GetShader(ShaderManager.ShaderKinds.Vortex);
             if (shader == null || !shader.isSupported) return false;
             if (_material == null) _material = CoreUtils.CreateEngineMaterial(shader);

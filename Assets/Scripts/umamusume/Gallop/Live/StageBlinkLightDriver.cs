@@ -11,12 +11,6 @@ namespace Gallop.Live
     {
         public bool verboseLog = false;
 
-        // El juego no aplica ningun multiplicador extra al _ColorPower del blink: escribe el power
-        // tal cual (BlinkLightController.Update). Se deja el campo para poder comparar, pero a 1.
-        // Importa doble: el flare lee ese mismo _ColorPower (RecoveredLensFlareController), asi que
-        // un boost aqui infla el tinte del flare respecto al juego.
-        public float emissionBoost = 1f;
-        public float blinkSimpleUseNormalCorrection = 0f;
         public float localTimeScale = 1f;
         public float powerSmoothing = 0f;
         public float offEps = 0.0001f;
@@ -144,7 +138,6 @@ namespace Gallop.Live
             public bool dirty = true;
 
             public readonly List<RendererEntry> renderers = new List<RendererEntry>(64);
-            public readonly List<MaskEntry> masks = new List<MaskEntry>(16);
             public int slotCount;
             public int lastRendererCount;
             public bool washBlendModeInited;
@@ -224,15 +217,6 @@ namespace Gallop.Live
             public bool renderOnState;
         }
 
-        // TransmittedLight mask mesh (StageTransmittedLightMask) and the light slot it belongs to.
-        private struct MaskEntry
-        {
-            public Renderer r;
-            public int slot;
-        }
-
-        private static readonly int TransmittedLightMaskScaleId = Shader.PropertyToID("_TransmittedLightMaskScale");
-        private static readonly Regex ReAlphaPrefix = new Regex(@"^alpha(\d+)(?:_|$)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex ReLightPrefix = new Regex(@"^light(\d+)(?:_|$)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex ReSuffixNumber = new Regex(@"_(\d+)$", RegexOptions.Compiled);
         private static readonly Regex ReLastDigits = new Regex(@"(\d+)(?!.*\d)", RegexOptions.Compiled);
@@ -707,7 +691,6 @@ namespace Gallop.Live
         private void BuildRootCache(RootCache rc)
         {
             rc.renderers.Clear();
-            rc.masks.Clear();
             rc.slotCount = 0;
 
             if (rc.rootGo == null || !IsBlinkRootName(rc.rootName))
@@ -733,10 +716,6 @@ namespace Gallop.Live
 
                 string directName = go.name ?? "";
                 if (IsProtectedLedName(directName)) continue;
-
-                var maskRenderer = t.GetComponent<Renderer>();
-                if (IsTransmittedLightMaskRenderer(maskRenderer))
-                    rc.masks.Add(new MaskEntry { r = maskRenderer, slot = ResolveMaskSlot(t, rc.rootGo.transform) });
 
                 string childName = ResolveIndexedOwnerName(t, rc.rootGo.transform);
                 if (string.IsNullOrEmpty(childName)) continue;
@@ -1086,55 +1065,10 @@ namespace Gallop.Live
                 rc.renderers[i] = e;
             }
 
-            ApplyMaskScales(rc, rt);
-        }
-
-        // The TransmittedLight mask of a stage light only counts while that light is lit: an
-        // unlit light must not make the FastBloom glow over whatever lies behind its mask mesh.
-        // Not recovered from game code (the datamined build predates TransmittedLight); matches
-        // the live footage, where only the lit lights glow.
-        private void ApplyMaskScales(RootCache rc, BlinkRootRuntime rt)
-        {
-            for (int i = 0; i < rc.masks.Count; i++)
-            {
-                var mask = rc.masks[i];
-                if (mask.slot < 0 || mask.slot >= kMaxBlinkSlots) continue;
-                Vector4 c = rt.currentColors[mask.slot];
-                float brightness = Mathf.Max(0f, c.w) * Mathf.Max(c.x, Mathf.Max(c.y, c.z));
-                SetMaskScale(mask.r, Mathf.Clamp01(brightness));
-            }
-        }
-
-        private void SetMaskScale(Renderer r, float scale)
-        {
-            if (r == null) return;
-            r.GetPropertyBlock(_mpb);
-            _mpb.SetFloat(TransmittedLightMaskScaleId, scale);
-            r.SetPropertyBlock(_mpb);
-        }
-
-        private static bool IsTransmittedLightMaskRenderer(Renderer r)
-        {
-            if (r == null) return false;
-            var m = r.sharedMaterial;
-            return m != null && m.shader != null &&
-                   m.shader.name.IndexOf("StageTransmittedLightMask", StringComparison.Ordinal) >= 0;
-        }
-
-        // Light slot of a mask mesh: the lightNNN it is nested in (ground objects), a lightNNN
-        // sibling (wash lights), or its own alphaNNN index when it hangs from the root.
-        private int ResolveMaskSlot(Transform t, Transform root)
-        {
-            string owner = ResolveIndexedOwnerName(t, root);
-            if (owner != null && TryParseLightOwnerIndex(owner, out int index)) return index;
-
-            var parent = t.parent;
-            if (parent != null && parent != root)
-                for (int i = 0; i < parent.childCount; i++)
-                    if (TryParseLightOwnerIndex(parent.GetChild(i).name, out index)) return index;
-
-            var m = ReAlphaPrefix.Match(t.name);
-            return m.Success && int.TryParse(m.Groups[1].Value, out index) ? index : -1;
+            // The stage's `_TransmittedLightMaskScale` is NOT driven by the blink lights: the game writes it on the material
+            // of every mask renderer from the transmitted_mask track (TransmittedLightMaskController.Update, JP
+            // 0x7ffd592df490; StageController.UpdateTransmittedLightMask). The former per-light brightness override that lived
+            // here was not in the game and is removed.
         }
 
         private void ApplyUpdateInfoToRuntime(
@@ -1450,11 +1384,12 @@ namespace Gallop.Live
                     else if (e.isBlinkSimple)
                     {
                         // Game convention (JP probe, live 1053): the weight lives inside the colour
-                        // (rgb * weight, alpha 0) and `_ColorPower` keeps the material's authored
-                        // value (1.0): "off" is therefore a zero colour, not a zero power.
+                        // (rgb * weight, alpha 0): "off" is therefore a zero colour, not a zero power.
+                        // `_ColorPower` is NOT written here: the game's blink driver never touches it, so
+                        // the block keeps whatever BgColor1 wrote (UpdateStageObjectColor1, e.g. 0.58 on
+                        // the live 1195 tree_a lights) and otherwise the material's authored value.
                         _mpb.SetColor("_BlinkLightColor", new Color(0f, 0f, 0f, 0f));
-                        _mpb.SetFloat("_ColorPower", GetAuthoredColorPower(r));
-                        _mpb.SetFloat("_UseNormalCorrection", blinkSimpleUseNormalCorrection);
+                        _mpb.SetFloat("_UseNormalCorrection", GetAuthoredUseNormalCorrection(r));
                     }
                     else if (e.isBlinkColorOnly)
                     {
@@ -1471,8 +1406,6 @@ namespace Gallop.Live
                 rc.renderers[i] = e;
             }
 
-            for (int i = 0; i < rc.masks.Count; i++)
-                SetMaskScale(rc.masks[i].r, 0f);
         }
 
         private bool IsTargetBlinkBlendMaterial(Material m)
@@ -1687,22 +1620,23 @@ namespace Gallop.Live
                 // Game convention (BlinkLightController.Update, verified with the JP probe on live
                 // 1053 @1330: all 206 LightBlinkSimple materials show `_ColorPower` = 1.0 and
                 // `_BlinkLightColor` = rgb * weight with alpha 0): the weight is folded into the
-                // colour and `_ColorPower` is never rewritten, so it keeps its authored value.
+                // colour and `_ColorPower` is never rewritten here: the block keeps the value BgColor1
+                // wrote (UpdateStageObjectColor1; 0.58 on the live 1195 tree_a lights, JP probe f610) or,
+                // when nothing wrote it, the material's authored value.
                 // The flare controller reads this same `_ColorPower` (x2) on top of the weighted
                 // colour; writing the weight here too applied it twice (p^2) and made the flares
                 // too dim and size-inconsistent.
-                float weight = p * emissionBoost;
+                float weight = p;
                 _mpb.SetColor("_BlinkLightColor",
                     new Color(currentColor.r * weight, currentColor.g * weight, currentColor.b * weight, 0f));
-                _mpb.SetFloat("_ColorPower", GetAuthoredColorPower(r));
-                _mpb.SetFloat("_UseNormalCorrection", blinkSimpleUseNormalCorrection);
+                _mpb.SetFloat("_UseNormalCorrection", GetAuthoredUseNormalCorrection(r));
             }
             else if (isBlinkColorOnly)
             {
                 // JP probe, live 1053 @1329: the 6 pool "reflection" glows carry their container's
                 // colour (e.g. (0.318,0.161,0.260,0)) and the LED/fountain waves (0.365,0.761,1.0,0):
                 // rgb * weight, alpha 0, no other property written.
-                float weight = p * emissionBoost;
+                float weight = p;
                 _mpb.SetColor("_BlinkLightColor",
                     new Color(currentColor.r * weight, currentColor.g * weight, currentColor.b * weight, 0f));
             }
@@ -1725,13 +1659,17 @@ namespace Gallop.Live
             return false;
         }
 
-        // The material's own `_ColorPower` (1.0 on LightBlinkSimple). A MaterialPropertyBlock cannot
-        // drop a single property, so the authored value is written back instead.
-        private static float GetAuthoredColorPower(Renderer r)
+        // The game never writes `_UseNormalCorrection` (BlinkLightController.Update only sets `_BlinkLightColor`
+        // and, with its flag, `_ColorPower`): the material keeps its authored value (1.0 on LightBlinkBlend /
+        // LightBlinkSimple). A MaterialPropertyBlock cannot drop a single property, so the authored value is written back.
+        private static float GetAuthoredUseNormalCorrection(Renderer r)
         {
             Material m = r != null ? r.sharedMaterial : null;
-            return m != null && m.HasProperty("_ColorPower") ? m.GetFloat("_ColorPower") : 1f;
+            return m != null && m.HasProperty("_UseNormalCorrection") ? m.GetFloat("_UseNormalCorrection") : 1f;
         }
+
+        // The material's own `_ColorPower` (1.0 on LightBlinkSimple). A MaterialPropertyBlock cannot
+        // drop a single property, so the authored value is written back instead.
 
         // El juego no reescribe _ColorPowerMultiply: el shader usa el del material (10 en los
         // glows, 4,5 en los conos, 5 en las proyecciones de suelo). Como un MaterialPropertyBlock no

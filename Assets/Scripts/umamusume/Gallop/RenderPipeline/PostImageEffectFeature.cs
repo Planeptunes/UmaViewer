@@ -28,6 +28,7 @@ namespace Gallop.RenderPipeline
 
         // 只保留 DofDiffusionBloomOverlayPass 实际需要的 Pass。
         private SourceSetupPass _sourceSetupPass;
+        private BlurOptimizePass _blurOptimizePass;
         private DofDiffusionBloomOverlayPass
             _dofDiffusionBloomOverlayPass;
         private FinalBlitPass _finalBlitPass;
@@ -35,6 +36,9 @@ namespace Gallop.RenderPipeline
         private ChromaticAberrationPass _chromaticAberrationPass;
         private TiltShiftPass _tiltShiftPass;
         private GlobalFogPass _globalFogPass;
+        private DepthOnlyPass _depthOnlyPass;
+        private DepthReleasePass _depthReleasePass;
+        private static readonly int DepthTextureId = Shader.PropertyToID("_CameraDepthTexture");
         private VortexPass _vortexPass;
         private LensDistortionPass _lensDistortionPass;
         private HatchingPass _hatchingPass;
@@ -45,6 +49,10 @@ namespace Gallop.RenderPipeline
         private SunShaftsPass _sunShaftsPass;
         private IndirectLightShaftsPass _indirectLightShaftsPass;
         private TransmittedLightPass _transmittedLightPass;
+        // True when DepthOnlyPass is scheduled for this camera, i.e. `_CameraDepthTexture` (property id 0xdb) holds the
+        // DepthOnlyPass depth (opaque + DepthOnlyCubes) while the post chain runs. TransmittedLightPass renders its mask
+        // against that texture (JP DrawTransmittedLightMask 0x7ffd595ce920).
+        public bool DepthTextureReady { get; private set; }
         private LensFlareRenderPass _lensFlarePass;
         private MultiCameraCompositePass _multiCameraCompositePass;
         private MultiCameraFinalCompositePass _multiCameraFinalCompositePass;
@@ -146,6 +154,9 @@ namespace Gallop.RenderPipeline
             _chromaticAberrationPass = new ChromaticAberrationPass(passEvent);
             _tiltShiftPass = new TiltShiftPass(passEvent);
             _globalFogPass = new GlobalFogPass(passEvent);
+            // GallopRenderer ctor: DepthOnlyPass(0x96, RenderQueueRange.opaque, 0xffffffff), DepthReleasePass(0x96).
+            _depthOnlyPass = new DepthOnlyPass((RenderPassEvent)0x96, RenderQueueRange.opaque, -1);
+            _depthReleasePass = new DepthReleasePass((RenderPassEvent)0x96);
             _vortexPass = new VortexPass(passEvent);
             _lensDistortionPass = new LensDistortionPass(passEvent);
             _hatchingPass = new HatchingPass(passEvent);
@@ -162,6 +173,8 @@ namespace Gallop.RenderPipeline
             _multiCameraCompositePass = new MultiCameraCompositePass();
             _multiCameraFinalCompositePass = new MultiCameraFinalCompositePass();
             _projectorPass = new ProjectorRenderPass();
+            // PostImageEffectFeature.Create: BlurOptimizePass(0x226).
+            _blurOptimizePass = new BlurOptimizePass((RenderPassEvent)0x226);
 
             _registerPass = new List<ScriptableRenderPass>(REGISTER_PASS_SIZE);
 
@@ -204,7 +217,14 @@ namespace Gallop.RenderPipeline
             if (!Application.isPlaying || camera.cameraType != CameraType.Game || director == null)
                 return;
             camera.TryGetComponent<MultiCamera>(out var multiCamera);
-            if (multiCamera == null && !director.IsPresentationCamera(camera)) return;
+            if (multiCamera == null && !director.IsPresentationCamera(camera))
+            {
+                // The stage mirror camera is not a presentation camera, but the game still runs
+                // SetSourceRTPass -> BlurOptimizePass on it (CameraData.ImageEffectParameter.BlurOptimized,
+                // written by MirrorReflection). Only that reduced chain is registered here.
+                EnqueueMirrorBlur(renderer, camera);
+                return;
+            }
 
             // Native composition runs even when the optional image-effect chain is disabled.
             if (multiCamera != null)
@@ -341,22 +361,27 @@ namespace Gallop.RenderPipeline
                 return;
             }
 
-            // Explicitly request URP depth for CoC; do not rely on another feature
-            // incidentally producing _CameraDepthTexture. Reset when leaving DOF.
-            _dofDiffusionBloomOverlayPass.ConfigureInput(parameter.IsUseDepthTexture
-                ? ScriptableRenderPassInput.Depth : ScriptableRenderPassInput.None);
+            // The client never copies URP's depth: when any effect requests the depth texture its GallopRenderer
+            // schedules DepthOnlyPass (event 0x96, SHADOWCASTER pass of the opaque renderers) and publishes the
+            // result as _CameraDepthTexture (see DepthOnlyPass). So URP's own depth copy / prepass is switched
+            // off for this camera and the effects no longer ask URP for depth (no ConfigureInput(Depth)).
+            var camData = camera.GetUniversalAdditionalCameraData();
+            if (camData != null && camData.requiresDepthTexture)
+                camData.requiresDepthTexture = false;
 
-            // Native AddRenderPasses sets IsRequestDepthPass on SetSourceRTPass when any effect
-            // needs depth. URP's ConfigureInput(Depth) triggers a depth prepass that only covers
-            // opaque objects (queue <= 2500); character alpha parts at queue 2501-2604 are
-            // transparent and get no depth, so the CoC shader cannot blur them correctly.
-            // requiresDepthTexture forces URP's copy-depth path instead, which captures every
-            // object that writes to the depth buffer (opaque + transparent with ZWrite On).
-            if (parameter.IsUseDepthTexture)
+            // GetRenderPassInputs: any pass that declares a Depth input. The depth inputs of the passes are
+            // the effects that read _CameraDepthTexture: DOF/CoC, radial blur (depth), GlobalFog, Vortex,
+            // Exposure / ToneCurve.
+            bool depthNeeded = parameter.IsUseDepthTexture || fogReady || vortexReady || exposureReady || toneReady ||
+                               (radialReady && parameter.RadialBlur.IsEnabledDepth);
+            DepthTextureReady = depthNeeded && _depthOnlyPass != null && _depthReleasePass != null;
+            if (depthNeeded && _depthOnlyPass != null && _depthReleasePass != null)
             {
-                var camData = camera.GetUniversalAdditionalCameraData();
-                if (camData != null && !camData.requiresDepthTexture)
-                    camData.requiresDepthTexture = true;
+                _depthOnlyPass.ResetState();
+                _depthOnlyPass.Setup(0xffffffffu, DepthTextureId, renderingData.cameraData.cameraTargetDescriptor);
+                renderer.EnqueuePass(_depthOnlyPass);
+                _depthReleasePass.Setup(DepthTextureId);
+                renderer.EnqueuePass(_depthReleasePass);
             }
 
             RenderPassEvent effectEvent = parameter.DofDiffuionBloomOverlay.RenderPassEvent;
@@ -378,7 +403,6 @@ namespace Gallop.RenderPipeline
             if (fogReady)
             {
                 _globalFogPass.renderPassEvent = effectEvent;
-                _globalFogPass.ConfigureInput(ScriptableRenderPassInput.Depth);
                 _registerPass.Add(_globalFogPass);
             }
             // JP RegisterPass: GlobalFog -> SunShafts -> TransmittedLight -> IndirectLightShafts -> ... -> DOF.
@@ -401,8 +425,6 @@ namespace Gallop.RenderPipeline
             if (radialReady)
             {
                 _radialBlurPass.renderPassEvent = effectEvent;
-                _radialBlurPass.ConfigureInput(parameter.RadialBlur.IsEnabledDepth
-                    ? ScriptableRenderPassInput.Depth : ScriptableRenderPassInput.None);
                 _registerPass.Add(_radialBlurPass);
             }
             // Native GallopImageEffect order: RadialBlur -> Fluctuation -> LensDistortion -> CA.
@@ -467,6 +489,21 @@ namespace Gallop.RenderPipeline
                 camera, renderingData.cameraData.cameraTargetDescriptor, parameter,
                 _registerPass.Count, ShaderManager.IsShaderBundleReady,
                 renderingData.cameraData.postProcessEnabled);
+        }
+
+        // Native PostImageEffectFeature.RegisterPass: SetSourceRTPass, then BlurOptimizePass.Setup(cameraData, feature)
+        // (JP 0x7ffd595c6ca0 -> 0x7ffd595d95c0). The blur works in place on the camera colour (SourceRT).
+        private void EnqueueMirrorBlur(ScriptableRenderer renderer, Camera camera)
+        {
+            if (_blurOptimizePass == null || _sourceSetupPass == null || renderer == null) return;
+            if (!Application.isPlaying || camera.cameraType != CameraType.Game) return;
+            var mirror = camera.GetComponentInParent<Gallop.MirrorReflection>();
+            if (mirror == null || mirror.MirrorCamera != camera) return;
+            if (!camera.TryGetComponent(out CameraData mirrorData)) return;
+            if (!_blurOptimizePass.Setup(mirrorData, this)) return;
+            _sourceSetupPass.renderPassEvent = _blurOptimizePass.renderPassEvent;
+            renderer.EnqueuePass(_sourceSetupPass);
+            renderer.EnqueuePass(_blurOptimizePass);
         }
 
         // The native LensFlareRenderPass is independent of the image-effect chain: when the chain does not
@@ -542,6 +579,8 @@ namespace Gallop.RenderPipeline
         protected override void Dispose(bool disposing)
         {
             _registerPass = null;
+            _blurOptimizePass?.Dispose();
+            _blurOptimizePass = null;
             _radialBlurPass?.Dispose();
             _radialBlurPass = null;
             _chromaticAberrationPass?.Dispose();
@@ -550,6 +589,8 @@ namespace Gallop.RenderPipeline
             _tiltShiftPass = null;
             _globalFogPass?.Dispose();
             _globalFogPass = null;
+            _depthOnlyPass = null;
+            _depthReleasePass = null;
             _vortexPass?.Dispose();
             _vortexPass = null;
             _lensDistortionPass?.Dispose();
@@ -754,6 +795,9 @@ namespace Gallop.RenderPipeline
 
             public bool IsEnable;
 
+            // Native Parameter.BlurOptimized (+0x24, right after IsEnable); ctor = BlurOptimizePass.Parameter.Default().
+            public BlurOptimizePass.Parameter BlurOptimized = BlurOptimizePass.Parameter.Default();
+
             // DofDiffusionBloomOverlayPass 实际使用的参数。
             public DofDiffusionBloomOverlayPass.Parameter
                 DofDiffuionBloomOverlay;
@@ -837,6 +881,8 @@ namespace Gallop.RenderPipeline
                 if (src == null)
                     throw new ArgumentNullException(nameof(src));
 
+                // Native ShallowCopyParameters (0x7ffd595c3ba0) copies +0x24..+0x3C first.
+                BlurOptimized = src.BlurOptimized;
                 DofDiffuionBloomOverlay =
                     src.DofDiffuionBloomOverlay;
                 RadialBlur = src.RadialBlur;

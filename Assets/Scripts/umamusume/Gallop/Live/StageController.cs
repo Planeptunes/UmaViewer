@@ -118,6 +118,8 @@ namespace Gallop.Live
 
         private readonly Dictionary<int, List<StageObjectWorkInfo>> _objectsWorkInfoDictionary =
             new Dictionary<int, List<StageObjectWorkInfo>>();
+        // Native _stageObjectHashToID + _stageObjectInfos: StageObjectInfo.prefabHash -> ChildObjectNameHashArray.
+        private readonly Dictionary<int, int[]> _stageObjectInfoChildHashes = new Dictionary<int, int[]>();
         private readonly Dictionary<int, List<Renderer>> _stageObjectRenderers =
             new Dictionary<int, List<Renderer>>();
         private readonly Dictionary<Renderer, int> _bgColor1RendererProperties = new Dictionary<Renderer, int>();
@@ -762,10 +764,87 @@ namespace Gallop.Live
 
             SetupLaserObject(ctl.data);
 
+            // Native (JP 0x7ffd5926a3xx, right after SetupLaserObject): when the timeline asks for them the stage
+            // creates its depth-only cubes and registers them like any other stage object.
+            if (ctl.data.UseDepthOnlyCube && ctl.data.DepthOnlyCubeCount > 0 && _depthOnlyCubeTransformArray == null)
+                CreateDepthOnlyCube(transform, ctl.data.DepthOnlyCubeCount);
+
+
             if (_laserControllerArray != null)
             {
                 _laserSetupDone = true;
             }
+        }
+
+        // Port of StageController.CreateDepthOnlyCube (JP 0x7ffd59263310). Fields: _depthOnlyCubeTransformArray (+0x320),
+        // _depthOnlyCubeMesh (+0x328), _depthOnlyCubeMaterial (+0x330). The cubes are what the client's DepthOnlyPass
+        // draws as the stage "walls": 300x300 flat slabs (the timeline objectList keys DepthOnlyCube1..N set scale
+        // z = 0 and the positions) so the background has a finite, near depth in _CameraDepthTexture.
+        private Transform[] _depthOnlyCubeTransformArray;
+        private Mesh _depthOnlyCubeMesh;
+        private Material _depthOnlyCubeMaterial;
+        private const string DepthOnlyCubeObjectName = "DepthOnlyCube{0}";   // StageController.DEPTH_ONLY_CUBE_OBJECT_NAME
+
+        // StageController (global namespace) .cctor 0x7ffd59c8c820: CUBE_MESH_VERTEX_ARRAY (8 x Vector3, +-0.5).
+        // CUBE_MESH_INDEX_ARRAY (36 ints, RuntimeHelpers.InitializeArray data) is not readable from the dumps; a regular
+        // cube triangulation is used. With the z scale of 0 the +z and -z faces coincide on the same plane, so the drawn
+        // depth does not depend on the exact index order or winding.
+        private static readonly Vector3[] CubeMeshVertexArray =
+        {
+            new Vector3( 0.5f,  0.5f,  0.5f), new Vector3(-0.5f,  0.5f,  0.5f),
+            new Vector3( 0.5f, -0.5f,  0.5f), new Vector3(-0.5f, -0.5f,  0.5f),
+            new Vector3( 0.5f,  0.5f, -0.5f), new Vector3(-0.5f,  0.5f, -0.5f),
+            new Vector3( 0.5f, -0.5f, -0.5f), new Vector3(-0.5f, -0.5f, -0.5f)
+        };
+        private static readonly int[] CubeMeshIndexArray =
+        {
+            0, 1, 2,  2, 1, 3,    // +z
+            4, 6, 5,  5, 6, 7,    // -z
+            0, 4, 2,  2, 4, 6,    // +x
+            1, 3, 5,  3, 7, 5,    // -x
+            0, 1, 4,  1, 5, 4,    // +y
+            2, 6, 3,  3, 6, 7     // -y
+        };
+
+        private void CreateDepthOnlyCube(Transform parent, int count)
+        {
+            if (count <= 0) return;
+            if (_depthOnlyCubeMesh == null)
+            {
+                _depthOnlyCubeMesh = new Mesh();
+                _depthOnlyCubeMesh.SetVertices(CubeMeshVertexArray);
+                _depthOnlyCubeMesh.SetIndices(CubeMeshIndexArray, MeshTopology.Triangles, 0);
+                _depthOnlyCubeMesh.MarkDynamic();
+                _depthOnlyCubeMesh.RecalculateNormals();
+                _depthOnlyCubeMesh.RecalculateBounds();
+                _depthOnlyCubeMesh.UploadMeshData(true);
+            }
+            if (_depthOnlyCubeMaterial == null)
+            {
+                Shader shader = ShaderManager.GetShader(ShaderManager.ShaderKinds.StageDepthOnly);   // kind 0xed
+                if (shader == null)
+                {
+                    Debug.LogWarning("[StageController] StageDepthOnly shader missing, depth-only cubes not created");
+                    return;
+                }
+                _depthOnlyCubeMaterial = new Material(shader);
+            }
+            _depthOnlyCubeTransformArray = new Transform[count];
+            for (int i = 0; i < count; i++)
+            {
+                var cube = new GameObject(string.Format(DepthOnlyCubeObjectName, i + 1));
+                _depthOnlyCubeTransformArray[i] = cube.transform;
+                cube.transform.SetParent(parent, false);
+                cube.AddComponent<MeshFilter>().sharedMesh = _depthOnlyCubeMesh;
+                var renderer = cube.AddComponent<MeshRenderer>();
+                renderer.sharedMaterial = _depthOnlyCubeMaterial;
+                renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                renderer.lightProbeUsage = UnityEngine.Rendering.LightProbeUsage.Off;
+                renderer.reflectionProbeUsage = UnityEngine.Rendering.ReflectionProbeUsage.Off;
+            }
+            // AddObjectWorkInfoDictionary(_depthOnlyCubeTransformArray, suffix): the timeline objectList moves them.
+            for (int i = 0; i < count; i++)
+                RegisterObjectTransform(_depthOnlyCubeTransformArray[i], string.Empty);
         }
 
         private void SetupLaserObject(LiveTimelineData liveTimelineData)
@@ -1953,6 +2032,15 @@ namespace Gallop.Live
                     _stageObjectRenderers.Add(rootHash, rootRenderers);
                 }
                 rootRenderers.AddRange(instance.GetComponentsInChildren<Renderer>(true));
+
+                // StartStageObject (JP 0x7ffd5926b590): StageObjectInfo.prefabHash = FNV(prefab name) and
+                // ChildObjectNameHashArray = FNV(name) of every child GameObject of the instance
+                // (GallopGameObjectExtensions.GetChildren(instance, includeInactive: true), the root excluded).
+                var infoChildren = new List<int>();
+                foreach (var childTransform in instance.GetComponentsInChildren<Transform>(true))
+                    if (childTransform != instance.transform)
+                        infoChildren.Add(FNVHash.Generate(childTransform.name));
+                _stageObjectInfoChildHashes[rootHash] = infoChildren.ToArray();
 
                 int missingCount = Gallop.Live.LiveRuntimeDiagnostics.Enabled ? CountMissingScripts(instance) : 0;
                 if (missingCount > 0)

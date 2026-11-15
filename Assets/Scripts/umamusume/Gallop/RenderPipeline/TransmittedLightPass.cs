@@ -15,12 +15,15 @@ namespace Gallop.RenderPipeline
     //     published as _TransmittedMaskTex;
     //  2) Iterations (clamped to [1, 5]) mip levels of size source / 2^(i + 2): every level is made from
     //     the previous one (level 0 from the frame) with FastBloom pass 4 DownSampleMask and
-    //     _Parameter = (DefaultShaderParameter.xy, 0, 1): threshold / intensity are NOT applied here;
+    //     _Parameter written with Material.SetVector (immediate) as (DefaultShaderParameter.xy, 0, 1), but the
+    //     blits are only queued: the first buffer execution comes after step 3's SetVector, so the
+    //     downsample passes run with the step 3 _Parameter (threshold / intensity applied);
     //  3) every level is blurred once: pass 2 (vertical) then pass 3 (horizontal) with
-    //     _Parameter = (spread / aspect / 512, spread / 512, Threshold, Intensity), same spread for
-    //     every level;
-    //  4) Iterations > 1: merged from the smallest level up (_Bloom = level k, _BloomIsScreenBlend = 1,
-    //     pass 0 over level k - 1, copied back);
+    //     _Parameter = (spread / aspect / 512, spread / 512, Threshold, Intensity) (Material.SetVector),
+    //     same spread for every level;
+    //  4) Iterations > 1: merged from the smallest level up (_Bloom = level k, pass 0 over level k - 1,
+    //     copied back); Material.SetFloat(_BloomIsScreenBlend, 1) is overwritten by step 5's value
+    //     before these queued blits run;
     //  5) _BloomIsScreenBlend = BlendMode as a raw int (Screen 0, Add 1, Multiply 2), _Bloom = level 0,
     //     pass 0 over the frame.
     // Chain position (PostImageEffectFeature.RegisterPass): after SunShafts, before IndirectLightShafts.
@@ -39,6 +42,7 @@ namespace Gallop.RenderPipeline
         private static readonly int[] LevelIds = MakeIds("_RecoveredTransmittedLightLevel", MaxIterations);
         private static readonly int[] VerticalIds = MakeIds("_RecoveredTransmittedLightVertical", MaxIterations);
         private static readonly int MaskTexId = Shader.PropertyToID("_TransmittedMaskTex");
+        private static readonly int DepthTextureId = Shader.PropertyToID("_CameraDepthTexture");
         private static readonly int ParameterId = Shader.PropertyToID("_Parameter");
         private static readonly int BloomId = Shader.PropertyToID("_Bloom");
         private static readonly int ScreenBlendId = Shader.PropertyToID("_BloomIsScreenBlend");
@@ -83,19 +87,35 @@ namespace Gallop.RenderPipeline
                 var input = _feature.SourceRT;
                 var camDesc = renderingData.cameraData.cameraTargetDescriptor;
 
+
                 // 1) Mask of the stage lights, depth-tested against the scene.
                 var maskDesc = camDesc;
                 maskDesc.depthBufferBits = 0;
                 maskDesc.colorFormat = SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.ARGB4444)
                     ? RenderTextureFormat.ARGB4444 : RenderTextureFormat.ARGB32; // game: format 5
                 maskDesc.bindMS = false;
-                // The scene depth is multisampled when the camera uses MSAA: the mask must have the same sample count
-                // to be bound together with it (a 1-sample colour with an MSAA depth makes every depth test fail).
-                maskDesc.msaaSamples = Mathf.Max(1, camDesc.msaaSamples);
-                if (maskDesc.msaaSamples > 1) maskDesc.colorFormat = RenderTextureFormat.ARGB32;
+                // JP DrawTransmittedLightMask (0x7ffd595ce920): the depth attachment is the property id 0xdb
+                // (_CameraDepthTexture), i.e. the DepthOnlyPass depth (opaque + DepthOnlyCubes, 1 sample), NOT the camera's
+                // own depth buffer. Walls made by the DepthOnlyCubes therefore hide the lights behind them.
+                bool useDepthTexture = _feature.DepthTextureReady;
+                if (useDepthTexture)
+                {
+                    maskDesc.msaaSamples = 1;
+                }
+                else
+                {
+                    // Fallback (DepthOnlyPass not scheduled): the scene depth is multisampled when the camera uses MSAA, the
+                    // mask must have the same sample count to be bound together with it (a 1-sample colour with an MSAA depth
+                    // makes every depth test fail).
+                    maskDesc.msaaSamples = Mathf.Max(1, camDesc.msaaSamples);
+                    if (maskDesc.msaaSamples > 1) maskDesc.colorFormat = RenderTextureFormat.ARGB32;
+                }
                 maskDesc.useMipMap = maskDesc.autoGenerateMips = false;
                 cmd.GetTemporaryRT(MaskId, maskDesc, FilterMode.Bilinear);
-                cmd.SetRenderTarget(new RenderTargetIdentifier(MaskId), depth.nameID);
+                RenderTargetIdentifier maskDepth = useDepthTexture
+                    ? new RenderTargetIdentifier(DepthTextureId, 0, CubemapFace.Unknown, -1)
+                    : (RenderTargetIdentifier)depth.nameID;
+                cmd.SetRenderTarget(new RenderTargetIdentifier(MaskId), maskDepth);
                 cmd.ClearRenderTarget(false, true, Color.black); // GameDefine.COLOR_BLACK
                 context.ExecuteCommandBuffer(cmd);
                 cmd.Clear();
@@ -113,9 +133,13 @@ namespace Gallop.RenderPipeline
                 int iterations = Mathf.Clamp(_state.Iterations, 1, MaxIterations);
                 var levelDesc = new RenderTextureDescriptor[iterations];
 
-                // 2) Mip chain with DownSampleMask: level i = source / 2^(i + 2), threshold/intensity neutral.
+                // 2) Mip chain with DownSampleMask: level i = source / 2^(i + 2).
+                // JP Execute (0x7ffd595cecd0) writes _Parameter = (default.xy, 0, 1) with Material.SetVector, which is immediate,
+                // while the downsample blits are only queued in the command buffer. The first buffer execution happens at the end
+                // of CreateBloomRenderTexture, after its own Material.SetVector, so the downsample passes really run with the
+                // blur _Parameter (threshold / intensity included) and this first value is overwritten before it is ever read.
                 var defaultXY = DofDiffusionBloomOverlayPass.DefaultShaderParameter;
-                cmd.SetGlobalVector(ParameterId, new Vector4(defaultXY.x, defaultXY.y, 0f, 1f));
+                _material.SetVector(ParameterId, new Vector4(defaultXY.x, defaultXY.y, 0f, 1f));
                 RenderTargetIdentifier previous = input.RtId;
                 for (int i = 0; i < iterations; i++)
                 {
@@ -133,7 +157,8 @@ namespace Gallop.RenderPipeline
                 float spread = _state.BlurSpread;
                 for (int i = 0; i < iterations; i++)
                 {
-                    cmd.SetGlobalVector(ParameterId, new Vector4(spread / aspect * OneOverBaseSize,
+                    // CreateBloomRenderTexture (JP 0x7ffd595ce4a0): Material.SetVector, immediate.
+                    _material.SetVector(ParameterId, new Vector4(spread / aspect * OneOverBaseSize,
                         spread * OneOverBaseSize, _state.Threshold, _state.Intensity));
                     cmd.GetTemporaryRT(VerticalIds[i], levelDesc[i], FilterMode.Bilinear);
                     cmd.Blit(LevelIds[i], VerticalIds[i], _material, PassBlurVertical);
@@ -143,12 +168,11 @@ namespace Gallop.RenderPipeline
                     cmd.Clear();
                 }
 
-                float previousScreenBlend = Shader.GetGlobalFloat(ScreenBlendId);
-
-                // 4) Merge from the smallest level up with the Bloom pass in screen-blend mode.
+                // 4) Merge from the smallest level up with the Bloom pass. JP: Material.SetFloat(_BloomIsScreenBlend, 1) is immediate
+                // and is replaced by Material.SetInt(BlendMode) before the queued merge / compose blits run, so all of them use BlendMode.
                 if (iterations > 1)
                 {
-                    cmd.SetGlobalFloat(ScreenBlendId, 1f);
+                    _material.SetFloat(ScreenBlendId, 1f);
                     for (int k = iterations - 1; k >= 1; k--)
                     {
                         cmd.SetGlobalTexture(BloomId, LevelIds[k]);
@@ -161,10 +185,9 @@ namespace Gallop.RenderPipeline
 
                 // 5) Compose over the frame: BlendMode raw int (Screen 0, Add 1, Multiply 2).
                 cmd.GetTemporaryRT(OutputId, full, FilterMode.Bilinear);
-                cmd.SetGlobalFloat(ScreenBlendId, _state.BlendMode);
+                _material.SetInt(ScreenBlendId, _state.BlendMode);
                 cmd.SetGlobalTexture(BloomId, LevelIds[0]);
                 cmd.Blit(input.RtId, OutputId, _material, PassBloom);
-                cmd.SetGlobalFloat(ScreenBlendId, previousScreenBlend);
                 cmd.SetGlobalTexture(MaskTexId, Texture2D.blackTexture);
 
                 for (int i = 0; i < iterations; i++) cmd.ReleaseTemporaryRT(LevelIds[i]);

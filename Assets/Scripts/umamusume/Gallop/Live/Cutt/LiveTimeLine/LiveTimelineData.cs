@@ -228,6 +228,7 @@ namespace Gallop.Live.Cutt
         public bool IsChangedCharaLayerOnlyMirrorRendering;
         public bool IsRenderMirrorObjectOnlyOnBaseCamera;
         public bool UseDepthOnlyCube;
+        public int DepthOnlyCubeCount; // JP LiveTimelineData +0xC8 (follows UseDepthOnlyCube +0xC6)
         public LiveTimelineStageObjectsSettings stageObjectsSettings;
         public LiveTimelineDebugSettings debugSettings;
     }

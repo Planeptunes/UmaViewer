@@ -38,7 +38,7 @@ namespace Gallop.RenderPipeline
             if (shader == null || !shader.isSupported) return false;
             if (_material == null) _material = CoreUtils.CreateEngineMaterial(shader);
             else if (_material.shader != shader) _material.shader = shader;
-            ConfigureInput(ScriptableRenderPassInput.Depth);
+            // Depth is requested through the feature (DepthOnlyPass), not through URP's ConfigureInput.
             return _material.passCount > 0;
         }
 
