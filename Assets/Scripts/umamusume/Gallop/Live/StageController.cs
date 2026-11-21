@@ -653,6 +653,7 @@ namespace Gallop.Live
 
             ctl.OnUpdateTransform -= UpdateTransform;
             ctl.OnUpdateObject -= UpdateObject;
+            ctl.OnUpdateRenderer -= UpdateRenderer;
             ctl.OnUpdateBgColor1 -= UpdateBgColor1;
             ctl.OnUpdateBgColor2 -= UpdateBgColor2;
             ctl.OnEnvironmentMirror -= UpdateEnvironemntMirror;
@@ -668,6 +669,7 @@ namespace Gallop.Live
 
             ctl.OnUpdateTransform += UpdateTransform;
             ctl.OnUpdateObject += UpdateObject;
+            ctl.OnUpdateRenderer += UpdateRenderer;
             ctl.OnUpdateBgColor1 += UpdateBgColor1;
             ctl.OnUpdateBgColor2 += UpdateBgColor2;
             ctl.OnEnvironmentMirror += UpdateEnvironemntMirror;
@@ -1340,6 +1342,7 @@ namespace Gallop.Live
 
             ctl.OnUpdateTransform -= UpdateTransform;
             ctl.OnUpdateObject -= UpdateObject;
+            ctl.OnUpdateRenderer -= UpdateRenderer;
             ctl.OnUpdateBgColor1 -= UpdateBgColor1;
             ctl.OnUpdateBgColor2 -= UpdateBgColor2;
             ctl.OnEnvironmentMirror -= UpdateEnvironemntMirror;
@@ -2311,6 +2314,38 @@ namespace Gallop.Live
         {
             if (tr.gameObject.layer != layer) tr.gameObject.layer = layer;
             for (int i = 0; i < tr.childCount; i++) SetLayerRecursively(tr.GetChild(i), layer);
+        }
+
+        // Native StageController.UpdateRenderer 0x7ffd59274d20 (JP): the Renderer track enables/disables renderers by
+        // timeline name. A prefab hash (StageObjectInfo, all renderers of the instance) is looked up first; otherwise
+        // the name is a StageObjectUnit and the renderer of each of its child entries is set.
+        public void UpdateRenderer(ref RendererUpdateInfo updateInfo)
+        {
+            int hash = updateInfo.TimelineNameHash;
+            if (_stageObjectRenderers.TryGetValue(hash, out var rootRenderers))
+            {
+                for (int i = 0; i < rootRenderers.Count; i++)
+                {
+                    if (rootRenderers[i] == null) break;
+                    rootRenderers[i].enabled = updateInfo.renderEnable;
+                }
+                return;
+            }
+
+            var unit = FindStageObjectUnit(hash);
+            if (unit == null) return;
+            var childHashes = unit.ChildObjectNameHashArray;
+            for (int c = 0; c < childHashes.Length; c++)
+            {
+                if (!_objectsWorkInfoDictionary.TryGetValue(childHashes[c], out var works)) continue;
+                for (int i = 0; i < works.Count; i++)
+                {
+                    var renderers = works[i].renderers;
+                    if (renderers == null) continue;
+                    for (int r = 0; r < renderers.Length; r++)
+                        if (renderers[r] != null) renderers[r].enabled = updateInfo.renderEnable;
+                }
+            }
         }
 
         private void UpdateObjectByHash(int hash, ref ObjectUpdateInfo updateInfo)

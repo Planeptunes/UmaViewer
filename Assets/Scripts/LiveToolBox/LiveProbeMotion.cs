@@ -25,7 +25,8 @@ using UnityEngine;
 //   motion_summary.csv   one row per captured frame: frame, folder, show time, wall ms
 //   manifest.txt         settings and outcome
 //   f<frame>/            per captured frame: state_trace.csv, camera_trace.csv, render_cyspring_calls.csv,
-//                        render_cyspring_bones.csv (same names and columns as the Momentum folder), capture.png, manifest.txt
+//                        render_cyspring_bones.csv (same names and columns as the Momentum folder), capture.png, manifest.txt;
+//                        every SceneEveryFrames-th frame also scene_nodes.csv, scene_changes.csv, materials.csv
 //Read-only: it only steps the show that is already paused and writes files.
 public static class LiveProbeMotion
 {
@@ -45,6 +46,11 @@ public static class LiveProbeMotion
     //run-up steps are not captured; the captured frames (the paused frame and the next FrameCount - 1) come right after
     //them with a settled simulation, like a real-time run. RunUpFrames = 0 keeps the old paused stepping.
     public static int RunUpFrames = 180;
+
+    //scene_nodes.csv / scene_changes.csv / materials.csv (same writer and columns as the Momentum capture) are written for
+    //the first captured frame and then every SceneEveryFrames captured frames (they are large). 0 = never.
+    public static int SceneEveryFrames = 10;
+    private static int _sceneCounter;
 
     private const string CancelReason = "cancelled";
 
@@ -112,6 +118,7 @@ public static class LiveProbeMotion
         string runDir = null;
         string outcome = null;
         int captured = 0;
+        _sceneCounter = 0;
         var summary = new StringBuilder("frame,folder,show_time,wall_ms\n");
         try
         {
@@ -269,6 +276,8 @@ public static class LiveProbeMotion
         Step(notes, "state_trace.csv", () => LiveProbeTraces.WriteStateTrace(dir, live, frame, LiveTraceExporter.CaptureRootTransform));
         Step(notes, "camera_trace.csv", () => LiveProbeCapture.WriteCameras(dir, live, frame));
         Step(notes, "render_cyspring", () => LiveProbeTraces.WriteCySpring(dir, frame));
+        if (SceneEveryFrames > 0 && _sceneCounter++ % SceneEveryFrames == 0)
+            Step(notes, "scene/materials", () => LiveProbeCapture.WriteScene(dir, live, frame));
 
         var m = new StringBuilder();
         m.AppendLine("viewer motion probe frame");

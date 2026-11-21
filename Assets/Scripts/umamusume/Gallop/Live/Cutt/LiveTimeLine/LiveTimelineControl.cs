@@ -374,6 +374,8 @@ namespace Gallop.Live.Cutt
 
         public event ObjectUpdateInfoDelegate OnUpdateObject;
 
+        public event RendererUpdateInfoDelegate OnUpdateRenderer;
+
         public event MobCyalumeUpdateInfoDelegate OnUpdateMobControl;
         public event MobCyalumeUpdateInfoDelegate OnUpdateCyalumeControl;
         public event AudienceUpdateInfoDelegate OnUpdateAudience;
@@ -836,6 +838,7 @@ namespace Gallop.Live.Cutt
                 if (ws == null) continue;
 
                 AlterUpdate_TransformControl(ws, _currentFrame);
+                AlterUpdate_RendererControl(ws, _currentFrame);
                 AlterUpdate_ObjectControl(ws, _currentFrame);
                 AlterUpdate_AnimationControl(ws, Mathf.RoundToInt(_currentFrame));
                 AlterUpdate_Audience(ws, _currentFrame);
@@ -4828,6 +4831,39 @@ namespace Gallop.Live.Cutt
                     updateInfo.updateData.scale = transformData.scale;
                 }
 
+                handler(ref updateInfo);
+            }
+        }
+
+        // Native LiveTimelineControl.AlterUpdate_RendererControl 0x7ffd592b39f0 (JP): per group, skip when the key list is
+        // Disable or not enabled for the play mode, take the key found at the frame (no interpolation) and publish
+        // RendererUpdateInfo { TimelineNameHash = group.nameHash, renderEnable = key.renderEnable }.
+        private void AlterUpdate_RendererControl(LiveTimelineWorkSheet sheet, float currentFrame)
+        {
+            RendererUpdateInfoDelegate handler = OnUpdateRenderer;
+            if (handler == null || sheet == null || sheet.rendererList == null)
+                return;
+
+            for (int i = 0; i < sheet.rendererList.Count; i++)
+            {
+                var entry = sheet.rendererList[i];
+                if (entry == null || entry.keys == null)
+                    continue;
+
+                var keys = entry.keys;
+                if (keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable) ||
+                    !keys.EnablePlayModeTimeline(_playMode))
+                    continue;
+
+                FindTimelineKey(out var curKey, out var nextKey, keys, currentFrame);
+                var rendererKey = curKey as LiveTimelineKeyRendererData;
+                if (rendererKey == null)
+                    continue;
+
+                RendererUpdateInfo updateInfo = default;
+                // Native group.nameHash is set by UpdateStatus at load; the viewer does not call it, so hash the name here.
+                updateInfo.TimelineNameHash = entry.nameHash != 0 ? entry.nameHash : FNVHash.Generate(entry.name);
+                updateInfo.renderEnable = rendererKey.renderEnable;
                 handler(ref updateInfo);
             }
         }

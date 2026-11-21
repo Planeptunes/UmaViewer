@@ -495,6 +495,8 @@ namespace Gallop.Live.Cutt
         [SerializeField] public List<LiveTimelineProjectorData> projecterList;
 
         [SerializeField] public List<LiveTimelineTransformData> transformList;
+        // Native worksheet.rendererList (0xB8): per-name Renderer.enabled track (AlterUpdate_RendererControl).
+        [SerializeField] public List<LiveTimelineRendererData> rendererList;
         [SerializeField] public List<LiveTimelineObjectData> objectList;
         // Real stage lights (AdditionalLightComponent). One group per light; the group index is
         // the light index. Native worksheet offset 0x2B8/0x360.

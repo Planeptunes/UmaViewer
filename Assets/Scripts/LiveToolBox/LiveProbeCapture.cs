@@ -297,7 +297,7 @@ public class LiveProbeCapture : MonoBehaviour
         }
     }
 
-    private static string WriteScene(string dir, int live, int frame)
+    internal static string WriteScene(string dir, int live, int frame)
     {
         Transform root = LiveTraceExporter.CaptureRootTransform;
         if (root == null) return "[scene] skipped: no Director root";
