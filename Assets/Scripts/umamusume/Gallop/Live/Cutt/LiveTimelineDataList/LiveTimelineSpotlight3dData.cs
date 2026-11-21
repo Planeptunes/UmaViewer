@@ -19,8 +19,6 @@ namespace Gallop.Live.Cutt
         public Vector3 characterPosition;
         public int targetCameraType;
         public int targetCameraIndex;
-        public string assetName = "spotlight3d000";
-        public int characterIndex = -1;
 
         // JP build keys (dump_jp.cs, LiveTimelineKeySpotlight3dData +0x84 / +0x88 / +0x90). Names match the bundle's TypeTree.
         // Key = `position` (+ characterPosition) is authored in the stage; Character = relative to the character's position
@@ -49,41 +47,17 @@ namespace Gallop.Live.Cutt
     public class LiveTimelineSpotlight3dData : ILiveTimelineGroupDataWithName
     {
         public LiveTimelineKeySpotlight3dDataList keys = new LiveTimelineKeySpotlight3dDataList();
-        // These are runtime bindings, not additional serialized track fields.
-        public int CharacterIndex { get; set; } = -1;
-        public int AssetId { get; set; }
+        // JP LiveTimelineSpotlight3dData (dump_jp.cs): the binding is serialized on the GROUP, not on the keys:
+        // _characterIndex +0x28 (ctor sets -1), _assetId +0x2C (default 0 = "spotlight3d000"). The game's
+        // UpdateStatus @0x7ffd592f7d10 only recomputes the name hash.
+        [SerializeField] private int _characterIndex = -1;  // 0x28
+        [SerializeField] private int _assetId;               // 0x2C
+
+        public int CharacterIndex { get => _characterIndex; set => _characterIndex = value; }
+        public int AssetId { get => _assetId; set => _assetId = value; }
 
         public LiveTimelineSpotlight3dData() : base("Spotlight3d") { }
         public override ILiveTimelineKeyDataList GetKeyList() => keys;
-
-        // The shipped worksheets serialize binding on each key, not the cached
-        // group fields. All keys in the recovered 1001/1093 tracks carry the same
-        // binding; -1 explicitly remains unbound. Do not infer it from a group label.
-        public override void UpdateStatus()
-        {
-            base.UpdateStatus();
-            CharacterIndex = -1;
-            AssetId = -1;
-            if (keys == null || keys.Count == 0 || keys[0] == null) return;
-            var first = (LiveTimelineKeySpotlight3dData)keys[0];
-            if (first.characterIndex < 0) return;
-            const string prefix = "spotlight3d";
-            string assetName = first.assetName;
-            if (assetName == prefix)
-            {
-                CharacterIndex = first.characterIndex;
-                return;
-            }
-            if (assetName == null || !assetName.StartsWith(prefix, StringComparison.Ordinal) ||
-                !int.TryParse(assetName.Substring(prefix.Length), NumberStyles.None,
-                    CultureInfo.InvariantCulture, out int assetId))
-            {
-                Debug.LogError("[Spotlight3d] Invalid authored asset name: " + assetName);
-                return;
-            }
-            AssetId = assetId;
-            CharacterIndex = first.characterIndex;
-        }
 
         // Native GetAssetName 0x1afa8d0, with invariant numeric formatting.
         public static string GetAssetName(int assetId) => assetId < 0
