@@ -1,4 +1,4 @@
-using Gallop.Live.Cutt;
+﻿using Gallop.Live.Cutt;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -51,6 +51,67 @@ namespace Gallop
         FacialOtherMorph MangaMorph;
         FacialOtherMorph StaticTearMorph;
         List<FacialOtherMorph> TearMorphs = new List<FacialOtherMorph>();
+
+        // Gallop.Live.LiveFaceController (ear path) + Gallop.EarWeightGroup (DrivenKeyComponent ear weights), one
+        // pair per character, created on first use by the live facial update.
+        private EarWeightGroup _earWeightGroup;
+        private Gallop.Live.LiveFaceController _liveFaceController;
+        private float _earPrevLiveTime = -1f;
+
+        // Ear random motion (timeline keys with useEarRandomMotion): the LiveModelController ear members of this
+        // character (see LiveModelControllerEarMotion) and the DrivenKeyComponent that plays the ear DrivenKeyAnimation
+        // on the driven-key locator.
+        private Gallop.Live.LiveModelControllerEarMotion _liveEarMotion;
+        private DrivenKeyComponent _earDrivenKey;
+
+        private void EnsureLiveFaceController()
+        {
+            if (_liveFaceController == null)
+            {
+                _earWeightGroup = new EarWeightGroup();
+                _liveFaceController = new Gallop.Live.LiveFaceController(_earWeightGroup, new FacialPartsApplier(this));
+            }
+        }
+
+        public Gallop.Live.LiveModelControllerEarMotion GetLiveEarMotion()
+        {
+            return _liveEarMotion ?? (_liveEarMotion = new Gallop.Live.LiveModelControllerEarMotion(this));
+        }
+
+        // Builds the DrivenKeyComponent ear state on first use (the game's DrivenKeyComponent of the head): the ear
+        // weight group, the driven-key locator Animator and the per-EarType nodes of Ear_L_Ctrl (side 1) /
+        // Ear_R_Ctrl (side 0), the same side numbering as LiveFaceController.SetEar.
+        private bool EnsureEarDrivenKey()
+        {
+            if (_earDrivenKey != null) return true;
+            if (!DrivenKeyLocator) return false;
+            var animator = DrivenKeyLocator.GetComponent<Animator>();
+            var left = DrivenKeyLocator.Find("Ear_L_Ctrl");
+            var right = DrivenKeyLocator.Find("Ear_R_Ctrl");
+            if (animator == null || left == null || right == null) return false;
+            EnsureLiveFaceController();
+            var component = new DrivenKeyComponent();
+            component.InitializeEar(_earWeightGroup, animator);
+            component.InitializeEarDrivenKeyInfo(1, left);
+            component.InitializeEarDrivenKeyInfo(0, right);
+            _earDrivenKey = component;
+            return true;
+        }
+
+        // ModelController.PlayEarDrivenKey @0x7ffd596783e0 -> DrivenKeyComponent.PlayEar(animation, 0, 0, 0)
+        // @0x7ffd58e6fa20 (its tail enables the DrivenKeyPlayableAnimator's Animator).
+        public void PlayEarDrivenKey(DrivenKeyAnimation animation)
+        {
+            if (animation == null || !EnsureEarDrivenKey()) return;
+            DrivenKeyLocator.GetComponent<Animator>().enabled = true;
+            _earDrivenKey.PlayEar(animation);
+        }
+
+        // DrivenKeyComponent.StopLayer(1) (LiveModelController.StopEarRandomMotion @0x7ffd59b3b980).
+        public void StopEarDrivenKeyLayer()
+        {
+            _earDrivenKey?.StopEarLayer();
+        }
 
         public void Initialize(Dictionary<string, Transform> objs)
         {
@@ -389,9 +450,17 @@ namespace Gallop
             });
         }
 
+        // Gallop.Model.Component.EyeHighlightController of this head (set by UmaContainerCharacter.LoadFaceMorph).
+        // The game runs its BeforeApplyDrivenKey / AfterApplyDrivenKey around the driven-key application; here that
+        // is the eye morph pass (reset -> additive morphs), whose result moves the Eye_*_info highlight locators.
+        [System.NonSerialized] public Gallop.Model.Component.EyeHighlightController EyeHighlight;
+        // LiveFaceController +0x90 (last tearyType of the effect key).
+        [System.NonSerialized] private int _prevTearyType;
+
         public void ChangeMorph()
         {
             FacialResetAll();
+            EyeHighlight?.BeforeApplyDrivenKey();
             if (Container.FaceOverrideData && Container.FaceOverrideData.Enable)
             {
                 OverrideFace(Container.FaceOverrideData);
@@ -402,17 +471,20 @@ namespace Gallop
             MouthMorphs.ForEach(morph => ProcessMorph(morph));
             OtherMorphs.ForEach(morph => ProcessExtraMorph(morph));
             ApplyRotation();
+            EyeHighlight?.AfterApplyDrivenKey();
         }
 
         public void ChangeMorphEye()
         {
             FacialResetEye();
+            EyeHighlight?.BeforeApplyDrivenKey();
             if (Container.FaceOverrideData && Container.FaceOverrideData.Enable)
             {
                 OverrideFace(Container.FaceOverrideData);
             }
             EyeMorphs.ForEach(morph => ProcessMorph(morph));
             ApplyRotationEye();
+            EyeHighlight?.AfterApplyDrivenKey();
         }
 
         public void ChangeMorphMouth()
@@ -434,6 +506,26 @@ namespace Gallop
             FacialResetEar();
             EarMorphs.ForEach(morph => ProcessMorph(morph));
             ApplyRotationEar();
+        }
+
+        // EarWeightGroup weights -> ear morphs. The game's EarWeightJob / WeightCalcJob TRS blend (SetTRS / CalcTRS /
+        // AddTRS / BlendTRS, RVA 0x4AF78B0 / 0x4AF75B0) is not ported (see EarWeightGroup header): the viewer applies
+        // the weights through the additive facial_target morphs instead (documented adaptation). Morph k of
+        // leftEarMorph/rightEarMorph is EarType k + 1 (Initialize skips EarType.Base); EarType.Base (index 0) is the
+        // reference pose of the additive morphs (FacialReset target), so its weight is never applied directly.
+        private void ApplyEarWeights()
+        {
+            // All WEIGHT_SIZE segments hold the same value on this path: DrivenKeyComponent_SetEar writes them equal.
+            const int seg = 0;
+            for (int type = 1; type < EarWeightGroup.EAR_TYPE_NUM; type++)
+            {
+                // LiveFaceController.SetEar passes the left ear with side 1 and the right ear with side 0.
+                float weightL = _earWeightGroup.WeightArray[type, 1 * EarWeightGroup.WEIGHT_SIZE + seg];
+                float weightR = _earWeightGroup.WeightArray[type, 0 * EarWeightGroup.WEIGHT_SIZE + seg];
+                int morphIndex = type - 1;
+                if (morphIndex < leftEarMorph.Count) leftEarMorph[morphIndex].weight = weightL;
+                if (morphIndex < rightEarMorph.Count) rightEarMorph[morphIndex].weight = weightR;
+            }
         }
 
         public void ChangeMorphEffect()
@@ -831,101 +923,83 @@ namespace Gallop
             }
         }
 
-        public void AlterUpdateAutoLip(LiveTimelineKeyLipSyncData _prevLipKeyData, LiveTimelineKeyLipSyncData keyData_, float liveTime_, float _switch)
+        // Lip-sync key -> LiveFaceController.AlterUpdateAutoLip (game mouth state machine). Replaces the viewer's
+        // CalcMorphWeight key-to-key interpolation (AGENTS.md 8.2).
+        public void AlterUpdateAutoLip(LiveTimelineKeyLipSyncData keyData_, int charaIndex, float duration)
         {
-            //|| lockMouth
-            
-            
-            if (_switch == 0 || lockMouth)
-            {
-                return;
-            }
-            
-            
-
-            float weightRatio = CalcMorphWeight(liveTime_, keyData_.speed, keyData_.time, keyData_.interpolateType, keyData_, null);
-
-            MouthMorphs.ForEach(morph => morph.weight = 0);
-
-            if (_prevLipKeyData != null)
-            {
-                if(weightRatio != 1)
-                {
-                    foreach (var part in _prevLipKeyData.facialPartsDataArray)
-                    {
-                        if (part.FacialPartsId == 0 ) { continue; }
-                        MouthMorphs[part.FacialPartsId - 1].weight = ((float)part.WeightPer / 100 * (1 - weightRatio)) * ((float)_prevLipKeyData.weight / 100);
-                    }
-                }
-                else
-                {
-                    foreach (var part in _prevLipKeyData.facialPartsDataArray)
-                    {
-                        if (part.FacialPartsId == 0) { continue; }
-                        MouthMorphs[part.FacialPartsId - 1].weight = 0;
-                    }
-                }
-            } 
-
-            foreach (var part in keyData_.facialPartsDataArray)
-            {
-                if (part.FacialPartsId == 0) { continue; }
-                MouthMorphs[part.FacialPartsId - 1].weight += ((float)part.WeightPer / 100 * weightRatio) * ((float)keyData_.weight / 100);
-            }
-
-            ChangeMorphMouth();
+            if (_liveFaceController == null || keyData_ == null) return;
+            _liveFaceController.AlterUpdateAutoLip(keyData_, charaIndex, duration);
         }
 
         public bool lockMouth = false;
 
+        // Port of the Live facial update path (LiveFaceController.AlterUpdateFacialNew RVA 0x4EC20E0) in the
+        // game's order: face key block -> SetMouth -> UpdateEye -> eyebrow key block -> SetEyebrow -> ear key
+        // block -> SetEar -> effect key block. The first seven steps are ported in
+        // LiveFaceController.AlterUpdateFacialNew_FaceParts / AlterUpdateFacialNew_Ear (which drive the
+        // additive morphs through the FaceParts state machine and the DrivenKeyComponent weight ramps); the
+        // effect key block below keeps the viewer's cheek / manga / tear / shade handling (the game drives
+        // ModelController.SetCheek / PlayEyeHighlightAnimation / SetVisibleTear / SetMangame /
+        // SetFaceShadowVisible there - reported, not ported).
         public void AlterUpdateFacialNew(ref FacialDataUpdateInfo updateInfo_, float liveTime_)
         {
-            if (updateInfo_.mouthCur != null)
+            EnsureLiveFaceController();
+
+            // DrivenKeyComponent.BlendProgrammable (RVA 0x4AE9C90) ear ramp. The game ramps the weights in
+            // DrivenKeyComponent.PostJob after the timeline key update; the viewer has no driven-key job
+            // pipeline, so the ramp runs here with the live timeline delta (documented adaptation,
+            // EarWeightGroup header).
+            float earDeltaTime = _earPrevLiveTime < 0f ? 0f : (liveTime_ - _earPrevLiveTime);
+            // Delta of the ear / face weight ramps. Equal to earDeltaTime, except right after a backward seek (see below).
+            float rampDeltaTime;
+            if (earDeltaTime < 0f)
             {
-                if((int)updateInfo_.mouthCur.attribute == 131072 || (int)updateInfo_.mouthCur.attribute == 0)
-                {
-                    lockMouth = true;
-                }
-                else
-                {
-                    lockMouth = false;
-                }
+                // Viewer-only: the game never seeks backwards (LiveFaceController.ResetEar / EarWeightGroup.Reset).
+                _liveFaceController.ResetEar();
+                _earWeightGroup.Reset();
+                // Viewer-only, same reason: the random ear clip and its frame dedupe restart (ResetFrameEar state).
+                _earDrivenKey?.ResetEar();
+                _liveEarMotion?.ResetFrameEar();
+                earDeltaTime = 0f;
+                // The reset ramps restart from zero and, with the show paused after the seek, the timeline delta stays 0, so
+                // the ears / face would never reach the weights the keys give at the new time. One long step (longer than any
+                // ramp) lands them on their targets, as if the show had been playing there.
+                rampDeltaTime = 10f;
+            }
+            else
+            {
+                rampDeltaTime = earDeltaTime;
+            }
+            _earPrevLiveTime = liveTime_;
 
-
-                float weightRatio = CalcMorphWeight(liveTime_, updateInfo_.mouthCur.speed, updateInfo_.mouthCur.time, updateInfo_.mouthCur.interpolateType, updateInfo_.mouthCur, updateInfo_.mouthNext);
-
-                MouthMorphs.ForEach(morph => morph.weight = 0);
-
-                if (updateInfo_.mouthPrev != null)
-                {
-                    if (weightRatio != 1)
-                    {
-                        foreach (var part in updateInfo_.mouthPrev.facialPartsDataArray)
-                        {
-                            if (part.FacialPartsId == 0) { continue; }
-                            MouthMorphs[part.FacialPartsId - 1].weight = ((float)part.WeightPer / 100 * (1 - weightRatio));
-                        }
-                    }
-                    else
-                    {
-                        foreach (var part in updateInfo_.mouthPrev.facialPartsDataArray)
-                        {
-                            if (part.FacialPartsId == 0) { continue; }
-                            MouthMorphs[part.FacialPartsId - 1].weight = 0;
-                        }
-                    }
-                }
-
-                foreach (var part in updateInfo_.mouthCur.facialPartsDataArray)
-                {
-                    if (part.FacialPartsId == 0) { continue; }
-                    MouthMorphs[part.FacialPartsId - 1].weight += ((float)part.WeightPer / 100 * weightRatio);
-                }
-
-                ChangeMorphMouth();
-
+            // Facial delegate (Director.<InitializeTimeline>b__476_3 @0x7ffd59204230), run just before
+            // AlterUpdateFacialNew: no ear key -> LiveModelController.ResetFrameEar, else
+            // Director.UpdateRandomEarMotion(key, liveModelController, liveFaceController). Kept here (after the seek
+            // reset above) because the viewer creates the facial controller lazily in this method.
+            if (updateInfo_.ear == null)
+            {
+                _liveEarMotion?.ResetFrameEar();
+            }
+            else
+            {
+                Gallop.Live.Director.UpdateRandomEarMotion(updateInfo_.ear, GetLiveEarMotion(), _liveFaceController);
             }
 
+            // Game order in LiveFaceController.AlterUpdateFacialNew (RVA 0x4EC20E0): face key block -> SetMouth
+            // -> UpdateEye -> eyebrow key block -> SetEyebrow -> ear key block -> SetEar -> effect key block.
+            // frameRate = 0x3c (the game passes 60).
+            _liveFaceController.AlterUpdateFacialNew_FaceParts(ref updateInfo_, liveTime_, 60);
+
+            // The invented lockMouth gate (exact-match attribute == 131072 on the mouth key) is removed per
+            // AGENTS.md 8.2: the game gates auto-lip with LiveFaceController._isLipSync (0xC5, set by the face /
+            // mouth key blocks), which the port fills faithfully (LiveFaceController.AlterUpdateAutoLip
+            // RVA 0x4EC1FD0 reads it).
+            lockMouth = !_liveFaceController._isLipSync;
+
+            _liveFaceController.AlterUpdateFacialNew_Ear(ref updateInfo_);
+
+            // Effect key block (game order: last). The viewer maps the effect key onto the cheek / manga / tear
+            // / shade morphs.
             var HasManga = false;
             if (updateInfo_.effect != null)
             {
@@ -955,11 +1029,36 @@ namespace Gallop
                     }
                 }
 
-                if (StaticTearMorph != null)
+                // LiveFaceController.AlterUpdateFacialNew @0x7ffd592420e0, effect key block:
+                //  - kAttrTeary (0x20000): eye highlight animation EYE_HIGHLIGHT_ANIMATION_ARRAY[tearyType]
+                //    ({NoAnim, Teary, Twinkle}); tearyType < 1 stops it, a new id plays it
+                //    (ModelController.PlayEyeHighlightAnimation @0x7ffd59678420).
+                //  - kAttrTearful (0x40000): SetVisibleTear(tearfulType > 0) (the viewer used tearyType here).
+                if (((int)info.attribute & LiveTimelineKeyFacialEffectData.kAttrTeary) != 0 && EyeHighlight != null)
                 {
-                    var tearfulEnable = ((int)info.attribute & LiveTimelineKeyFacialEffectData.kAttrTearful) > 0;
-                    var tearfultype = tearfulEnable ? info.tearyType : 0;
-                    StaticTearMorph.BindProperties.ForEach(p => p.Value = tearfultype);
+                    int tearyType = info.tearyType;
+                    if (tearyType < 1)
+                    {
+                        if (EyeHighlight.IsPlayAnimation())
+                        {
+                            EyeHighlight.StopAnimation();
+                            ChangeMorphEye(); // parts back to the morph pose after WriteDefault
+                        }
+                    }
+                    else if (tearyType != _prevTearyType && tearyType < 3)
+                    {
+                        // ModelController.PlayEyeHighlightAnimation @0x7ffd59678420 stores the key's comparison type
+                        // (key +0x34) into the controller (+0x98), then PlayAnimation(id, noInterp = false).
+                        EyeHighlight.ComparisonType = info.TwinkleTimeComparisonType;
+                        EyeHighlight.PlayAnimation(tearyType, false);
+                    }
+                    _prevTearyType = tearyType;
+                }
+
+                if (StaticTearMorph != null && ((int)info.attribute & LiveTimelineKeyFacialEffectData.kAttrTearful) != 0)
+                {
+                    float visible = info.tearfulType > 0 ? 1f : 0f;
+                    StaticTearMorph.BindProperties.ForEach(p => p.Value = visible);
                 }
 
                 if (ShadeMorph != null)
@@ -967,7 +1066,8 @@ namespace Gallop
                     var shaderEnable = ((int)info.attribute & LiveTimelineKeyFacialEffectData.kAttrFaceShadowVisible) > 0;
                     if (shaderEnable)
                     {
-                        ShadeMorph.BindProperties[0].Value = Mathf.MoveTowards(ShadeMorph.BindProperties[0].Value, 1, Time.deltaTime * 2);
+                        // (Motion Probe, viewer tool) LiveProbeMotion.Delta: 1/60 s on a released step, Time.deltaTime otherwise.
+                        ShadeMorph.BindProperties[0].Value = Mathf.MoveTowards(ShadeMorph.BindProperties[0].Value, 1, LiveProbeMotion.Delta(Time.deltaTime) * 2);
                     }
                     else
                     {
@@ -977,249 +1077,389 @@ namespace Gallop
                 ChangeMorphEffect();
             }
 
-            if (updateInfo_.eyeCur != null)
+            // Eye-morph hide behind the manga overlay (EyeMorphs[42]/[43]). The game does this inside
+            // ModelController.SetMangame (RVA 0x52FD1C0): a static FacePartsSet is applied through the
+            // DrivenKeyComponent and MangameController.ShowMangame. That port is missing (the static manga-eye
+            // FacePartsSet contents), so this keeps the current behaviour for that part ONLY (AGENTS.md 8.1,
+            // reported as a data gap).
+            if (HasManga && EyeMorphs.Count > 43)
             {
-
-                float weightRatio = CalcMorphWeight(liveTime_, updateInfo_.eyeCur.speed, updateInfo_.eyeCur.time, updateInfo_.eyeCur.interpolateType, updateInfo_.eyeCur, updateInfo_.eyeNext);
-
-                EyeMorphs.ForEach(morph => morph.weight = 0);
-
-                if (updateInfo_.eyePrev != null)
-                {
-                    if (weightRatio != 1)
-                    {
-                        foreach (var part in updateInfo_.eyePrev.facialPartsDataArrayL)
-                        {
-                            if (part.FacialPartsId == 0) { continue; }
-                            leftEyeMorph[part.FacialPartsId - 1].weight = ((float)part.WeightPer / 100 * (1 - weightRatio)) * ((float)updateInfo_.eyePrev.weight / 100);
-                        }
-                        foreach (var part in updateInfo_.eyePrev.facialPartsDataArrayR)
-                        {
-                            if (part.FacialPartsId == 0) { continue; }
-                            rightEyeMorph[part.FacialPartsId - 1].weight = ((float)part.WeightPer / 100 * (1 - weightRatio)) * ((float)updateInfo_.eyePrev.weight / 100);
-                        }
-                    }
-                    else
-                    {
-                        foreach (var part in updateInfo_.eyePrev.facialPartsDataArrayL)
-                        {
-                            if (part.FacialPartsId == 0) { continue; }
-                            leftEyeMorph[part.FacialPartsId - 1].weight = 0;
-                        }
-                        foreach (var part in updateInfo_.eyePrev.facialPartsDataArrayR)
-                        {
-                            if (part.FacialPartsId == 0) { continue; }
-                            rightEyeMorph[part.FacialPartsId - 1].weight = 0;
-                        }
-                    }
-                }
-
-                foreach (var part in updateInfo_.eyeCur.facialPartsDataArrayL)
-                {
-                    if (part.FacialPartsId == 0) { continue; }
-                    leftEyeMorph[part.FacialPartsId - 1].weight += ((float)part.WeightPer / 100 * weightRatio) * ((float)updateInfo_.eyeCur.weight / 100);
-                }
-                foreach (var part in updateInfo_.eyeCur.facialPartsDataArrayR)
-                {
-                    if (part.FacialPartsId == 0) { continue; }
-                    rightEyeMorph[part.FacialPartsId - 1].weight += ((float)part.WeightPer / 100 * weightRatio) * ((float)updateInfo_.eyeCur.weight / 100);
-                }
-
-                EyeMorphs[42].weight = (HasManga ? 1 : 0); //Hide eye when has Manga eye
-                EyeMorphs[43].weight = (HasManga ? 1 : 0);
+                EyeMorphs[42].weight = 1;
+                EyeMorphs[43].weight = 1;
                 ChangeMorphEye();
             }
 
-            if (updateInfo_.eyebrowCur != null)
+            // DrivenKeyComponent.BlendProgrammable (RVA 0x4AE9C90): the ear section plus the three face-group
+            // ramps (LiveFaceController.AdvanceFaceRamps), then the weights are applied to the additive morphs.
+            // DrivenKeyComponent.PostJob (@0x7ffd58e702a0) order: the ear clip (UpdateEarWeight) first, then
+            // BlendProgrammable.
+            _earDrivenKey?.UpdateEarLive(earDeltaTime);
+            if (rampDeltaTime > 0f)
             {
-
-                float weightRatio = CalcMorphWeight(liveTime_, updateInfo_.eyebrowCur.speed, updateInfo_.eyebrowCur.time, updateInfo_.eyebrowCur.interpolateType, updateInfo_.eyebrowCur, updateInfo_.eyebrowNext);
-
-                EyeBrowMorphs.ForEach(morph => morph.weight = 0);
-
-                if (updateInfo_.eyebrowPrev != null)
-                {
-                    if (weightRatio != 1)
-                    {
-                        foreach (var part in updateInfo_.eyebrowPrev.facialPartsDataArrayL)
-                        {
-                            if (part.FacialPartsId == 0) { continue; }
-                            leftEyebrowMorph[part.FacialPartsId - 1].weight = ((float)part.WeightPer / 100 * (1 - weightRatio)) * ((float)updateInfo_.eyebrowPrev.weight / 100);
-                        }
-                        foreach (var part in updateInfo_.eyebrowPrev.facialPartsDataArrayR)
-                        {
-                            if (part.FacialPartsId == 0) { continue; }
-                            rightEyebrowMorph[part.FacialPartsId - 1].weight = ((float)part.WeightPer / 100 * (1 - weightRatio)) * ((float)updateInfo_.eyebrowPrev.weight / 100);
-                        }
-                    }
-                    else
-                    {
-                        foreach (var part in updateInfo_.eyebrowPrev.facialPartsDataArrayL)
-                        {
-                            if (part.FacialPartsId == 0) { continue; }
-                            leftEyebrowMorph[part.FacialPartsId - 1].weight = 0;
-                        }
-                        foreach (var part in updateInfo_.eyebrowPrev.facialPartsDataArrayR)
-                        {
-                            if (part.FacialPartsId == 0) { continue; }
-                            rightEyebrowMorph[part.FacialPartsId - 1].weight = 0;
-                        }
-                    }
-                }
-
-                foreach (var part in updateInfo_.eyebrowCur.facialPartsDataArrayL)
-                {
-                    if (part.FacialPartsId == 0) { continue; }
-                    leftEyebrowMorph[part.FacialPartsId - 1].weight += ((float)part.WeightPer / 100 * weightRatio) * ((float)updateInfo_.eyebrowCur.weight / 100);
-                }
-                foreach (var part in updateInfo_.eyebrowCur.facialPartsDataArrayR)
-                {
-                    if (part.FacialPartsId == 0) { continue; }
-                    rightEyebrowMorph[part.FacialPartsId - 1].weight += ((float)part.WeightPer / 100 * weightRatio) * ((float)updateInfo_.eyebrowCur.weight / 100);
-                }
-
-                ChangeMorphEyebrow();
-
+                _earWeightGroup.BlendProgrammable(rampDeltaTime);
+            }
+            _liveFaceController.AdvanceFaceRamps(rampDeltaTime);
+            // EyeHighlightPlayableAnimator time (runs with the character delta, speed 1.0).
+            // The game evaluates the highlight animator every frame before the driven keys; re-run the eye pass while
+            // a highlight clip plays (and once more on the frame it stops) so the parts follow the clip.
+            if (EyeHighlight != null)
+            {
+                bool wasPlaying = EyeHighlight.IsBusy;
+                EyeHighlight.UpdateAnimation(earDeltaTime);
+                if (wasPlaying || EyeHighlight.IsBusy)
+                    ChangeMorphEye();
             }
 
-            if (updateInfo_.earCur != null)
+            ApplyEarWeights();
+            ChangeMorphEar();
+
+            // Eye track. In the game this runs in the facial delegate AFTER AlterUpdateFacialNew
+            // (Director.<InitializeTimeline>b__476_3 RVA 0x4E84230): the key's rates feed
+            // EyeTraceController.SetVerticalRate / SetHorizontalRate and the aim is computed by
+            // EyeTraceObject.AlterLateUpdate. Both are applied here through the eye X/Y range morphs.
+            if (updateInfo_.eyeTrack != null && !updateInfo_.eyeTrack.IsNop)
             {
-
-                float weightRatio = CalcMorphWeight(liveTime_, updateInfo_.earCur.speed, updateInfo_.earCur.time, updateInfo_.earCur.interpolateType, updateInfo_.earCur, updateInfo_.earNext);
-
-                EarMorphs.ForEach(morph => morph.weight = 0);
-
-                if (updateInfo_.earPrev != null)
+                var eyeTrackKey = updateInfo_.eyeTrack;
+                // Director.<InitializeTimeline>b__476_3 @0x7ffd59204230 (disassembly): SetDelayRate(clamp01(
+                // speedRatePer * 0.3 (DAT_7ffd5a640e28) / 100)); kAttrDurationTime clear -> ClearDurationTime and
+                // CharacterObject+0xbc = -1; set and a new key frame -> SetDurationTime(time * 1/60 (DAT_7ffd5a640e78),
+                // interpolateType) and +0xbc = key frame.
+                _eyeTrace.DelayRate = Mathf.Clamp01(eyeTrackKey.speedRatePer * 0.3f / 100f);
+                _eyeTraceL.DelayRate = _eyeTrace.DelayRate;
+                if (!eyeTrackKey.IsEnabledDurationTime)
                 {
-                    if (weightRatio != 1)
-                    {
-                        var partL = updateInfo_.earPrev.facialEarIdL;
-
-                        if (partL != 0)
-                        {
-                            leftEarMorph[partL - 1].weight = (((1 - weightRatio)) * ((float)updateInfo_.earPrev.weight / 100));
-                        }
-
-                        var partR = updateInfo_.earPrev.facialEarIdR;
-
-                        if (partR != 0)
-                        {
-                            rightEarMorph[partR - 1].weight = (((1 - weightRatio)) * ((float)updateInfo_.earPrev.weight / 100));
-                        }
-                    }
-                    else
-                    {
-                        var partL = updateInfo_.earPrev.facialEarIdL;
-
-                        if (partL != 0)
-                        {
-                            leftEarMorph[partL - 1].weight = 0;
-                        }
-
-                        var partR = updateInfo_.earPrev.facialEarIdR;
-
-                        if (partR != 0)
-                        {
-                            rightEarMorph[partR - 1].weight = 0;
-                        }
-                    }
+                    _eyeTrace.ClearDurationTime();
+                    _eyeTraceL.ClearDurationTime();
+                    _eyeTraceKeyFrame = -1;
                 }
-
-                var curPartL = updateInfo_.earCur.facialEarIdL;
-
-                if (curPartL != 0)
+                else if (_eyeTraceKeyFrame != eyeTrackKey.frame)
                 {
-                    leftEarMorph[curPartL - 1].weight += weightRatio * ((float)updateInfo_.earCur.weight / 100);
+                    _eyeTrace.SetDurationTime(eyeTrackKey.time * 0.016666668f, (int)eyeTrackKey.interpolateType);
+                    _eyeTraceL.SetDurationTime(eyeTrackKey.time * 0.016666668f, (int)eyeTrackKey.interpolateType);
+                    _eyeTraceKeyFrame = eyeTrackKey.frame;
                 }
-
-                var curPartR = updateInfo_.earCur.facialEarIdR;
-
-                if (curPartR != 0)
-                {
-                    rightEarMorph[curPartR - 1].weight += weightRatio * ((float)updateInfo_.earCur.weight / 100);
-                }
-
-                ChangeMorphEar();
-
-            }
-
-            if (updateInfo_.eyeTrackCur != null)
-            {
-                float weightRatio = CalcMorphWeight(liveTime_, updateInfo_.eyeTrackCur.speed, updateInfo_.eyeTrackCur.time, updateInfo_.eyeTrackCur.interpolateType, updateInfo_.eyeTrackCur, updateInfo_.eyeTrackNext);
-
-                Vector2 finalRotation = new Vector2();
-
-                if (updateInfo_.eyeTrackPrev != null)
-                {
-                    finalRotation = Vector2.Lerp(GetTimelineEyeTrackRotation(updateInfo_.eyeTrackPrev), GetTimelineEyeTrackRotation(updateInfo_.eyeTrackCur), weightRatio);
-                }
-                else
-                {
-                    finalRotation = GetTimelineEyeTrackRotation(updateInfo_.eyeTrackCur);
-                }
-
-                SetEyeTrack(finalRotation);
+                // EyeTraceController.AfterEndCySpringSimulation @0x7ffd59582f10: while no eye has a duration time the step is
+                // deltaTime / (DeltaTimeFactor (+0x50, default 1.0, ctor) / Application.targetFrameRate).
+                bool durationRunning = _eyeTrace.IsEnabledDurationTime || _eyeTraceL.IsEnabledDurationTime;
+                float eyeDt = durationRunning ? earDeltaTime : earDeltaTime / (1f / Application.targetFrameRate);
+                // One EyeTraceObject per eye ([0] = L, [1] = R), each with its own range (EyeTraceController.Setup).
+                Vector2 offL = _eyeTraceL.Advance(GetTimelineEyeTrackOffset(eyeTrackKey, true, durationRunning), eyeDt);
+                Vector2 offR = _eyeTrace.Advance(GetTimelineEyeTrackOffset(eyeTrackKey, false, durationRunning), eyeDt);
+                ApplyEyeTraceOffset(offL, offR);
             }
         }
 
-        public Vector2 GetTimelineEyeTrackRotation(LiveTimelineKeyFacialEyeTrackData key)
+        // Port of the key-rate handling of the facial delegate (Director.<InitializeTimeline>b__476_3
+        // RVA 0x4E84230) and the aim + rate section of EyeTraceObject.AlterLateUpdate (RVA 0x52055F0):
+        //   - rates: EyeTraceController.SetVerticalRate / SetHorizontalRate (RVA 0x5204780 / 0x52044A0) clamp
+        //     verticalRatePer / 100 and horizontalRatePer / 100 to [-1, 1] (DAT_7ffd5a640dac = -1, DAT_7ffd5a640d6c = 1);
+        //   - aim: offset = dot(locatorParent.right / up, normalize(target - locator.position)) * moveRate
+        //     (EyeTraceObject..ctor 0x3ca3d70a = 0.02) * Scale (1.0), clamped to the eye range
+        //     (ctor defaults -0.007..0.007 / -0.003..0.003: _rangeMinX/_rangeMaxX/_rangeMinY/_rangeMaxY);
+        //   - the rates then shift the offset toward the range limits:
+        //       rate > 0: value = (max - value) * rate + value;  rate < 0: value = value - (min - value) * rate.
+        // The result is mapped into the eye X/Y range morph weights with the viewer's locator convention
+        // (ProcessLocator: weight = locator.localPosition.x * -100).
+        // The EyeTraceObject smoothing (DelayRate, SetDurationTime) and the per-eye ranges are applied by
+        // EyeTraceState / GetEyeTraceRange.
+
+        // Target offset of EyeTraceObject.AlterLateUpdate (+0xb0/+0xb4: aim + rate shift, in locator units).
+        private Vector2 GetTimelineEyeTrackOffset(LiveTimelineKeyFacialEyeTrackData key, bool leftEye, bool durationRunning)
         {
-            if(CalcTargetPosition(key, out Vector3 target))
+            float rateH = Mathf.Clamp(key.horizontalRatePer / 100f, -1f, 1f);
+            float rateV = Mathf.Clamp(key.verticalRatePer / 100f, -1f, 1f);
+
+            Vector3 target;
+            bool isDefault = ResolveEyeTarget(key, out target);
+            // EyeTraceObject.AlterLateUpdate: IsDefault (+0xC0) -> the eye stays at its rest offset (no aim); otherwise the
+            // direction to the target is pulled toward the locator forward only while no duration time is running.
+            Vector2 result = CalcEyeTrackAimOffset(!isDefault, target, rateH, rateV, !durationRunning, GetEyeTraceRange(leftEye)) / -100f;
+            return result;
+        }
+
+
+        // CharacterObject._eyeTargetSetter / eyeTargetObject state kept between frames (a type whose target cannot be
+        // resolved leaves the previous target, as in the game where eyeTargetObject keeps its last position).
+        private bool _eyeTargetKnown;
+        private Vector3 _eyeTargetWorld;
+
+        // EyeTargetPositionSetter callback (<.ctor>b__17_0 @0x7ffd59c40000): unless IsWorldDirect the eye target object is
+        // put on the ray head -> target at distance Length (zero direction when closer than 1e-5), else exactly at the target.
+        private Vector3 EyeTargetFromSetter(Vector3 targetWorld, bool isWorldDirect, float length)
+        {
+            if (isWorldDirect)
+                return targetWorld;
+            Vector3 head = Container.HeadBone.transform.position;
+            Vector3 dir = targetWorld - head;
+            float len = dir.magnitude;
+            dir = len > 1e-5f ? dir / len : Vector3.zero;
+            return head + dir * length;
+        }
+
+        // Port of Gallop.Live.CharacterObject.LateUpdateEyeTrace @0x7ffd5922be40 (type = key.targetType, the facial delegate
+        // Director.<InitializeTimeline>b__476_3 @0x7ffd59204230 stores it in CharacterObject +0x108). Returns IsDefault
+        // (EyeTraceController.set_IsDefault); `target` is the world position of the eye target object. Constants:
+        // DAT_7ffd5a640d84 = 10.0 (length for camera targets), DAT_7ffd5a640d6c = 1.0.
+        //   0 (ArenaOld): eyeTargetObject.localPosition = Director.GetStageArenaPosition()  (local to the model root)
+        //   1 Camera, 30-33 MultiCamera1-4: setter on the camera position, Length 10
+        //   2 CharaForward and every unknown type: IsDefault
+        //   3-22 CharaN: setter on the head of character N-3, Length 1
+        //   40 DirectPosition: setter(world = stage.position + stage.rotation * key.DirectPosition, IsWorldDirect, 1)
+        //   41 Arena: eyeTargetObject.position = PositionNode.position + GetStageArenaPosition()
+        private bool ResolveEyeTarget(LiveTimelineKeyFacialEyeTrackData key, out Vector3 target)
+        {
+            var director = Live.Director.instance;
+            int type = (int)key.targetType;
+            target = _eyeTargetWorld;
+            bool hasLast = _eyeTargetKnown;
+
+            if (type == 0)
             {
-                return GetEyeTrackRotation(target) + new Vector2((float)key.horizontalRatePer / 100, (float)key.verticalRatePer / 100);
+                target = Container.transform.TransformPoint(director.GetStageArenaPosition());
+            }
+            else if (type == 1)
+            {
+                if (director.MainCameraTransform == null)
+                    return !hasLast;
+                target = EyeTargetFromSetter(director.MainCameraTransform.position, false, 10f);
+            }
+            else if (type == 2)
+            {
+                return true;
+            }
+            else if (type == 40)
+            {
+                Transform stage = director._stageController != null ? director._stageController.transform : null;
+                if (stage == null)
+                    return !hasLast;
+                Vector3 world = stage.position + stage.rotation * key.DirectPosition;
+                target = EyeTargetFromSetter(world, true, 1f);
+            }
+            else if (type == 41)
+            {
+                Transform positionNode = Container.Position != null ? Container.Position : Container.transform;
+                target = positionNode.position + director.GetStageArenaPosition();
+            }
+            else if (type >= 3 && type < 23)
+            {
+                int index = type - 3;
+                if (index >= director.CharaContainerScript.Count || director.CharaContainerScript[index] == null ||
+                    director.CharaContainerScript[index].HeadBone == null)
+                    return !hasLast;
+                target = EyeTargetFromSetter(director.CharaContainerScript[index].HeadBone.transform.position, false, 1f);
+            }
+            else if (type >= 30 && type < 34)
+            {
+                int index = type - 30;
+                if (!director._liveTimelineControl.ExistsMultiCamera(index))
+                    return true;
+                target = EyeTargetFromSetter(director._liveTimelineControl.GetMultiCameraWorldPosition(index), false, 10f);
             }
             else
             {
-                return new Vector2(0, 0) + new Vector2((float)key.horizontalRatePer / 100, (float)key.verticalRatePer / 100);
+                return true;
             }
-        }
 
-        public bool CalcTargetPosition(LiveTimelineKeyFacialEyeTrackData key, out Vector3 target)
-        {
-
-            switch (key.targetType)
-            {
-                case FacialEyeTrackTargetType.Arena:
-                    target = Container.HeadBone.transform.position + new Vector3(0, 1, 10);
-                    return true;
-                case FacialEyeTrackTargetType.CharaForward:
-                    target = Container.HeadBone.transform.position + Container.HeadBone.transform.forward;
-                    return true;
-                case FacialEyeTrackTargetType.DirectPosition:
-                    target = key.DirectPosition;
-                    return true;
-                case FacialEyeTrackTargetType.Camera:
-                    target = Live.Director.instance.MainCameraTransform.position;
-                    return true;
-                case FacialEyeTrackTargetType.MultiCamera1:
-                    target = Live.Director.instance._liveTimelineControl.GetMultiCameraWorldPosition(0);
-                    return true;
-                case FacialEyeTrackTargetType.MultiCamera2:
-                    target = Live.Director.instance._liveTimelineControl.GetMultiCameraWorldPosition(1);
-                    return true;
-                case FacialEyeTrackTargetType.MultiCamera3:
-                    target = Live.Director.instance._liveTimelineControl.GetMultiCameraWorldPosition(2);
-                    return true;
-                case FacialEyeTrackTargetType.MultiCamera4:
-                    target = Live.Director.instance._liveTimelineControl.GetMultiCameraWorldPosition(3);
-                    return true;
-            }
-            target = Vector3.zero;
+            _eyeTargetWorld = target;
+            _eyeTargetKnown = true;
             return false;
         }
 
+        // Smoothing / duration state of Gallop.Model.Component.EyeTraceObject (AlterLateUpdate @0x7ffd595855f0,
+        // SetDurationTime @0x7ffd59586350, ctor @0x7ffd59586410: DelayRate (+0x9c) = 0.85). Both eyes share the
+        // viewer's single aim, so one state drives both (the game keeps one per eye with identical inputs here).
+        private sealed class EyeTraceState
+        {
+            public float DelayRate = 0.85f;      // +0x9c
+            private bool _isEnabledDurationTime; // +0x54
+            public bool IsEnabledDurationTime => _isEnabledDurationTime;
+            private float _durationTime;         // +0x58
+            private float _elapsedTime;          // +0x5c
+            private int _interpolateType;        // +0x60
+            private Vector2 _prevOffset;         // +0x64 / +0x68
+            private Vector2 _offset;             // +0xa8 / +0xac
+
+            // EyeTraceObject.SetDurationTime: start from the current offset.
+            public void SetDurationTime(float duration, int interpolateType)
+            {
+                _isEnabledDurationTime = true;
+                _prevOffset = _offset;
+                _durationTime = duration;
+                _elapsedTime = 0f;
+                _interpolateType = interpolateType;
+            }
+
+            // EyeTraceController.ClearDurationTime @0x7ffd595830d0.
+            public void ClearDurationTime()
+            {
+                _isEnabledDurationTime = false;
+                _durationTime = 0f;
+                _elapsedTime = 0f;
+            }
+
+            public void Reset()
+            {
+                ClearDurationTime();
+                _offset = Vector2.zero;
+                _prevOffset = Vector2.zero;
+            }
+
+            // Offset update of AlterLateUpdate (the part after the target offset is computed).
+            public Vector2 Advance(Vector2 target, float deltaTime)
+            {
+                if (!_isEnabledDurationTime)
+                {
+                    float rate = Mathf.Clamp01(deltaTime * DelayRate);
+                    _offset += (target - _offset) * rate;
+                    return _offset;
+                }
+
+                _elapsedTime += deltaTime;
+                float ratio;
+                if (_durationTime <= 0f || _durationTime <= _elapsedTime)
+                {
+                    _durationTime = 0f;
+                    _elapsedTime = 0f;
+                    _isEnabledDurationTime = false;
+                    ratio = 1f;
+                }
+                else
+                {
+                    float r = _elapsedTime / _durationTime;
+                    const float HalfPi = 1.5707964f; // DAT_7ffd5a651df0
+                    switch (_interpolateType)
+                    {
+                        case 1: ratio = 1f - Mathf.Cos(r * HalfPi); break;
+                        case 2: ratio = Mathf.Sin(r * HalfPi); break;
+                        case 3:
+                            r += r;
+                            ratio = 1f <= r ? Mathf.Sin((r - 1f) * HalfPi) * 0.5f + 0.5f
+                                            : (1f - Mathf.Cos(r * HalfPi)) * 0.5f;
+                            break;
+                        default: ratio = r; break;
+                    }
+                }
+                ratio = Mathf.Clamp01(ratio);
+                _offset = _prevOffset + (target - _prevOffset) * ratio;
+                return _offset;
+            }
+        }
+
+        private readonly EyeTraceState _eyeTrace = new EyeTraceState();  // R eye (EyeTraceObject[1] in the game)
+        private readonly EyeTraceState _eyeTraceL = new EyeTraceState(); // L eye (EyeTraceObject[0])
+        // CharacterObject +0xbc (frame of the eye-track key whose duration was started).
+        private int _eyeTraceKeyFrame = -1;
+
+        // Viewer-only (no game counterpart): the standalone viewer's "TrackTarget" eye-follow maps an aim position
+        // with the game's EyeTraceObject aim math (CalcEyeTrackAimOffset at rates 0 = no shift toward the range
+        // limits). Replaces the invented GetEyeTrackRotation degree clamps (/35, /25) removed per AGENTS.md 8.2.
         public Vector2 GetEyeTrackRotation(Vector3 target)
         {
-            var targetPosotion = target - Container.HeadBone.transform.up * Container.EyeHeight;
-            var deltaPos = Container.HeadBone.transform.InverseTransformPoint(targetPosotion);
-            var deltaRotation = Quaternion.LookRotation(deltaPos.normalized, Container.HeadBone.transform.up).eulerAngles;
-            if (deltaRotation.x > 180) deltaRotation.x -= 360;
-            if (deltaRotation.y > 180) deltaRotation.y -= 360;
+            return CalcEyeTrackAimOffset(true, target, 0f, 0f);
+        }
 
-            var finalRotation = new Vector2(Mathf.Clamp(deltaRotation.y / 35, -1, 1), Mathf.Clamp(-deltaRotation.x / 25, -1, 1));//Limited to the angle of view 
+        // Eye bone displacement of the eye X/Y range morph at weight 1 (the morph key of the Eye_L / Eye_R bone in the
+        // head facial_target asset, applied linearly by ProcessMorph: localPosition += _position * weight). The game's
+        // DrivenKeyComponent.InitializeEyeRange @0x7ffd58e6c2e0 builds the eye limit vectors (limit - base, +0x1CC..+0x228)
+        // from the same asset data; the game values (0.00572 / 0.00858 / 0.00295 / 0.00492) equal these morph vectors.
+        private static bool TryGetEyeMorphVector(FacialMorph morph, out Vector3 vec)
+        {
+            vec = Vector3.zero;
+            if (morph == null || morph.trsArray == null) return false;
+            foreach (TrsArray trs in morph.trsArray)
+            {
+                if (trs != null && (trs._path == "Eye_L" || trs._path == "Eye_R"))
+                {
+                    vec = trs._position;
+                    return true;
+                }
+            }
+            return false;
+        }
 
-            return finalRotation;
-            
+        // EyeTraceController.Setup @0x7ffd59584820: per eye range = limit - eye base position. X: the L eye reaches
+        // +vL (inner) and -vR (outer), the R eye -vL (inner) and +vR (outer); Y: from the Y range vectors (L = upper, R = down).
+        // Returns (minX, maxX, minY, maxY); falls back to the EyeTraceObject ctor defaults when the morph data is missing.
+        private Vector4 GetEyeTraceRange(bool leftEye)
+        {
+            if (TryGetEyeMorphVector(LeftEyeXrange, out var lx) && TryGetEyeMorphVector(RightEyeXrange, out var rx) &&
+                TryGetEyeMorphVector(LeftEyeYrange, out var ly) && TryGetEyeMorphVector(RightEyeYrange, out var ry))
+            {
+                float minY = Mathf.Min(ly.y, ry.y), maxY = Mathf.Max(ly.y, ry.y);
+                return leftEye ? new Vector4(-rx.x, lx.x, minY, maxY) : new Vector4(-lx.x, rx.x, minY, maxY);
+            }
+            return new Vector4(-0.007f, 0.007f, -0.003f, 0.003f);
+        }
+
+        // The game puts the Eye bone at locator + offsetX * right + offsetY * up (EyeTraceObject.AlterLateUpdate). The
+        // viewer drives the Eye bones with the eye range morphs (linear bone displacement), so the weight that gives the
+        // same X / Y displacement is offset / (morph vector component).
+        private void ApplyEyeTraceOffset(Vector2 offL, Vector2 offR)
+        {
+            float lx = 0f, ly = 0f, rx = 0f, ry = 0f;
+            if (TryGetEyeMorphVector(LeftEyeXrange, out var vlx) && vlx.x != 0f) lx = offL.x / vlx.x;
+            if (TryGetEyeMorphVector(RightEyeXrange, out var vrx) && vrx.x != 0f) rx = offR.x / vrx.x;
+            if (TryGetEyeMorphVector(LeftEyeYrange, out var vly) && vly.y != 0f) ly = offL.y / vly.y;
+            if (TryGetEyeMorphVector(RightEyeYrange, out var vry) && vry.y != 0f) ry = offR.y / vry.y;
+            SetEyeRange(lx, ly, rx, ry);
+        }
+
+        // EyeTraceObject.AlterLateUpdate @0x7ffd595855f0 aim part. dir = normalize(target - locator position) (zero when
+        // closer than DAT_7ffd5a640d38 = 1e-5); with applyRotateTowards (no duration time running) the direction is first
+        // rotated toward the locator forward by at most DAT_7ffd5a8bc0a4 = 0.0872665 rad (5 degrees), a dead zone around the
+        // forward direction; offset = (dot(right, dir), dot(up, dir)) * _moveRate (0.02) * Scale (1.0).
+        // Viewer approximation (reported): locator position and axes are taken from the head bone (the game uses the eye
+        // locator transform and its parent).
+        private Vector2 CalcEyeTrackAimOffset(bool hasTarget, Vector3 target, float rateH, float rateV, bool applyRotateTowards = false, Vector4? range = null)
+        {
+            Vector2 offset;
+            if (hasTarget)
+            {
+                var head = Container.HeadBone.transform;
+                Vector3 dir = target - head.position;
+                float dirLen = dir.magnitude;
+                dir = dirLen > 1e-5f ? dir / dirLen : Vector3.zero;
+                if (applyRotateTowards)
+                    dir = Vector3.RotateTowards(dir, head.forward, 0.0872665f, 0f);
+                offset = new Vector2(Vector3.Dot(head.right, dir), Vector3.Dot(head.up, dir)) * 0.02f;
+            }
+            else
+            {
+                offset = Vector2.zero;
+            }
+
+            Vector4 r = range ?? new Vector4(-0.007f, 0.007f, -0.003f, 0.003f);
+            float kRangeMinX = r.x;
+            float kRangeMaxX = r.y;
+            float kRangeMinY = r.z;
+            float kRangeMaxY = r.w;
+
+            offset.x = Mathf.Clamp(offset.x, kRangeMinX, kRangeMaxX);
+            offset.y = Mathf.Clamp(offset.y, kRangeMinY, kRangeMaxY);
+
+            // EyeTraceObject.AlterLateUpdate rate shift (the key's verticalRatePer / horizontalRatePer).
+            if (0f < rateV)
+            {
+                offset.y = (kRangeMaxY - offset.y) * rateV + offset.y;
+            }
+            else if (rateV < 0f)
+            {
+                offset.y = offset.y - (kRangeMinY - offset.y) * rateV;
+            }
+            if (0f < rateH)
+            {
+                offset.x = (kRangeMaxX - offset.x) * rateH + offset.x;
+            }
+            else if (rateH < 0f)
+            {
+                offset.x = offset.x - (kRangeMinX - offset.x) * rateH;
+            }
+
+            offset.x = Mathf.Clamp(offset.x, kRangeMinX, kRangeMaxX);
+            offset.y = Mathf.Clamp(offset.y, kRangeMinY, kRangeMaxY);
+
+            // ProcessLocator convention: morph weight = locator.localPosition.x * -100.
+            return new Vector2(offset.x * -100f, offset.y * -100f);
         }
 
         public void SetEyeTrack(Vector2 rotation)
@@ -1227,83 +1467,65 @@ namespace Gallop
             SetEyeRange(rotation.x, rotation.y, rotation.x, -rotation.y);
         }
 
-        public static float CalcMorphWeight(float time, int speed, int interFrame, InterpolateType interType, LiveTimelineKey curKey, LiveTimelineKey nextKey)
+
+        // IFacialPartsApplier: maps the game's FaceGroupType weight groups (LiveFaceController) onto the
+        // viewer's additive morph lists. Morph k of each list is FaceParts id k + 1 (morph index = parts id - 1;
+        // the FacePartsSetInfo.*Dic maps are identity, FacePartsSetInfo..cctor RVA 0x58F8180).
+        private sealed class FacialPartsApplier : IFacialPartsApplier
         {
+            private readonly FaceDrivenKeyTarget _target;
 
-            float keyTime = (float)curKey.FrameSecond;
-
-            switch (speed)
+            public FacialPartsApplier(FaceDrivenKeyTarget target)
             {
-                case 1:
-                    interFrame = 3;
-                    break;
-                case 10:
-                    interFrame = 2;
-                    break;
-                case 20:
-                    interFrame = 6;
-                    break;
-                case 21:
-                    interFrame = 9;
-                    break;
-                default:
-                    break;
+                _target = target;
             }
 
-            float duringTime;
-            if (nextKey != null)
+            private List<FacialMorph> Morphs(FaceGroupType type)
             {
-                duringTime = nextKey.frame - curKey.frame;
-            }
-            else
-            {
-                duringTime = interFrame;
-            }
-
-            float easeTime;
-
-            if (duringTime < interFrame)
-            {
-                easeTime = (float)duringTime / 60;
-            }
-            else
-            {
-                easeTime = (float)interFrame / 60;
-            }
-
-
-            float passTime = time - keyTime;
-
-            float weightRatio = 0;
-
-            if (passTime >= easeTime)
-            {
-                weightRatio = 1;
-            }
-            else
-            {
-                float ratio = passTime / easeTime;
-                switch (interType)
+                switch (type)
                 {
-                    case InterpolateType.Linear:
-                        weightRatio = ratio;
-                        break;
-                    case InterpolateType.EaseIn:
-                        weightRatio = Easing.EaseIn(ratio);
-                        break;
-                    case InterpolateType.EaseOut:
-                        weightRatio = Easing.EaseOut(ratio);
-                        break;
-                    case InterpolateType.EaseInOut:
-                        weightRatio = Easing.EaseInOut(ratio);
-                        break;
-                    default:
-                        weightRatio = ratio;
-                        break;
+                    case FaceGroupType.EyeR: return _target.rightEyeMorph;
+                    case FaceGroupType.EyeL: return _target.leftEyeMorph;
+                    case FaceGroupType.EyebrowR: return _target.rightEyebrowMorph;
+                    case FaceGroupType.EyebrowL: return _target.leftEyebrowMorph;
+                    case FaceGroupType.Mouth: return _target.MouthMorphs;
+                }
+                return null;
+            }
+
+            public int GetPartsCount(FaceGroupType type)
+            {
+                var morphs = Morphs(type);
+                return morphs != null ? morphs.Count : 0;
+            }
+
+            public void SetPartsWeights(FaceGroupType type, float[] weights, int count)
+            {
+                var morphs = Morphs(type);
+                if (morphs == null) return;
+                for (int i = 0; i < morphs.Count && i + 1 < count; i++)
+                {
+                    morphs[i].weight = weights[i + 1];
                 }
             }
 
-            return weightRatio;
+            public void ApplyParts(FaceGroupType type)
+            {
+                switch (type)
+                {
+                    case FaceGroupType.EyeR:
+                    case FaceGroupType.EyeL:
+                        _target.ChangeMorphEye();
+                        break;
+                    case FaceGroupType.EyebrowR:
+                    case FaceGroupType.EyebrowL:
+                        _target.ChangeMorphEyebrow();
+                        break;
+                    case FaceGroupType.Mouth:
+                        _target.ChangeMorphMouth();
+                        break;
+                }
+            }
         }
     }
 }

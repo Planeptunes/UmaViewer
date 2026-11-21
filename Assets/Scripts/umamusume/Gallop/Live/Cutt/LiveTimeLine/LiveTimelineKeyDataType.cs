@@ -118,6 +118,9 @@ namespace Gallop.Live.Cutt
         MiniCharaTransform = 113,
         MiniCharaMotion = 114,
         MiniCharaColor = 115,
-        Max = 116
+        // Game types 116/117 are not identified in the viewer; TailMotion = 0x76 (118) is verified from
+        // LiveTimelineKeyTailMotionData.get_dataType (RVA 0x4F73F60).
+        TailMotion = 118,
+        Max = 119
     }
 }

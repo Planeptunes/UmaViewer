@@ -132,6 +132,8 @@ namespace Gallop.Live.Cutt
             UniqueK = 9011
         }
 
+        // Gallop.Live.Cutt.LiveTimelineDefine.FacialPartsSet (dump_jp): Ear 0x10, EyebrowL 0x14, EyebrowR 0x18,
+        // EyeL 0x1C, EyeR 0x20, Mouth 0x24, MouthWeight 0x28. ctor RVA 0x4F67D20.
         public class FacialPartsSet
         {
             public EarType Ear;
@@ -141,7 +143,145 @@ namespace Gallop.Live.Cutt
             public int EyeR;
             public int Mouth;
             public float MouthWeight;
+
+            public FacialPartsSet()
+            {
+            }
+
+            public FacialPartsSet(EarType ear, int eyebrowL, int eyebrowR, int eyeL, int eyeR, int mouth, float mouthWeight)
+            {
+                Ear = ear;
+                EyebrowL = eyebrowL;
+                EyebrowR = eyebrowR;
+                EyeL = eyeL;
+                EyeR = eyeR;
+                Mouth = mouth;
+                MouthWeight = mouthWeight;
+            }
         }
+
+        // LiveTimelineDefine.FACIAL_PARTS_SET_DIC (static +0x0), built by LiveTimelineDefine..cctor
+        // (code_JP Gallop.Live.Cutt.LiveTimelineDefine.c, @0x7ffd592e9a20, RVA 0x4F69A20). Key = facialId of a
+        // facial key. Values transcribed 1:1 from the 104 Dictionary.Add calls of the cctor (insertion order kept).
+        // Used by LiveFaceController.AlterUpdateFacialNew (0x4EC20E0) to resolve the EarType of a face key.
+        public static readonly Dictionary<int, FacialPartsSet> FACIAL_PARTS_SET_DIC = new Dictionary<int, FacialPartsSet>()
+        {
+            { 1001, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 0, 1f) },
+            { 1003, new FacialPartsSet((EarType)0, 2, 0, 5, 0, 0, 1f) },
+            { 1002, new FacialPartsSet((EarType)0, 0, 2, 0, 5, 0, 1f) },
+            { 1004, new FacialPartsSet((EarType)0, 0, 0, 1, 1, 0, 1f) },
+            { 1005, new FacialPartsSet((EarType)0, 0, 0, 2, 2, 0, 1f) },
+            { 1101, new FacialPartsSet((EarType)0, 1, 1, 5, 5, 4, 1f) },
+            { 1102, new FacialPartsSet((EarType)0, 2, 2, 6, 6, 5, 1f) },
+            { 1103, new FacialPartsSet((EarType)0, 3, 3, 7, 7, 6, 1f) },
+            { 1104, new FacialPartsSet((EarType)0, 4, 4, 8, 8, 7, 1f) },
+            { 1201, new FacialPartsSet((EarType)8, 5, 5, 9, 9, 9, 1f) },
+            { 1301, new FacialPartsSet((EarType)2, 6, 6, 10, 10, 11, 1f) },
+            { 1401, new FacialPartsSet((EarType)11, 7, 7, 0, 0, 12, 1f) },
+            { 1901, new FacialPartsSet((EarType)12, 8, 8, 11, 11, 13, 1f) },
+            { 1601, new FacialPartsSet((EarType)11, 9, 9, 12, 12, 14, 1f) },
+            { 1602, new FacialPartsSet((EarType)11, 10, 10, 13, 13, 15, 1f) },
+            { 1603, new FacialPartsSet((EarType)11, 0, 0, 14, 14, 0, 1f) },
+            { 1701, new FacialPartsSet((EarType)12, 11, 11, 15, 15, 16, 1f) },
+            { 1801, new FacialPartsSet((EarType)12, 12, 12, 0, 0, 17, 1f) },
+            { 2001, new FacialPartsSet((EarType)12, 13, 13, 16, 16, 18, 1f) },
+            { 2002, new FacialPartsSet((EarType)12, 13, 13, 16, 16, 19, 1f) },
+            { 2003, new FacialPartsSet((EarType)12, 13, 13, 16, 16, 20, 1f) },
+            { 2004, new FacialPartsSet((EarType)12, 13, 13, 16, 16, 21, 1f) },
+            { 2101, new FacialPartsSet((EarType)0, 3, 3, 6, 6, 6, 1f) },
+            { 2201, new FacialPartsSet((EarType)0, 4, 4, 7, 7, 22, 1f) },
+            { 2301, new FacialPartsSet((EarType)12, 14, 14, 17, 17, 22, 1f) },
+            { 1202, new FacialPartsSet((EarType)8, 5, 5, 9, 9, 9, 1f) },
+            { 1203, new FacialPartsSet((EarType)8, 5, 5, 9, 9, 9, 1f) },
+            { 1204, new FacialPartsSet((EarType)8, 5, 5, 9, 9, 9, 1f) },
+            { 1302, new FacialPartsSet((EarType)2, 6, 6, 10, 10, 11, 1f) },
+            { 1303, new FacialPartsSet((EarType)2, 6, 6, 10, 10, 11, 1f) },
+            { 1304, new FacialPartsSet((EarType)2, 6, 6, 10, 10, 11, 1f) },
+            { 1402, new FacialPartsSet((EarType)11, 7, 7, 0, 0, 12, 1f) },
+            { 1501, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 0, 1f) },
+            { 1502, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 0, 1f) },
+            { 1604, new FacialPartsSet((EarType)11, 9, 9, 12, 12, 10, 1f) },
+            { 1702, new FacialPartsSet((EarType)12, 11, 11, 15, 15, 16, 1f) },
+            { 1802, new FacialPartsSet((EarType)12, 12, 12, 0, 0, 17, 1f) },
+            { 1803, new FacialPartsSet((EarType)12, 12, 12, 0, 0, 17, 1f) },
+            { 1804, new FacialPartsSet((EarType)12, 12, 12, 0, 0, 17, 1f) },
+            { 1902, new FacialPartsSet((EarType)12, 8, 8, 11, 11, 13, 1f) },
+            { 8001, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 0, 1f) },
+            { 8011, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 23, 1f) },
+            { 8012, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 24, 0.5f) },
+            { 8013, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 24, 1f) },
+            { 8021, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 25, 1f) },
+            { 8022, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 26, 0.5f) },
+            { 8023, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 26, 1f) },
+            { 8031, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 27, 1f) },
+            { 8032, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 28, 0.5f) },
+            { 8033, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 28, 1f) },
+            { 8041, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 29, 1f) },
+            { 8042, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 30, 0.5f) },
+            { 8043, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 30, 1f) },
+            { 8051, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 31, 1f) },
+            { 8052, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 32, 0.5f) },
+            { 8053, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 32, 1f) },
+            { 8101, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 0, 1f) },
+            { 8111, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 33, 1f) },
+            { 8112, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 34, 0.5f) },
+            { 8113, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 34, 1f) },
+            { 8121, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 35, 1f) },
+            { 8122, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 36, 0.5f) },
+            { 8123, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 36, 1f) },
+            { 8131, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 27, 1f) },
+            { 8132, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 28, 0.5f) },
+            { 8133, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 28, 1f) },
+            { 8141, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 37, 1f) },
+            { 8142, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 38, 0.5f) },
+            { 8143, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 38, 1f) },
+            { 8151, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 31, 1f) },
+            { 8152, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 32, 0.5f) },
+            { 8153, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 32, 1f) },
+            { 8201, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 4, 1f) },
+            { 8211, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 33, 1f) },
+            { 8212, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 34, 0.5f) },
+            { 8213, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 34, 1f) },
+            { 8221, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 35, 1f) },
+            { 8222, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 36, 0.5f) },
+            { 8223, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 36, 1f) },
+            { 8231, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 27, 1f) },
+            { 8232, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 28, 0.5f) },
+            { 8233, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 28, 1f) },
+            { 8241, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 37, 1f) },
+            { 8242, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 38, 0.5f) },
+            { 8243, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 38, 1f) },
+            { 8251, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 31, 1f) },
+            { 8252, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 32, 0.5f) },
+            { 8253, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 32, 1f) },
+            { 8301, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 9, 0.5f) },
+            { 8311, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 33, 1f) },
+            { 8312, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 34, 0.5f) },
+            { 8313, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 34, 1f) },
+            { 8321, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 35, 1f) },
+            { 8322, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 36, 0.5f) },
+            { 8323, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 36, 1f) },
+            { 8331, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 27, 1f) },
+            { 8332, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 28, 0.5f) },
+            { 8333, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 28, 1f) },
+            { 8341, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 37, 1f) },
+            { 8342, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 38, 0.5f) },
+            { 8343, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 38, 1f) },
+            { 8351, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 31, 1f) },
+            { 8352, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 32, 0.5f) },
+            { 8353, new FacialPartsSet((EarType)0, 0, 0, 0, 0, 32, 1f) },
+        };
+
+        // LiveTimelineDefine.FACIAL_SPEED_FRAME_DIC (static +0x8), same cctor: speed id -> blend frames.
+        // Read by LiveFaceController.UpdateDurationTime (RVA 0x4EC4E90).
+        public static readonly Dictionary<int, int> FACIAL_SPEED_FRAME_DIC = new Dictionary<int, int>()
+        {
+            { 0, 0 },
+            { 1, 3 },
+            { 10, 2 },
+            { 20, 6 },
+            { 21, 9 },
+        };
 
         public enum FacialEarId
         {
@@ -362,7 +502,7 @@ namespace Gallop.Live.Cutt
 
         public enum FacialEyeTrackTargetType
         {
-            Arena = 0,
+            ArenaOld = 0,   // game name (dump: ArenaOld); the viewer called it Arena
             Camera = 1,
             CharaForward = 2,
             Chara1 = 3,
@@ -387,7 +527,8 @@ namespace Gallop.Live.Cutt
             MultiCamera2 = 31,
             MultiCamera3 = 32,
             MultiCamera4 = 33,
-            DirectPosition = 40
+            DirectPosition = 40,
+            Arena = 41      // LateUpdateEyeTrace: PositionNode.position + StageArenaPosition
         }
 
         public enum FacialEyeTrackVerticalType

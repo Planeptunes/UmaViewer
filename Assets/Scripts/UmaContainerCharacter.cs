@@ -243,6 +243,9 @@ public class UmaContainerCharacter : UmaContainer
     private void OnDestroy()
     {
         RestoreMirrorChangedLayers();
+        // EyeHighlightController.OnDestroy: release the highlight animator graph.
+        if (FaceDrivenKeyTarget != null && FaceDrivenKeyTarget.EyeHighlight != null)
+            FaceDrivenKeyTarget.EyeHighlight.DestroyGraph();
     }
 
     private static readonly int ID_FaceCenterPos = Shader.PropertyToID("_FaceCenterPos");
@@ -3349,8 +3352,10 @@ public class UmaContainerCharacter : UmaContainer
         var firsehead = Head;
         var faceDriven = Instantiate(firsehead.GetComponent<AssetHolder>()._assetTable["facial_target"]) as FaceDrivenKeyTarget;
 
-        //Need Instantiate or not?
-        var earDriven = firsehead.GetComponent<AssetHolder>()._assetTable["ear_target"] as DrivenKeyTarget;
+        // Each character owns its ear morph data: FaceDrivenKeyTarget.Initialize writes the character's bones into the
+        // TrsArray.transform fields of _earTarget, so a shared asset made every character that uses the same head point
+        // at the bones of the last initialised one (ears only moved on the last slot).
+        var earDriven = Instantiate(firsehead.GetComponent<AssetHolder>()._assetTable["ear_target"] as DrivenKeyTarget);
         var faceOverride = firsehead.GetComponent<AssetHolder>()._assetTable["face_override"] as FaceOverrideData;
 
         faceDriven._earTarget = earDriven._targetFaces;
@@ -3360,6 +3365,34 @@ public class UmaContainerCharacter : UmaContainer
         faceOverride?.SetEnable(UI.ModelSettings.EnableFaceOverride);
         faceDriven.DrivenKeyLocator = locator.transform;
         faceDriven.Initialize(UmaUtility.ConvertArrayToDictionary(firsehead.GetComponentsInChildren<Transform>()));
+
+        // EyeHighlightController (ModelController component, OnInitialize @0x7ffd59580570): per-material
+        // _MainParam / _HighParam1 / _HighParam2 / _EyePupliScale of the eye material, from the head's highlight locators.
+        Renderer eyeRenderer = null;
+        int eyeMaterialIndex = -1;
+        foreach (var faceRenderer in firsehead.GetComponentsInChildren<Renderer>(true))
+        {
+            if (faceRenderer.name != "M_Face") continue;
+            var mats = faceRenderer.sharedMaterials;
+            for (int mi = 0; mi < mats.Length; mi++)
+            {
+                if (mats[mi] != null && mats[mi].shader != null && mats[mi].shader.name.Contains("ToonEye")) { eyeRenderer = faceRenderer; eyeMaterialIndex = mi; break; }
+            }
+            if (eyeRenderer != null) break;
+        }
+        var eyeHighlight = new Gallop.Model.Component.EyeHighlightController();
+        if (eyeHighlight.Initialize(eyeRenderer, eyeMaterialIndex, firsehead.GetComponent<AssetHolder>()))
+        {
+            faceDriven.EyeHighlight = eyeHighlight;
+            eyeHighlight.InitializeKeyLocator(locator.transform);
+            string headName = firsehead.name.Replace("(Clone)", "").Replace("pfb_", "");
+            Transform eyeRoot = null;
+            var kira = firsehead.GetComponent<AssetHolder>()._assetTable["eye_kira_info"] as GameObject;
+            if (kira != null) eyeRoot = kira.transform.parent;
+            eyeHighlight.InitializeAnimator(eyeRoot, firsehead.GetComponent<AssetHolder>(), headName,
+                path => Main.AbList.TryGetValue(path, out var entry) ? entry.Get<AnimationClip>() : null);
+            faceDriven.ChangeMorphEye();
+        }
 
         var emotionDriven = ScriptableObject.CreateInstance<FaceEmotionKeyTarget>();
         emotionDriven.name = $"char{id}_{costumeId}_emotion_target";

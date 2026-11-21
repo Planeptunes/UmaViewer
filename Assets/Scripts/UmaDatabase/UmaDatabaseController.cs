@@ -47,6 +47,8 @@ public class UmaDatabaseController
 
     //从master里面取点歌机歌曲目录
     public Gallop.MasterJukeboxMusicData JukeboxMusicData;
+    public Gallop.MasterHighlightInterpolate HighlightInterpolateData;
+    public Gallop.MasterRandomEarTailMotion RandomEarTailMotionData;
 
 
     //修改(载入通用服装ColorSet相关)
@@ -122,6 +124,8 @@ public class UmaDatabaseController
             LiveData = ReadAllLiveData(masterDb);
             DressData = ReadAllDressData(masterDb);
             JukeboxMusicData = new Gallop.MasterJukeboxMusicData(masterDb);
+            HighlightInterpolateData = new Gallop.MasterHighlightInterpolate(masterDb);
+            RandomEarTailMotionData = new Gallop.MasterRandomEarTailMotion(masterDb);
 
 
             //修改(载入通用服装ColorSet相关)
@@ -614,6 +618,10 @@ public class UmaDatabaseController
     {
         JukeboxMusicData?.Unload();
         JukeboxMusicData = null;
+        HighlightInterpolateData?.Unload();
+        HighlightInterpolateData = null;
+        RandomEarTailMotionData?.Unload();
+        RandomEarTailMotionData = null;
         masterDb?.Close();
         metaDb?.Close();
         masterDb?.Dispose();

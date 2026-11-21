@@ -225,6 +225,8 @@ namespace Gallop.Live.Cutt
         public float maxForcalSize;
         public bool isUseMirrorScanMotionDictionary;
         public bool isUseGameSettingToParticle;
+        // LiveTimelineData +0xB8: read by Director.GetStageArenaPosition @0x7ffd591ef650 (eye track target types 0 and 41).
+        public Vector3 StageArenaPosition;
         public bool IsChangedCharaLayerOnlyMirrorRendering;
         public bool IsRenderMirrorObjectOnlyOnBaseCamera;
         public bool UseDepthOnlyCube;

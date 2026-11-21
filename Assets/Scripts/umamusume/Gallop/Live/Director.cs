@@ -384,6 +384,17 @@ namespace Gallop.Live
 
         public Transform MainCameraTransform => _mainCameraTransform;
 
+        // Port of Gallop.Live.Director.GetStageArenaPosition @0x7ffd591ef650: with the timeline in control (always the case
+        // in the viewer's live) it is LiveTimelineData.StageArenaPosition (+0xB8, read through Director +0x30 ->
+        // LiveTimelineControl +0x290). The game's not-timeline-controlled branch returns a static Vector3 that is not read
+        // here (Vector3.zero), reported.
+        public Vector3 GetStageArenaPosition()
+        {
+            if (_liveTimelineControl != null && _liveTimelineControl.data != null)
+                return _liveTimelineControl.data.StageArenaPosition;
+            return Vector3.zero;
+        }
+
         public Camera MainRenderCamera
         {
             get
@@ -528,6 +539,76 @@ namespace Gallop.Live
             LiveViewerUI.Instance.RecordingText.text = $"�� Recording...\r\n VMD will be saved in {Path.GetFullPath(Application.dataPath + UnityHumanoidVMDRecorder.FileSavePath)}";
         }
 
+        // Gallop.Live.Director.UpdateRandomEarMotion @0x7ffd59206ec0 (RVA 0x4E86EC0), called by the facial delegate
+        // (<InitializeTimeline>b__476_3 @0x7ffd59204230) for the slot's ear key BEFORE AlterUpdateFacialNew; with no
+        // ear key the delegate calls LiveModelController.ResetFrameEar instead (see FaceDrivenKeyTarget).
+        //  - key without useEarRandomMotion: LiveFaceController.SetRandomEarState(false) (+0x44),
+        //    LiveModelController.StopEarRandomMotion;
+        //  - same key frame as _currentFrameEarRandomMotion (+0x878): nothing;
+        //  - a SystemText ear motion playing: skipped while it HasSystemTextEarMotion, else its current ear type
+        //    replaces the key's (never true in the viewer, see LiveModelControllerEarMotion);
+        //  - otherwise SetRandomEarState(true) and PlayEarRandomMotionFromTimeline(key.randomMotionEarType,
+        //    key.randomMotionIndex, key.frame) (the <UpdateRandomEarMotion>g__PlayRandomEarMotion|477_0 helper
+        //    @0x7ffd59205650 does the same with the key's own type).
+        public static void UpdateRandomEarMotion(LiveTimelineKeyFacialEarData earKey,
+            LiveModelControllerEarMotion liveModelController, LiveFaceController liveFaceController)
+        {
+            if (earKey == null || liveModelController == null || liveFaceController == null) return;
+            if (!earKey.useEarRandomMotion)
+            {
+                liveFaceController.SetRandomEarState(false);
+                liveModelController.StopEarRandomMotion();
+                return;
+            }
+            if (liveModelController.CurrentFrameEarRandomMotion == earKey.frame) return;
+            EarType earType = earKey.randomMotionEarType;
+            if (liveModelController.IsPlaySystemTextEarMotion())
+            {
+                if (liveModelController.HasSystemTextEarMotion()) return;
+                EarType? systemTextEarType = liveModelController.GetCurrentSystemTextEarType();
+                if (systemTextEarType.HasValue) earType = systemTextEarType.Value;
+            }
+            liveFaceController.SetRandomEarState(true);
+            liveModelController.PlayEarRandomMotionFromTimeline(earType, earKey.randomMotionIndex, earKey.frame);
+        }
+
+        // Ear part of Gallop.Live.Director.PreloadEarTailMotion @0x7ffd591f7f10: for every character whose facial set has
+        // a key with useEarRandomMotion (LiveTimelineControl.UseEarRandomMotionForCharacter @0x7ffd592cb1c0), the
+        // EarTypes of those keys (LiveTimelineKeyFacialEarDataList.GetRandomEarMotionType @0x7ffd592fea00: a
+        // HashSet of randomMotionEarType over the keys with useEarRandomMotion, over every worksheet) go to
+        // LiveModelController.PreloadEarRandomMotionsForTimeline. Characters without random keys keep an empty
+        // dictionary. The viewer maps slot 0 to facial1Set and slot i to other4FacialArray[i - 1] like
+        // LiveTimelineControl.AlterUpdate_FacialData. NOT ported: the PreloadAllEarRandomMotion branch for
+        // characters with an overridden SystemText motion (no SystemText player in the viewer) and the tail half.
+        public void PreloadEarTailMotion()
+        {
+            var worksheets = _liveTimelineControl != null && _liveTimelineControl.data != null
+                ? _liveTimelineControl.data.worksheetList : null;
+            if (worksheets == null) return;
+            for (int i = 0; i < CharaContainerScript.Count; i++)
+            {
+                var container = CharaContainerScript[i];
+                var face = container != null ? container.FaceDrivenKeyTarget : null;
+                if (face == null) continue;
+
+                var earTypes = new HashSet<EarType>();
+                foreach (var sheet in worksheets)
+                {
+                    if (sheet == null) continue;
+                    var facialData = i == 0 ? sheet.facial1Set
+                        : (sheet.other4FacialArray != null && i - 1 < sheet.other4FacialArray.Length
+                            ? sheet.other4FacialArray[i - 1] : null);
+                    if (facialData == null || facialData.earKeys == null) continue;
+                    foreach (var key in facialData.earKeys.thisList)
+                    {
+                        if (key != null && key.useEarRandomMotion) earTypes.Add(key.randomMotionEarType);
+                    }
+                }
+                if (earTypes.Count == 0) continue;
+                face.GetLiveEarMotion().PreloadEarRandomMotionsForTimeline(earTypes);
+            }
+        }
+
         public void InitializeTimeline(List<LiveCharacterLoadData> characters, int mode)
         {
             totalTime = _liveTimelineControl.data.timeLength;
@@ -552,16 +633,18 @@ namespace Gallop.Live
 
             _liveTimelineControl.OnUpdateLipSync += delegate (LiveTimelineKeyIndex keyData_, float liveTime_)
             {
-                var prevKey = keyData_.prevKey as LiveTimelineKeyLipSyncData;
+                // Director.<InitializeTimeline>b__476_2 @0x7ffd59204110: duration = UpdateDurationTime(key.speed,
+                // key.time); every character (CharacterObject.LipSyncPatternId < 0, the default) ->
+                // LiveFaceController.AlterUpdateAutoLip(key, characterIndex, duration).
                 var curKey = keyData_.key as LiveTimelineKeyLipSyncData;
-                var nextKey = keyData_.nextKey as LiveTimelineKeyLipSyncData;
-                for (int k = 0; k < charaObjs.Count; k++)
+                if (curKey == null) return;
+                float lipDuration = 0f;
+                Gallop.Live.LiveFaceController.UpdateDurationTime(curKey.speed, curKey.time, ref lipDuration);
+                for (int k = 0; k < charaObjs.Count && k < CharaContainerScript.Count; k++)
                 {
-                    if (k < CharaContainerScript.Count)
-                    {
-                        var container = CharaContainerScript[k];
-                        container.FaceDrivenKeyTarget.AlterUpdateAutoLip(prevKey, curKey, liveTime_, ((int)curKey.character >> k) % 2);
-                    }
+                    var container = CharaContainerScript[k];
+                    if (container != null && container.FaceDrivenKeyTarget != null)
+                        container.FaceDrivenKeyTarget.AlterUpdateAutoLip(curKey, k, lipDuration);
                 }
             };
 
@@ -806,6 +889,7 @@ namespace Gallop.Live
             _livePropsController = new LivePropsController(transform,
                 _liveTimelineControl.data.propsSettings, CharaContainerScript, propsLocators);
             _livePropsController.VariationEnabled = variation => variation == 0;
+            PreloadEarTailMotion();
             _liveMiniCharaController?.Dispose();
             _liveMiniCharaController = new LiveMiniCharaController(transform,
                 _liveTimelineControl.data.worksheetList, CharaContainerScript,

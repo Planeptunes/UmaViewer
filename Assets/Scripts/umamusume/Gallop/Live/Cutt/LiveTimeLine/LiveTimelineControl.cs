@@ -1411,31 +1411,79 @@ namespace Gallop.Live.Cutt
             return runtimeDataArray;
         }
 
+        // Port of LiveTimelineControl.AlterUpdate_FacialData @0x7ffd592a02f0. The game keeps ONE
+        // FacialDataUpdateInfo on the stack, clears every slot through the Setup functions when its key list is
+        // disabled, and calls the facial delegate once per character slot in the order Face, Mouth, Eye, Eyebrow,
+        // Ear, Effect, Tail, EyeTrack (EyeTrack last and only for the slot's own list when the slot is 0, see
+        // below). The cheek-noise time (GetFacialNoise / GetFacialNoiseCurrentTime @0x7ffd592c03c0 / 0x360) is
+        // not ported: the frame and the delegate time are the raw live time (reported as a data gap).
         public void AlterUpdate_FacialData(float liveTime)
         {
-            var facialDataList = data.worksheetList[0].facial1Set;
+            if (OnUpdateFacial == null)
+                return;
+
+            var sheet = data.worksheetList[0];
             FacialDataUpdateInfo updateInfo = default(FacialDataUpdateInfo);
-            if (facialDataList != null)
+
+            // Game: before the loop it seeds info.eyeTrack from the SHARED other4EyeTrackKeys with the plain
+            // frame (LiveTimelineWorkSheet.other4EyeTrackKeys, +0x178). Every processed slot rewrites the slot
+            // afterwards, exactly like the game. With no shared list (or a disabled one) the seed clears the slot.
+            SetupFacialUpdateInfo_EyeTrack(ref updateInfo, sheet.other4EyeTrackKeys, liveTime);
+
+            // Game call order in AlterUpdate_FacialData @0x7ffd592a02f0: Face, Mouth, Eye, Eyebrow, Ear, Effect,
+            // Tail, EyeTrack. The game walks 20 character slots and resolves each slot's facial set through a
+            // per-slot indirection table (LiveTimelineControl +0x290); the viewer maps slot 0 to facial1Set and
+            // slots 1..N to other4FacialArray[i - 1] (the table's "mode 1" mapping).
+            var otherFacialDataList = sheet.other4FacialArray;
+            for (int i = 0; i < Director.instance.characterCount; i++)
             {
+                var facialDataList = i == 0 ? sheet.facial1Set
+                    : (otherFacialDataList != null && i - 1 < otherFacialDataList.Length ? otherFacialDataList[i - 1] : null);
+                if (facialDataList == null)
+                    continue;
+
+                SetupFacialUpdateInfo_Face(ref updateInfo, facialDataList.faceKeys, liveTime);
                 SetupFacialUpdateInfo_Mouth(ref updateInfo, facialDataList.mouthKeys, liveTime);
                 SetupFacialUpdateInfo_Eye(ref updateInfo, facialDataList.eyeKeys, liveTime);
                 SetupFacialUpdateInfo_Eyebrow(ref updateInfo, facialDataList.eyebrowKeys, liveTime);
                 SetupFacialUpdateInfo_Ear(ref updateInfo, facialDataList.earKeys, liveTime);
-                SetupFacialUpdateInfo_EyeTrack(ref updateInfo, facialDataList.eyeTrackKeys, liveTime);
                 SetupFacialUpdateInfo_Effect(ref updateInfo, facialDataList.effectKeys, liveTime);
-                this.OnUpdateFacial(updateInfo, liveTime, 0);
-            }
+                SetupFacialUpdateInfo_Tail(ref updateInfo, facialDataList.tailKeys, liveTime);
 
-            var otherFacialDataList = data.worksheetList[0].other4FacialArray;
-            for (int i = 0; i < otherFacialDataList.Length && i < Director.instance.characterCount - 1; i++)
-            {
-                SetupFacialUpdateInfo_Mouth(ref updateInfo, otherFacialDataList[i].mouthKeys, liveTime);
-                SetupFacialUpdateInfo_Eye(ref updateInfo, otherFacialDataList[i].eyeKeys, liveTime);
-                SetupFacialUpdateInfo_Eyebrow(ref updateInfo, otherFacialDataList[i].eyebrowKeys, liveTime);
-                SetupFacialUpdateInfo_Ear(ref updateInfo, otherFacialDataList[i].earKeys, liveTime);
-                SetupFacialUpdateInfo_EyeTrack(ref updateInfo, otherFacialDataList[i].eyeTrackKeys, liveTime);
-                SetupFacialUpdateInfo_Effect(ref updateInfo, otherFacialDataList[i].effectKeys, liveTime);
-                this.OnUpdateFacial(updateInfo, liveTime, i + 1);
+                // EyeTrack handling differs for slot 0 vs the others (game @0x7ffd592a02f0):
+                //  - slot 0: the slot's own eyeTrackKeys with the (noise-modified) frame;
+                //  - other slots: the slot is CLEARED first, then the slot's own eyeTrackKeys are used when the
+                //    active key exists and is not Nop; otherwise the SHARED other4EyeTrackKeys (worksheet +0x178)
+                //    fill the slot with the plain frame, and with no shared list the slot stays cleared.
+                if (i == 0)
+                {
+                    SetupFacialUpdateInfo_EyeTrack(ref updateInfo, facialDataList.eyeTrackKeys, liveTime);
+                }
+                else
+                {
+                    updateInfo.eyeTrack = null;
+                    LiveTimelineKeyFacialEyeTrackData curEyeTrack = null;
+                    if (facialDataList.eyeTrackKeys != null
+                        && !facialDataList.eyeTrackKeys.HasAttribute(LiveTimelineKeyDataListAttr.Disable)
+                        && facialDataList.eyeTrackKeys.EnablePlayModeTimeline(_playMode))
+                    {
+                        LiveTimelineKeyIndex eyeTrackKey = AlterUpdate_Key(facialDataList.eyeTrackKeys, liveTime);
+                        curEyeTrack = eyeTrackKey != null ? eyeTrackKey.key as LiveTimelineKeyFacialEyeTrackData : null;
+                    }
+
+                    if (curEyeTrack != null && !curEyeTrack.IsNop)
+                    {
+                        SetupFacialUpdateInfo_EyeTrack(ref updateInfo, facialDataList.eyeTrackKeys, liveTime);
+                    }
+                    else if (sheet.other4EyeTrackKeys != null)
+                    {
+                        SetupFacialUpdateInfo_EyeTrack(ref updateInfo, sheet.other4EyeTrackKeys, liveTime);
+                    }
+                }
+
+                // GetFacialNoiseCurrentTime (cheek-noise time) is not ported; the game passes it as the delegate
+                // time. Kept as the raw live time (reported as a data gap).
+                this.OnUpdateFacial(updateInfo, liveTime, i);
             }
         }
         private void AlterUpdate_AnimationControl(LiveTimelineWorkSheet sheet, int currentFrame)
@@ -1489,118 +1537,184 @@ namespace Gallop.Live.Cutt
             OnUpdateAnimation(ref updateInfo);
         }
 }
-        private void SetupFacialUpdateInfo_Mouth(ref FacialDataUpdateInfo updateInfo, LiveTimelineKeyFacialMouthDataList keys, float time)
+        // Port of the game's per-slot facial setup functions (LiveTimelineControl.c). Each one:
+        //  - clears its slot when the key list is null / has the Disable attribute / is not enabled for the
+        //    current play mode (the game clears the slots in that case too);
+        //  - otherwise fills the slot with the active key (game: GetKeyAndIndex = FindCurrentKey + key index)
+        //    and writes the key index, plus the NEXT key (At(keyIndex + 1)) into the *Next slot for face/eye.
+        // The game writes the key index even when the search finds no key (the viewer writes the -1 default).
+        //
+        // Game slot offsets in FacialDataUpdateInfo (struct offsets, dump minus the 0x10 header) and RVAs:
+        //   SetupFacialUpdateInfo_Face    @0x7ffd592c6a80  faceCur +0x00 / faceNext +0x08 / faceKeyIndex +0x50
+        //   SetupFacialUpdateInfo_Mouth   @0x7ffd592c6cf0  mouth +0x10 / mouthKeyIndex +0x54
+        //   SetupFacialUpdateInfo_Eye     @0x7ffd592c6640  eyeCur +0x18 / eyeNext +0x20 / eyeKeyIndex +0x58
+        //   SetupFacialUpdateInfo_Eyebrow @0x7ffd592c68c0  eyebrow +0x28 / eyebrowKeyIndex +0x5C
+        //   SetupFacialUpdateInfo_EyeTrack@0x7ffd592c6480  eyeTrack +0x30 / eyeTrackKeyIndex +0x60
+        //   SetupFacialUpdateInfo_Ear     @0x7ffd592c6100  ear +0x38 / earKeyIndex +0x64
+        //   SetupFacialUpdateInfo_Effect  @0x7ffd592c62c0  effect +0x48 / effectKeyIndex +0x68
+        //   SetupFacialUpdateInfo_Tail    @0x7ffd592c6eb0  tail +0x40 / tailKeyIndex +0x6C / tailMotionSec +0x70
+        private void SetupFacialUpdateInfo_Face(ref FacialDataUpdateInfo updateInfo, LiveTimelineKeyFacialFaceDataList keys, float time)
         {
-            LiveTimelineKey liveTimelineKey = null;
-            LiveTimelineKey liveTimelineKey2 = null;
-            LiveTimelineKey liveTimelineKey3 = null;
+            if (keys == null
+                || keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable)
+                || !keys.EnablePlayModeTimeline(_playMode))
+            {
+                updateInfo.faceCur = null;
+                updateInfo.faceNext = null;
+                return;
+            }
 
             LiveTimelineKeyIndex curKey = AlterUpdate_Key(keys, time);
-            if (curKey != null)
-            {
-                liveTimelineKey = curKey.prevKey;
-                liveTimelineKey2 = curKey.key;
-                liveTimelineKey3 = curKey.nextKey;
+            // The game writes the slots unconditionally (a null key clears them) and the key index.
+            updateInfo.faceCur = curKey != null ? curKey.key as LiveTimelineKeyFacialFaceData : null;
+            updateInfo.faceNext = curKey != null ? curKey.nextKey as LiveTimelineKeyFacialFaceData : null;
+            updateInfo.faceKeyIndex = curKey != null ? curKey.index : -1;
+        }
 
-                updateInfo.mouthPrev = liveTimelineKey as LiveTimelineKeyFacialMouthData;
-                updateInfo.mouthCur = liveTimelineKey2 as LiveTimelineKeyFacialMouthData;
-                updateInfo.mouthNext = liveTimelineKey3 as LiveTimelineKeyFacialMouthData;
-                updateInfo.mouthKeyIndex = curKey.index;
+        private void SetupFacialUpdateInfo_Mouth(ref FacialDataUpdateInfo updateInfo, LiveTimelineKeyFacialMouthDataList keys, float time)
+        {
+            if (keys == null
+                || keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable)
+                || !keys.EnablePlayModeTimeline(_playMode))
+            {
+                updateInfo.mouth = null;
+                return;
             }
+
+            LiveTimelineKeyIndex curKey = AlterUpdate_Key(keys, time);
+            updateInfo.mouth = curKey != null ? curKey.key as LiveTimelineKeyFacialMouthData : null;
+            updateInfo.mouthKeyIndex = curKey != null ? curKey.index : -1;
         }
 
         private void SetupFacialUpdateInfo_Eye(ref FacialDataUpdateInfo updateInfo, LiveTimelineKeyFacialEyeDataList keys, float time)
         {
-            LiveTimelineKey liveTimelineKey = null;
-            LiveTimelineKey liveTimelineKey2 = null;
-            LiveTimelineKey liveTimelineKey3 = null;
+            if (keys == null
+                || keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable)
+                || !keys.EnablePlayModeTimeline(_playMode))
+            {
+                updateInfo.eyeCur = null;
+                updateInfo.eyeNext = null;
+                return;
+            }
 
             LiveTimelineKeyIndex curKey = AlterUpdate_Key(keys, time);
-            if (curKey != null)
-            {
-                liveTimelineKey = curKey.prevKey;
-                liveTimelineKey2 = curKey.key;
-                liveTimelineKey3 = curKey.nextKey;
-
-                updateInfo.eyePrev = liveTimelineKey as LiveTimelineKeyFacialEyeData;
-                updateInfo.eyeCur = liveTimelineKey2 as LiveTimelineKeyFacialEyeData;
-                updateInfo.eyeNext = liveTimelineKey3 as LiveTimelineKeyFacialEyeData;
-                updateInfo.eyeKeyIndex = curKey.index;
-            }
-        }
-
-        private void SetupFacialUpdateInfo_Effect(ref FacialDataUpdateInfo updateInfo, LiveTimelineKeyFacialEffectDataList keys, float time)
-        {
-            LiveTimelineKey liveTimelineKey = null;
-
-            LiveTimelineKeyIndex curKey = AlterUpdate_Key(keys, time);
-            if (curKey != null)
-            {
-                liveTimelineKey = curKey.key;
-
-                updateInfo.effect = liveTimelineKey as LiveTimelineKeyFacialEffectData;
-                updateInfo.effectKeyIndex = curKey.index;
-            }
+            updateInfo.eyeCur = curKey != null ? curKey.key as LiveTimelineKeyFacialEyeData : null;
+            updateInfo.eyeNext = curKey != null ? curKey.nextKey as LiveTimelineKeyFacialEyeData : null;
+            updateInfo.eyeKeyIndex = curKey != null ? curKey.index : -1;
         }
 
         private void SetupFacialUpdateInfo_Eyebrow(ref FacialDataUpdateInfo updateInfo, LiveTimelineKeyFacialEyebrowDataList keys, float time)
         {
-            LiveTimelineKey liveTimelineKey = null;
-            LiveTimelineKey liveTimelineKey2 = null;
-            LiveTimelineKey liveTimelineKey3 = null;
+            if (keys == null
+                || keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable)
+                || !keys.EnablePlayModeTimeline(_playMode))
+            {
+                updateInfo.eyebrow = null;
+                return;
+            }
 
             LiveTimelineKeyIndex curKey = AlterUpdate_Key(keys, time);
-            if (curKey != null)
-            {
-                liveTimelineKey = curKey.prevKey;
-                liveTimelineKey2 = curKey.key;
-                liveTimelineKey3 = curKey.nextKey;
-
-                updateInfo.eyebrowPrev = liveTimelineKey as LiveTimelineKeyFacialEyebrowData;
-                updateInfo.eyebrowCur = liveTimelineKey2 as LiveTimelineKeyFacialEyebrowData;
-                updateInfo.eyebrowNext = liveTimelineKey3 as LiveTimelineKeyFacialEyebrowData;
-                updateInfo.eyebrowKeyIndex = curKey.index;
-            }
-        }
-
-        private void SetupFacialUpdateInfo_Ear(ref FacialDataUpdateInfo updateInfo, LiveTimelineKeyFacialEarDataList keys, float time)
-        {
-            LiveTimelineKey liveTimelineKey = null;
-            LiveTimelineKey liveTimelineKey2 = null;
-            LiveTimelineKey liveTimelineKey3 = null;
-
-            LiveTimelineKeyIndex curKey = AlterUpdate_Key(keys, time);
-            if (curKey != null)
-            {
-                liveTimelineKey = curKey.prevKey;
-                liveTimelineKey2 = curKey.key;
-                liveTimelineKey3 = curKey.nextKey;
-
-                updateInfo.earPrev = liveTimelineKey as LiveTimelineKeyFacialEarData;
-                updateInfo.earCur = liveTimelineKey2 as LiveTimelineKeyFacialEarData;
-                updateInfo.earNext = liveTimelineKey3 as LiveTimelineKeyFacialEarData;
-                updateInfo.earKeyIndex = curKey.index;
-            }
+            updateInfo.eyebrow = curKey != null ? curKey.key as LiveTimelineKeyFacialEyebrowData : null;
+            updateInfo.eyebrowKeyIndex = curKey != null ? curKey.index : -1;
         }
 
         private void SetupFacialUpdateInfo_EyeTrack(ref FacialDataUpdateInfo updateInfo, LiveTimelineKeyFacialEyeTrackDataList keys, float time)
         {
-            LiveTimelineKey liveTimelineKey = null;
-            LiveTimelineKey liveTimelineKey2 = null;
-            LiveTimelineKey liveTimelineKey3 = null;
+            if (keys == null
+                || keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable)
+                || !keys.EnablePlayModeTimeline(_playMode))
+            {
+                updateInfo.eyeTrack = null;
+                return;
+            }
 
             LiveTimelineKeyIndex curKey = AlterUpdate_Key(keys, time);
-            if (curKey != null)
-            {
-                liveTimelineKey = curKey.prevKey;
-                liveTimelineKey2 = curKey.key;
-                liveTimelineKey3 = curKey.nextKey;
+            updateInfo.eyeTrack = curKey != null ? curKey.key as LiveTimelineKeyFacialEyeTrackData : null;
+            updateInfo.eyeTrackKeyIndex = curKey != null ? curKey.index : -1;
+        }
 
-                updateInfo.eyeTrackPrev = liveTimelineKey as LiveTimelineKeyFacialEyeTrackData;
-                updateInfo.eyeTrackCur = liveTimelineKey2 as LiveTimelineKeyFacialEyeTrackData;
-                updateInfo.eyeTrackNext = liveTimelineKey3 as LiveTimelineKeyFacialEyeTrackData;
-                updateInfo.eyeTrackKeyIndex = curKey.index;
+        private void SetupFacialUpdateInfo_Ear(ref FacialDataUpdateInfo updateInfo, LiveTimelineKeyFacialEarDataList keys, float time)
+        {
+            if (keys == null
+                || keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable)
+                || !keys.EnablePlayModeTimeline(_playMode))
+            {
+                updateInfo.ear = null;
+                return;
             }
+
+            LiveTimelineKeyIndex curKey = AlterUpdate_Key(keys, time);
+            updateInfo.ear = curKey != null ? curKey.key as LiveTimelineKeyFacialEarData : null;
+            updateInfo.earKeyIndex = curKey != null ? curKey.index : -1;
+        }
+
+        private void SetupFacialUpdateInfo_Effect(ref FacialDataUpdateInfo updateInfo, LiveTimelineKeyFacialEffectDataList keys, float time)
+        {
+            if (keys == null
+                || keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable)
+                || !keys.EnablePlayModeTimeline(_playMode))
+            {
+                updateInfo.effect = null;
+                return;
+            }
+
+            LiveTimelineKeyIndex curKey = AlterUpdate_Key(keys, time);
+            updateInfo.effect = curKey != null ? curKey.key as LiveTimelineKeyFacialEffectData : null;
+            updateInfo.effectKeyIndex = curKey != null ? curKey.index : -1;
+        }
+
+        private void SetupFacialUpdateInfo_Tail(ref FacialDataUpdateInfo updateInfo, LiveTimelineKeyTailMotionDataList keys, float time)
+        {
+            if (keys == null
+                || keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable)
+                || !keys.EnablePlayModeTimeline(_playMode))
+            {
+                updateInfo.tail = null;
+                return;
+            }
+
+            LiveTimelineKeyIndex curKey = AlterUpdate_Key(keys, time);
+            LiveTimelineKeyTailMotionData tailKey = curKey != null ? curKey.key as LiveTimelineKeyTailMotionData : null;
+            updateInfo.tail = tailKey;
+            updateInfo.tailKeyIndex = curKey != null ? curKey.index : -1;
+
+            // Game @0x7ffd592c6eb0: when the tail key exists and UseTailRandomMotion is set it computes the
+            // motion's animation time through LiveTimelineUtil.GetAnimationTime and caches the frame in the key
+            // list (TailMotionPrevFrame / TailMotionPrevFrameAnimationTime, +0x40 / +0x44).
+            if (tailKey != null && tailKey.UseTailRandomMotion)
+            {
+                int curFrame = (int)(time / kFrameSec);
+                GetAnimationTime(out updateInfo.tailMotionSec, out keys.TailMotionPrevFrameAnimationTime,
+                    tailKey, curFrame, time, keys.TailMotionPrevFrame, keys.TailMotionPrevFrameAnimationTime);
+                keys.TailMotionPrevFrame = curFrame;
+            }
+        }
+
+        // One frame in seconds: the game passes DAT_7ffd5a640e78 = 1/60 to GetAnimationTime.
+        private const float kFrameSec = 0.016666668f;
+
+        // Port of LiveTimelineUtil.GetAnimationTime (RVA 0x4F85C30) default-timescale branch: the animation
+        // time of a motion that starts at key.frame with PlaySpeed, plus the sub-frame remainder. The
+        // non-default branch integrates LiveTimelineControl.GetCurrentTimescale over the skipped frames and is
+        // not ported (the viewer has no timescale playback yet). startFrame is 0 at the SetupFacialUpdateInfo_Tail
+        // call site (game call passes 0).
+        private static void GetAnimationTime(out float animationTime, out float prevFrameAnimationTime,
+            LiveTimelineKeyTailMotionData key, int curFrame, float time, int prevFrame, float prevTime)
+        {
+            float remainder = (time - curFrame * kFrameSec) * key.PlaySpeed;
+            if (remainder <= 0f)
+            {
+                remainder = 0f;
+            }
+
+            int frames = curFrame - key.frame;
+            if (frames < 1)
+            {
+                frames = 0;
+            }
+            float baseTime = (frames * key.PlaySpeed + 0f) * kFrameSec;
+            prevFrameAnimationTime = baseTime;
+            animationTime = baseTime + remainder;
         }
 
         public void AlterUpdate_LipSync(float liveTime)

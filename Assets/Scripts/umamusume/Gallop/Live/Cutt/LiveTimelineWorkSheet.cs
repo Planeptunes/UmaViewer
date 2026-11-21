@@ -466,6 +466,10 @@ namespace Gallop.Live.Cutt
         [SerializeField] public LiveTimelineKeyLipSyncDataList ripSync2Keys;
 
         [SerializeField] public LiveTimelineFacialData facial1Set;
+        // LiveTimelineWorkSheet.other4EyeTrackKeys (game worksheet +0x178): the SHARED eye-track list the facial
+        // update seeds before the slot loop and falls back to for the non-0 slots (AlterUpdate_FacialData
+        // @0x7ffd592a02f0). Name/position from dump_jp (after facial1Set at +0x170).
+        [SerializeField] public LiveTimelineKeyFacialEyeTrackDataList other4EyeTrackKeys;
         [SerializeField] public LiveTimelineFacialData[] other4FacialArray;
         // Pista de sombreado facial del live (umbrales de mejilla/nariz, blends y luz facial).
         [SerializeField] public LiveTimelineFacialToonData facialToonSet;
