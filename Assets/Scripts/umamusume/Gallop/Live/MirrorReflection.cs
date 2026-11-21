@@ -30,8 +30,12 @@ public class MirrorReflection : MonoBehaviour
 
     [Header("镜面基础设置")]
     [SerializeField] private LayerMask _renderLayers = ~0;
-    [SerializeField] private int _mirrorTextureSize = 1024;
-    [SerializeField] private float _mirrorCliipPlaneOffset = 0.07f;
+    // Rule 8.2: the previous defaults (1024 / 0.07 / false) were invented by the viewer. These are the
+    // MirrorReflection values serialized in the game stage prefabs (_mirrorTextureSize=512,
+    // _mirrorCliipPlaneOffset=0.01, _useBackgroundColor=true), so an auto-attached MirrorReflection
+    // (StageController.AutoAttachMirrorReflectionComponents) binds the same values the native component ships with.
+    [SerializeField] private int _mirrorTextureSize = 512;
+    [SerializeField] private float _mirrorCliipPlaneOffset = 0.01f;
     [SerializeField] private Camera _baseCamera;
     [SerializeField] private float _mirrorReflectionRate = 0f;
     [SerializeField] private Vector4 _mirrorDistortionTileOffset = DEFAULT_DIST_MAP_TILE_OFFSET_VALUE;
@@ -39,7 +43,7 @@ public class MirrorReflection : MonoBehaviour
     [SerializeField] private Direction _direction = Direction.Up;
     [SerializeField] private Color _mirrorReflectionColor = Color.white;
     [SerializeField] private Color _backgroundColor = Color.black;
-    [SerializeField] private bool _useBackgroundColor = false;
+    [SerializeField] private bool _useBackgroundColor = true;
 
     [Header("材质贴图大小")]
     [SerializeField] private bool _useMirrorTextureScale = false;
@@ -499,11 +503,13 @@ public class MirrorReflection : MonoBehaviour
 
     public void SetLightMirrorShader(bool isEnable)
     {
-        // Native RVA 0x19b7f90 writes CameraData.MirrorCasterQuality (0/1).
-        // GallopRenderer replaces both forward queues with SimpleMirrorCaster
-        // when quality is 1; renderer slot 1 is installed by LiveRenderSetup.
-        if (_mirrorCamera != null)
-            _mirrorCamera.GetUniversalAdditionalCameraData().SetRenderer(isEnable ? 1 : -1);
+        // Native MirrorReflection.SetLightMirrorShader (JP 0x7ffd5820baf0): CameraData.MirrorCasterQuality (+0xdc) =
+        // isEnable (0 Normal / 1 Simple). GallopRenderer.Setup then picks the SimpleMirrorCaster RenderObjectPass pair
+        // or the normal object draws on the same renderer, so the renderer features (mirror blur) always run.
+        if (_mirrorCamera != null && _mirrorCamera.TryGetComponent(out Gallop.RenderPipeline.CameraData data))
+            data.MirrorCasterQuality = isEnable
+                ? Gallop.RenderPipeline.CameraData.MirrorQuality.Simple
+                : Gallop.RenderPipeline.CameraData.MirrorQuality.Normal;
     }
 
     public void SetMirrorVisibleOfficialStyle(bool visible, bool pauseRenderWhenHidden = true)
@@ -621,6 +627,9 @@ public class MirrorReflection : MonoBehaviour
         var mirrorCameraData = go.GetComponent<Gallop.RenderPipeline.CameraData>();
         if (mirrorCameraData == null)
             mirrorCameraData = go.AddComponent<Gallop.RenderPipeline.CameraData>();
+        // CreateMirrorCamera: CameraData.IsMirrorRendering (+0xd9) = true, MirrorCasterQuality (+0xdc) = 1 (Simple).
+        mirrorCameraData.IsMirrorRendering = true;
+        mirrorCameraData.MirrorCasterQuality = Gallop.RenderPipeline.CameraData.MirrorQuality.Simple;
         var blur = mirrorCameraData.Parameter.BlurOptimized;
         blur.IsEnable = true;
         blur.Downsample = 0;
@@ -1000,7 +1009,11 @@ public class MirrorReflection : MonoBehaviour
             return;
 
         _isRenderingNow = true;
-        bool oldInvert = GL.invertCulling;
+        // Native mirror rendering inverts the triangle culling of the mirror camera render with the
+        // Gallop.RenderPipeline.SetInvertCullingPass pair (events 0 / 1000), enqueued by GallopRenderer.Setup
+        // when CameraData.IsInvertCulling (+0xda) || CameraData.IsMirrorRendering (+0xd9). The previous
+        // GL.invertCulling toggle around the render request was a viewer workaround and is removed (port now
+        // lives in RenderPipeline/SetInvertCullingPass.cs + GallopRenderer).
         int receiverLayerDepth = _mirrorObjectLayers.Count;
         try
         {
@@ -1021,9 +1034,26 @@ public class MirrorReflection : MonoBehaviour
             OnPreDraw?.Invoke(this);
             _beginCameraRenderingCallbacks?.Invoke(default, _mirrorCamera);
 
-            GL.invertCulling = !oldInvert;
-            if (!TrySubmitSingleCameraRequest())
-                _mirrorCamera.Render();
+            // NOT ORIGINAL — AUTHORIZED BY THE USER. Do not "fix" this under the port-fidelity rule (AGENTS.md 8/8.1/8.2).
+            // Log: Logs/261115-Live 1156 outline, ear anim, plushie prop, blurry reflection.md (Iteration 3).
+            // Viewer-only deviation (user request, not in the game): URP applies the pipeline asset's renderScale to
+            // every Game camera (UniversalRenderPipeline.InitializeStackedCameraData), so with the viewer's render
+            // scale setting above 100% the mirror camera rendered at a multiple of its RT size and the BlurOptimizePass
+            // radius (in texels) shrank accordingly. The mirror is rendered at scale 1 and the setting restored after.
+            var pipelineAsset = UniversalRenderPipeline.asset;
+            float oldRenderScale = pipelineAsset != null ? pipelineAsset.renderScale : 1f;
+            try
+            {
+                if (pipelineAsset != null)
+                    pipelineAsset.renderScale = 1f;
+                if (!TrySubmitSingleCameraRequest())
+                    _mirrorCamera.Render();
+            }
+            finally
+            {
+                if (pipelineAsset != null)
+                    pipelineAsset.renderScale = oldRenderScale;
+            }
         }
         catch (Exception e)
         {
@@ -1033,7 +1063,6 @@ public class MirrorReflection : MonoBehaviour
         {
             try
             {
-                GL.invertCulling = oldInvert;
                 if (_mirrorCamera != null)
                 {
                     _mirrorCamera.ResetWorldToCameraMatrix();
@@ -1069,14 +1098,7 @@ public class MirrorReflection : MonoBehaviour
                             }
                             finally
                             {
-                                try
-                                {
-                                    GL.invertCulling = oldInvert;
-                                }
-                                finally
-                                {
-                                    _isRenderingNow = false;
-                                }
+                                _isRenderingNow = false;
                             }
                         }
                     }

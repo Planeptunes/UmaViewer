@@ -27,13 +27,43 @@ namespace Gallop.RenderPipeline
         // inside a Live). Infinity outside a Live (viewer): only the user's shadow distance limits it.
         public static float GlobalShadowDistance = float.PositiveInfinity;
 
-        // Native fields read by GallopRenderer.SetupCullingParameters (+0x104 / +0x101 / +0x102 / +0x148). The Live
-        // code never writes them (MaxShadowDistance is 0 in every camera of live 1093, probe), so they keep the
+        // Native CameraData fields read by GallopRenderer.SetupCullingParameters (+0x104 / +0x101 / +0x102 / +0x148).
+        // The Live code never writes them (MaxShadowDistance is 0 in every camera of live 1093), so they keep the
         // native defaults.
         public float MaxShadowDistance;
         public bool IsDisableObjectCulling;
         public bool IsDisableLightCulling;
         public bool IsUIRendering;
+        // Native <IsOpaqueRenderingForUICamera>k__BackingField (+0x149, dump_jp.cs CameraData TypeDefIndex
+        // 33586488): UIRenderingPass.Execute (JP 0x7ffd59616110) draws an extra opaque-queue pass before the
+        // transparent one when set.
+        public bool IsOpaqueRenderingForUICamera;
+
+        // Native CameraData.MirrorQuality { Normal, Simple }.
+        public enum MirrorQuality
+        {
+            Normal = 0,
+            Simple = 1,
+        }
+
+        // Native fields +0xd0 / +0xd9 / +0xda / +0xdc. CameraData..ctor (JP 0x7ffd595ba770) sets RenderingLayerMask = 1
+        // and MirrorCasterQuality = 1 (Simple); MirrorReflection.CreateMirrorCamera (JP 0x7ffd58209df0) sets
+        // IsMirrorRendering = true and MirrorCasterQuality = Simple on the mirror camera, and
+        // MirrorReflection.SetLightMirrorShader (JP 0x7ffd5820baf0) rewrites MirrorCasterQuality.
+        // GallopRenderer.Setup draws with the SimpleMirrorCaster RenderObjectPass pair instead of the DrawObjectsPass pair
+        // when IsMirrorRendering && MirrorCasterQuality == Simple.
+        public uint RenderingLayerMask = 1;
+        public bool IsMirrorRendering;
+        // Native IsInvertCulling (+0xda, dump_jp.cs CameraData TypeDefIndex 33586488): when set (or when
+        // IsMirrorRendering), GallopRenderer.Setup enqueues the SetInvertCullingPass pair (events 0 / 1000)
+        // so the camera renders with inverted triangle culling. The Live code never writes it; the mirror
+        // camera gets its inversion from IsMirrorRendering.
+        public bool IsInvertCulling;
+        public MirrorQuality MirrorCasterQuality = MirrorQuality.Simple;
+
+        // Native <IsSkipDrawObjectsPass>k__BackingField (+0x100): DrawObjectsPass.Setup (JP 0x7ffd595e76a0) returns
+        // false when set, so GallopRenderer.Setup does not enqueue the DrawObjectsPass. The Live code never sets it.
+        public bool IsSkipDrawObjectsPass;
 
         public void Initialize(bool _)
         {
