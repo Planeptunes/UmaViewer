@@ -17,20 +17,10 @@ public class UmaViewerGlobalShader : MonoBehaviour
     public Color _GlobalDirtToonColor;
     public Color _GlobalRimColor = new Color(1, 1, 1, 0);
     public Color _GlobalDirtColor;
-    public Color _Global_LightmapColor = Color.white;
-    public Color _Global_LightmapDensityAddColor = Color.clear;
-    public Color _Global_LightmapModulateColor = Color.white;
     public Color _RimColor2;
-    List<Vector4> _MainParam = new List<Vector4>();
-    public Vector4 _MainParam_0;
-    public Vector4 _MainParam_1;
-    List<Vector4> _HighParam1 = new List<Vector4>();
-    public Vector4 _HighParam1_0 = new Vector4(0, 0, 0, 1);
-    public Vector4 _HighParam1_1 = new Vector4(0, 0, 0, 1);
-    public Vector4 _HighParam1_2;
-    List<Vector4> _HighParam2 = new List<Vector4>();
-    public Vector4 _HighParam2_0 = new Vector4(0, 0, 0, 1);
-    public Vector4 _HighParam2_1 = new Vector4(0, 0, 0, 1);
+    // _MainParam / _HighParam1 / _HighParam2 are no longer set globally (invented viewer defaults, AGENTS.md 8.2):
+    // the game writes them per eye material (Gallop.Model.Component.EyeHighlightController, OnInitialize /
+    // AfterApplyDrivenKey), ported in Gallop/Model/Component/EyeHighlightController.cs.
 
     List<Vector4> _ColorArray = new List<Vector4>();
     public Color _ColorArray_0;
@@ -68,9 +58,9 @@ public class UmaViewerGlobalShader : MonoBehaviour
         Shader.SetGlobalColor("_GlobalDirtToonColor", _GlobalDirtToonColor);
         Shader.SetGlobalColor("_GlobalRimColor", _GlobalRimColor);
         Shader.SetGlobalColor("_GlobalDirtColor", _GlobalDirtColor);
-        Shader.SetGlobalColor("_Global_LightmapColor", _Global_LightmapColor);
-        Shader.SetGlobalColor("_Global_LightmapDensityAddColor", _Global_LightmapDensityAddColor);
-        Shader.SetGlobalColor("_Global_LightmapModulateColor", _Global_LightmapModulateColor);
+        // The four _Global_Lightmap* colours are published by the game's GraphicSettings.SetDefaultLightmap
+        // (@0x7ffd58e9ba70 -> UpdateLightmap @0x7ffd58e9d050), ported in Gallop/RenderPipeline/GraphicSettings.cs.
+        Gallop.GraphicSettings.SetDefaultLightmap();
         Shader.SetGlobalColor("_RimColor2", _RimColor2);
         //Float
         Shader.SetGlobalFloat("_Global_MaxDensity", _Global_MaxDensity);
@@ -82,22 +72,6 @@ public class UmaViewerGlobalShader : MonoBehaviour
         Shader.SetGlobalFloat("_RimHorizonOffset", _RimHorizonOffset);
         Shader.SetGlobalFloat("_UVEmissivePower", _UVEmissivePower);
         //Vector Array
-        _MainParam.Clear();
-        _MainParam.Add(_MainParam_0);
-        _MainParam.Add(_MainParam_1);
-        Shader.SetGlobalVectorArray("_MainParam", _MainParam);
-
-        _HighParam1.Clear();
-        _HighParam1.Add(_HighParam1_0);
-        _HighParam1.Add(_HighParam1_1);
-        _HighParam1.Add(_HighParam1_2);
-        Shader.SetGlobalVectorArray("_HighParam1", _HighParam1);
-
-        _HighParam2.Clear();
-        _HighParam2.Add(_HighParam2_0);
-        _HighParam2.Add(_HighParam2_1);
-        Shader.SetGlobalVectorArray("_HighParam2", _HighParam2);
-
         _ColorArray.Clear();
         _ColorArray.Add(_ColorArray_0);
         _ColorArray.Add(_ColorArray_1);
