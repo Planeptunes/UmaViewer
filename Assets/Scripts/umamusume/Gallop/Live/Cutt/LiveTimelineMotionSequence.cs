@@ -161,11 +161,19 @@ namespace Gallop.Live.Cutt
 
             if (_currentKey != null && _tempAnim != null)
             {
-                LiveTimelineKeyIndex curKey = LiveTimelineControl.AlterUpdate_Key(_currentKey, currentTime);
+                // Keeps the cached key state of the list up to date (other consumers read TimeKeyIndex).
+                LiveTimelineControl.AlterUpdate_Key(_currentKey, currentTime);
 
-                _curIndex = curKey.index;
-                LiveTimelineKeyCharaMotionData arg = curKey.key as LiveTimelineKeyCharaMotionData;
-                if (arg == null || string.IsNullOrEmpty(arg.motionName) || arg.clip == null) return;
+                // LiveTimelineMotionSequence.AlterUpdate @0x7ffd59300a80: the key that plays is the one FindPlayingMot
+                // finds (frame <= curFrame <= frame + playFrameLength), not simply the last key that started. Inside a
+                // gap between keys the game disables the animation and samples nothing.
+                int curFrame = (int)(currentTime / kFrameSec);
+                LiveTimelineKeyCharaMotionData arg = FindPlayingMot(curFrame, out int playingIndex);
+                _indexOfPlayingKey = playingIndex;
+                if (arg == null) return;
+
+                _curIndex = playingIndex;
+                if (string.IsNullOrEmpty(arg.motionName) || arg.clip == null) return;
                 AnimationClip anim = arg.clip;
 
                 float currentAnimationTime = ComputeAnimationTime(arg, currentTime, timescaleKeys) + noiseAddTime;
@@ -178,67 +186,131 @@ namespace Gallop.Live.Cutt
                     // time. In continuous playback that value is the one the last clip that does animate "Position" left
                     // at the end of its span, so it is reproduced here from the key list alone.
                     if (!ClipAnimatesPosition(anim))
-                        SampleLastPositionClip(curKey.index, timescaleKeys);
+                        SampleLastPositionClip(playingIndex, timescaleKeys);
 
                     SampleClip(anim, arg.loop ? Mathf.Repeat(currentAnimationTime, anim.length) : currentAnimationTime);
                 }
                 _prevIndex = _curIndex;            
             }
-            _prevFrameAnimationTime = currentTime;
         }
 
-        // CalculateAnimationInterval 0x1af9640: authored zero means normal speed.
-        private float ComputeAnimationTime(LiveTimelineKeyCharaMotionData arg, float currentTime, LiveTimelineKeyTimescaleDataList timescaleKeys)
+        // LiveTimelineMotionSequence.FindPlayingMot @0x7ffd59300df0 (the same scan is inlined in AlterUpdate
+        // @0x7ffd59300a80): walks the keys in order; the first key with curFrame < key.frame ends the search (nothing
+        // plays); the first key with curFrame <= key.frame + playFrameLength (+0x80) is the playing one (an earlier key
+        // wins over a later one that already started).
+        private LiveTimelineKeyCharaMotionData FindPlayingMot(int curFrame, out int index)
         {
-            double start;
-            if (arg.isMotionHeadFrameAll)
+            index = -1;
+            var list = _currentKey != null ? _currentKey.thisList : null;
+            if (list == null) return null;
+            for (int i = 0; i < list.Count; i++)
             {
-                start = (double)arg.motionHeadFrame / 60;
+                var key = list[i];
+                if (key == null) return null;
+                if (curFrame < key.frame) return null;
+                if (curFrame <= key.frame + key.playFrameLength)
+                {
+                    index = i;
+                    return key;
+                }
+            }
+            return null;
+        }
+
+        private const float kFrameSec = 0.016666668f; // DAT_7ffd5a640e78 = 1/60
+
+        // LiveTimelineControl.GetCurrentTimescale @0x7ffd592bffd0: the Timescale of the timescale key in force at the
+        // frame (FindTimelineKey, no interpolation), 1.0 when there is none.
+        private static float GetCurrentTimescale(LiveTimelineKeyTimescaleDataList keys, int frame)
+        {
+            float scale = 1f;
+            if (keys == null || keys.thisList == null) return scale;
+            for (int i = 0; i < keys.thisList.Count; i++)
+            {
+                var k = keys.thisList[i];
+                if (k == null) continue;
+                if (k.frame > frame) break;
+                scale = k.Timescale;
+            }
+            return scale;
+        }
+
+        // LiveTimelineControl.IsDefaultTimescale @0x7ffd592c2a50: scanning the keys from the last one backwards, the
+        // first key at or before the frame decides: a scale other than 1 -> false; scale 1 -> keep looking only while
+        // that key is not before the start frame of the motion.
+        private static bool IsDefaultTimescale(LiveTimelineKeyTimescaleDataList keys, int startFrame, int curFrame)
+        {
+            if (keys == null || keys.thisList == null) return true;
+            for (int i = keys.thisList.Count - 1; i >= 0; i--)
+            {
+                var k = keys.thisList[i];
+                if (k == null || curFrame < k.frame) continue;
+                if (k.Timescale != 1f) return false;
+                if (startFrame > k.frame) return true;
+            }
+            return true;
+        }
+
+        // Port of LiveTimelineUtil.GetAnimationTime @0x7ffd59305c30 as called by LegacyAnimationUpdate
+        // @0x7ffd593022d0 (the timeline is integrated frame by frame with the timescale of each frame; the result
+        // of the previous frame is cached in +0x5C/+0x60, here _prevFrame/_prevFrameAnimationTime).
+        // useCache = false for one-off evaluations (seek branch, nothing stored).
+        private float ComputeAnimationTime(LiveTimelineKeyCharaMotionData arg, float currentTime, LiveTimelineKeyTimescaleDataList timescaleKeys, bool useCache = true)
+        {
+            int headFrame = arg.isMotionHeadFrameAll ? arg.motionHeadFrame : arg.motionHeadFrameSeparetes[charaIndex];
+            int keyFrame = arg.frame;
+            int curFrame = (int)(currentTime / kFrameSec);
+            float playSpeed = arg.playSpeed;
+            bool disabled = arg.IsTimescaleDisabled;
+            int prevFrame = useCache ? _prevFrame : -1;
+            float prevAccum = useCache ? _prevFrameAnimationTime : 0f;
+
+            float remainder = (currentTime - curFrame * kFrameSec) * playSpeed;
+            if (remainder <= 0f) remainder = 0f;
+
+            float accum, result;
+            if (IsDefaultTimescale(timescaleKeys, keyFrame, curFrame))
+            {
+                int frames = curFrame - keyFrame;
+                if (frames < 1) frames = 0;
+                accum = (frames * playSpeed + headFrame) * kFrameSec;
+                result = accum + remainder;
             }
             else
             {
-                start = (double)arg.motionHeadFrameSeparetes[charaIndex] / 60;
-            }
-
-            // Live 1092 probe (state_trace, slots 6-11 frames 4620..4758): the clones play anm_*_c28 keys authored with
-            // playSpeed = 0 and their bones do not move at all in the game (delta 0.0000), so a 0 speed holds the clip at
-            // motionHeadFrame instead of meaning "normal speed". Keys named *_pose use the same value.
-            float playSpeed = arg.playSpeed;
-            double interval = 0;
-            double last_current_time = currentTime;
-            if (!arg.IsTimescaleDisabled && timescaleKeys != null && timescaleKeys.Count > 0)
-            {
-                var has_key = false;
-                // apply timescale keys
-                for (int i = timescaleKeys.thisList.Count - 1; i >= 0; i--)
+                float scale = 1f;
+                if (curFrame == prevFrame)
                 {
-
-                    var scaleKey = timescaleKeys.thisList[i];
-                    if (scaleKey.FrameSecond <= currentTime)
+                    accum = prevAccum;
+                    if (!disabled) scale = GetCurrentTimescale(timescaleKeys, curFrame);
+                }
+                else if (prevFrame < curFrame && keyFrame < prevFrame && prevFrame >= 0)
+                {
+                    accum = prevAccum;
+                    for (int f = prevFrame; f < curFrame; f++)
                     {
-                        has_key = true;
-                        if (scaleKey.FrameSecond <= arg.FrameSecond)
-                        {
-                            interval += (last_current_time - arg.FrameSecond) * scaleKey.Timescale * playSpeed;
-                            break;
-                        }
-                        else
-                        {
-                            interval += (last_current_time - scaleKey.FrameSecond) * scaleKey.Timescale * playSpeed;
-                            last_current_time = scaleKey.FrameSecond;
-                        }
+                        scale = disabled ? 1f : GetCurrentTimescale(timescaleKeys, f);
+                        accum += playSpeed * kFrameSec * scale;
                     }
                 }
-                if (!has_key)
+                else
                 {
-                    interval = (currentTime - arg.FrameSecond) * playSpeed;
+                    accum = headFrame * kFrameSec;
+                    for (int f = keyFrame; f < curFrame; f++)
+                    {
+                        scale = disabled ? 1f : GetCurrentTimescale(timescaleKeys, f);
+                        accum += playSpeed * kFrameSec * scale;
+                    }
                 }
+                result = remainder * scale + accum;
             }
-            else
+
+            if (useCache)
             {
-                interval = (currentTime - arg.FrameSecond) * playSpeed;
+                _prevFrameAnimationTime = accum;
+                _prevFrame = curFrame;
             }
-            return (float)(start + interval);
+            return result;
         }
 
         private void SampleClip(AnimationClip clip, float time)
@@ -291,7 +363,7 @@ namespace Gallop.Live.Cutt
                     continue;
 
                 float endTime = (float)System.Math.Max(prev.FrameSecond, next.FrameSecond - 1.0 / 60.0);
-                float t = ComputeAnimationTime(prev, endTime, timescaleKeys);
+                float t = ComputeAnimationTime(prev, endTime, timescaleKeys, false);
                 SampleClip(prev.clip, prev.loop ? Mathf.Repeat(t, prev.clip.length) : t);
                 return;
             }
