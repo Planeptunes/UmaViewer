@@ -113,6 +113,10 @@ public class UmaViewerAudio
         {
             if (source == null || source.clip == null) continue;
             if (time >= 0f && time >= source.clip.length) continue;
+            //(Live seek while playing) A source that is already playing was just positioned by SetTime:
+            //AudioSource.Play() on a playing source restarts the clip from 0, which sent the whole show back
+            //to the start (Director re-syncs _liveCurrentTime to the audio time). Keep it playing as it is.
+            if (time >= 0f && source.isPlaying) continue;
             source.Play();
         }
     }
