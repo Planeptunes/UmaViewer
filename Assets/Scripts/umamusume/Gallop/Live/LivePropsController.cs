@@ -99,7 +99,7 @@ namespace Gallop.Live
         // Props..ctor builds _attachJointHandDictionary (Dictionary<int,bool>, FNV hash of the attach joint -> isLeft)
         // from two string literals (JP 0x7ffd5925f2d0). The literals are not in the decompiled export; Elbow_L / Elbow_R
         // are what every link-bone prop in the authored cutts (prop1504 / prop1505) is attached to
-        // (verified with the probe: AddLinkHandBoneComponent isLeft=0 for Elbow_R, 1 for Elbow_L).
+        // (game values: AddLinkHandBoneComponent isLeft=0 for Elbow_R, 1 for Elbow_L).
         private static readonly Dictionary<int, bool> AttachJointHand = new Dictionary<int, bool>
         {
             { FNVHash.Generate("Elbow_L"), true },
@@ -107,10 +107,10 @@ namespace Gallop.Live
         };
 
         // CharacterPropLinkBoneDefine.LeftHandLinkBoneNameArray / RightHandLinkBoneNameArray (JP .cctor RVA 0x58DAFA0).
-        // The string literals are not in the decompiled export. Measured with the Hachimi probe (live 1092,
-        // render_prop_link_bones.csv, AddLinkBone): the wearer subtrees linked per side are ArmRoll_X and Wrist_X
+        // The string literals are not in the decompiled export. Game values (live 1092,
+        // AddLinkBone): the wearer subtrees linked per side are ArmRoll_X and Wrist_X
         // (with every finger below it); the game also hides exactly those bones (AddHideReferenceBone, not ported).
-        // The isLeft dictionary of Props..ctor was measured too: Elbow_R -> 0, Elbow_L -> 1.
+        // The isLeft dictionary of Props..ctor: Elbow_R -> 0, Elbow_L -> 1.
         private static readonly string[] LeftHandLinkBoneNames = { "ArmRoll_L", "Wrist_L" };
         private static readonly string[] RightHandLinkBoneNames = { "ArmRoll_R", "Wrist_R" };
 
@@ -249,6 +249,15 @@ namespace Gallop.Live
 
         // Actual-game Director.CreateProps registers all three stage work arrays
         // after creating/scaling props (Komoe RVA 0x7154755..0x71547ea).
+        // Director.ReserveWarmingUpCySpring -> PropsManager.ReserveWarmingUpCySpring: the formation-offset key's
+        // PropCySpringWarmUpTime is reserved on the CySpring of every prop worn by that character.
+        internal void ReserveWarmingUpCySpring(int characterIndex, float warmUpTime)
+        {
+            foreach (var prop in instances)
+                if (prop.CharacterIndex == characterIndex && prop.Physics != null)
+                    prop.Physics.ReserveWarmingUpCySpring(warmUpTime);
+        }
+
         internal void RegisterStageLighting(StageController stage,
             Gallop.RenderPipeline.RecoveredLensFlareController flares)
         {

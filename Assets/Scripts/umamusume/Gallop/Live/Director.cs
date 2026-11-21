@@ -303,6 +303,20 @@ namespace Gallop.Live
 
         public static Director instance => _instance;
 
+        // Director.ReserveWarmingUpCySpring @0x7ffd591ff9d0 (target of LiveTimelineControl.OnReserveWarmingUpCySpring):
+        // reserves the props' CySpring warm-up of one character.
+        internal void ReserveWarmingUpCySpring(int characterIndex, float propWarmUpTime)
+        {
+            _livePropsController?.ReserveWarmingUpCySpring(characterIndex, propWarmUpTime);
+        }
+
+        // Viewer pause state (SliderControl.is_Touched: set while paused or while dragging the slider, cleared on
+        // resume). The game pauses with Time.timeScale = 0, so CySpringUpdater sees dt = 0 and only runs
+        // UpdatePreviousPosture; the viewer pauses by freezing the timeline, so the characters read this flag to get
+        // the same dt = 0.
+        public static bool IsPlaybackPaused =>
+            _instance != null && _instance._isLiveSetup && _instance.sliderControl != null && _instance.sliderControl.is_Touched;
+
         //real work start
         public LiveEntry live;
         private const string CUTT_PATH = "cutt/cutt_son{0}/cutt_son{0}";
@@ -1515,7 +1529,8 @@ namespace Gallop.Live
         {
             if (_effectController != null)
             {
-                bool seek = sliderControl.is_Touched || sliderControl.is_Outed ||
+                // (Motion Probe, viewer tool) a released step advances time while is_Touched is set: it is not a seek.
+                bool seek = (sliderControl.is_Touched && !LiveProbeMotion.StepActive) || sliderControl.is_Outed ||
                     _liveCurrentTime < _effectLastTimelineTime;
                 if (seek && _liveCurrentTime != _effectLastTimelineTime)
                 {
@@ -1678,6 +1693,15 @@ namespace Gallop.Live
                         sliderControl.is_Outed = false;
                         sliderControl.is_Touched = false;
                         _syncTime = false;
+                    }
+                    else if (sliderControl.is_Touched && LiveProbeMotion.TryConsumeStep(out float motionTime))
+                    {
+                        // (Motion Probe, viewer tool) One released step of the paused show (LiveProbeMotion): time + 1/60 s
+                        // with the same timeline update as the paused branch below. is_Touched stays set (audio stays stopped).
+                        _liveCurrentTime = motionTime;
+                        UI.ProgressBar.SetValueWithoutNotify(_liveCurrentTime / totalTime);
+                        OnTimelineUpdate(_liveCurrentTime);
+                        ApplyTimelineLateUpdate();
                     }
                     else if (sliderControl.is_Touched)
                     {

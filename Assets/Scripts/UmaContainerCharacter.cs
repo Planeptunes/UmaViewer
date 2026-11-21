@@ -285,8 +285,27 @@ public class UmaContainerCharacter : UmaContainer
     [Header("CySpring (datamine)")]
     [Tooltip("Warm-up (s) al cargar: asienta la cadena antes de mostrarla (oficial: DEFAULT_WARMUPTIME). 0 = off.")]
     public float CySpringWarmUpTime = 1.0f;
-    [Tooltip("Re-liga la fisica UNA vez cuando el live ya ha posado al personaje. OJO: medido - captura la pose de reposo en un frame cualquiera de la cancion, asi que la cola acaba apuntando hacia arriba. Desactivado por defecto.")]
-    public bool CySpringRebindOnAnimatedPose = false;
+
+    // CharacterObject.prevFrameWarmUpCyspring (+0xB8): frame of the formation-offset key whose warm-up was already
+    // reserved (0 while the current key has no warmUpCySpring). Used by LiveTimelineControl.UpdateFormationWarmUp.
+    [System.NonSerialized] public int PrevFrameWarmUpCySpring;
+
+    // ModelController._isForcedPostSpring (+0x370), read through get_IsForcedPostSpring @0x22DC5D0 RVA. Default false;
+    // the game's writer of the field is not located (no store in code_JP), so the viewer never sets it.
+    [System.NonSerialized] public bool IsForcedPostSpring;
+
+    // True while the live pause (Director.IsPlaybackPaused) has cleared the CySpring controller's _isPlaying, so that only
+    // that pause is undone on resume (a solver failure latch must stay).
+    private bool _cySpringPausedByLive;
+
+    // ModelController.ReserveWarmingUpCySpring @0x7ffd596789b0: only with the CySpring enabled; reserves the controller's
+    // warm-up (delay 0), run by TryUpdateWarmUp in the next CySpringUpdater step.
+    public void ReserveWarmingUpCySpring(float warmUpTime)
+    {
+        if (!EnablePhysics || _cySpringController == null)
+            return;
+        _cySpringController.ReserveWarmingUpCySpring(warmUpTime);
+    }
     [Tooltip("Viento del solver CySpring (parametros del asset). El visor no aplica la pista charaWind del live, asi que sopla constante; desactivado por defecto hasta implementar esa pista.")]
     public bool CySpringEnableWind = false;
     [Tooltip("Solver propio de falda (SkirtController + NativeSkirtUpdate: planos de rodilla/tobillo). Necesario: sin el, la falda se mete en las piernas.")]
@@ -304,16 +323,15 @@ public class UmaContainerCharacter : UmaContainer
     // The wearer's body controller (native CharacterObject.CurrentLiveModelController + 0x330), read by Props.BeginCySpringSimulate.
     internal CySpringController BodyCySpringController => _cySpringController;
     private bool _cySpringLoaded;
-    // Ancla del solver (ver BindCySpringOwnerAnchor) y su resolucion diferida.
-    private bool _cySpringAnchorResolved;
+    // Hip passed to CySpringController.AddController (kept for the pose rebind).
     private Transform _cySpringHip;
-    private bool _cySpringPoseRebound;
     // LoadPhysics se llamo antes de que el modelo estuviera montado (sin nodo "Position").
     private bool _cySpringBindPending;
     // SkirtParamDataAsset pendiente de crear (el modelo no estaba montado al cargar la falda).
     private SkirtParamDataAsset _pendingSkirtParam;
     // Acumulador del paso fijo del solver (30/60 Hz), no el del render.
-    private float _cySpringStepAccumulator;
+    // CySpringUpdater._skipFrame (+0x81).
+    private bool _cySpringSkipFrame;
     // Estabilidad del modelo antes de ligar (ver IsModelReadyForCySpringBind).
     private int _bindReadyFrames;
     private int _bindLastContainerCount = -1;
@@ -754,14 +772,13 @@ public class UmaContainerCharacter : UmaContainer
 
         var slots = SplitCySpringContainers(cySpringDataContainers);
 
-        // (PENDIENTE) La falda declara su volumen de sector de cadera (Col_B_Hip_MSkirt_*) SOLO
-        // en el hueso raiz de cada cadena; los hijos solo nombran las capsulas del muslo, asi que
-        // sin el volumen de cadera la tela puede plegarse hacia dentro. Heredar los nombres de la
-        // raiz en los hijos es lo unico que queda del camino antiguo.
-        PropagateClothCollisionNames(slots.body);
 
         _cySpringOwner = new UmaViewerCySpringOwner(this);
         _cySpringController = CySpringController.AddController(gameObject, hip, _cySpringOwner);
+        // A live runs at 60 fps: LiveModelController sets set_SpringUpdateMode(frameRate == 60) (code_JP LiveModelController.c:2532),
+        // so the characters' solver runs in Mode60FPS (is60FPS = 1 in the game's CySpring calls); props keep ModeNormal.
+        if (_cySpringController != null)
+            _cySpringController.UpdateMode = CySpringController.SpringUpdateMode.Mode60FPS;
 
         if (_cySpringController == null)
         {
@@ -770,7 +787,7 @@ public class UmaContainerCharacter : UmaContainer
             return;
         }
 
-        BindCySpringOwnerAnchor(_cySpringController, hip);
+        _cySpringHip = hip;
         _cySpringController.EnableWind = CySpringEnableWind;
 
         _cySpringController.LoadFromDataContainers(
@@ -848,49 +865,6 @@ public class UmaContainerCharacter : UmaContainer
         return null;
     }
 
-    /// <summary>
-    /// Indica si el live ya ha posado al personaje (la animacion ya se ha aplicado al menos una
-    /// vez). Fuera de un live no se re-liga: el visor de personaje ya esta en su pose.
-    /// </summary>
-    private bool IsAnimatedPoseReadyForCySpring()
-    {
-        Gallop.Live.Director director = Gallop.Live.Director.instance;
-
-        if (director == null || !director._isLiveSetup)
-            return false;
-
-        return director._liveCurrentTime > 0.2f;
-    }
-
-    /// <summary>
-    /// Ancla del motor CySpring. El live coloca al personaje moviendo el nodo "Position" del rig,
-    /// no el contenedor; y el solver trabaja con el owner en el ORIGEN (UpdatePrevousPosture pone
-    /// a cero su posicion y EndSimulation la restaura). Si el owner es el contenedor, el rig queda
-    /// a metros del origen (medido: ~2,9 m) y el motor resuelve posiciones de colision y fuerzas
-    /// de desplazamiento en un espacio desplazado: el pelo atraviesa el cuerpo y "se sube" al
-    /// andar. Con el rig root como owner, el espacio del solver coincide con el del personaje.
-    /// </summary>
-    private void BindCySpringOwnerAnchor(CySpringController controller, Transform hip)
-    {
-        if (controller == null)
-            return;
-
-        _cySpringHip = hip;
-
-        Transform rigRoot = transform.Find("Position");
-
-        if (rigRoot == null)
-            rigRoot = hip != null ? hip : transform;
-
-        controller.SetOwner(rigRoot.gameObject, hip, _cySpringOwner);
-
-        // El plano de falda se coloca con `SkirtRootPos - RootPos` y se compara contra posiciones de
-        // hueso que estan en el espacio de este mismo owner (que en el step vale 0). Si RootPos se
-        // lee del contenedor, el plano queda desplazado por la posicion del personaje (medido en el
-        // live: hasta 8,5 m de empuje en un panel). Tiene que ser el ancla del motor.
-        if (_skirtController != null)
-            _skirtController.SetRootAnchor(rigRoot);
-    }
 
     private void LinkSkirtControllerToCySpring()
     {
@@ -902,50 +876,6 @@ public class UmaContainerCharacter : UmaContainer
     _cySpringController.CreateLinkSkirtController(_skirtController);
     }
 
-
-    /// <summary>
-    /// Une a cada hijo de una cadena de falda los nombres de colision que declara la raiz.
-    /// La raiz nombra el volumen de su sector de cadera ademas de las capsulas del muslo; los
-    /// hijos solo nombran las capsulas, asi que la tela podia plegarse hacia dentro en el
-    /// gluteo. Con la herencia, todos los huesos de la cadena colisionan contra el mismo set.
-    /// </summary>
-    private static void PropagateClothCollisionNames(CySpringDataContainer container, bool onlySkirt = true)
-    {
-        if (container == null || container.springParam == null)
-            return;
-
-        for (int i = 0; i < container.springParam.Count; i++)
-        {
-            Gallop.CySpringParamDataElement spring = container.springParam[i];
-            if (spring == null || spring._boneName == null || spring._collisionNameList == null)
-                continue;
-
-            if (onlySkirt && spring._boneName.IndexOf("MSkirt", StringComparison.OrdinalIgnoreCase) < 0)
-                continue;
-
-            if (spring._childElements == null)
-                continue;
-
-            for (int j = 0; j < spring._childElements.Count; j++)
-            {
-                Gallop.CySpringParamDataChildElement child = spring._childElements[j];
-                if (child == null)
-                    continue;
-
-                if (child._collisionNameList == null)
-                    child._collisionNameList = new List<string>();
-
-                for (int k = 0; k < spring._collisionNameList.Count; k++)
-                {
-                    string name = spring._collisionNameList[k];
-                    if (string.IsNullOrEmpty(name))
-                        continue;
-                    if (!child._collisionNameList.Contains(name))
-                        child._collisionNameList.Add(name);
-                }
-            }
-        }
-    }
 
     /// <summary>
     /// Reconstruye SOLO el puente nativo de tela (falda y ropa) sin recrear el personaje.
@@ -976,12 +906,13 @@ public class UmaContainerCharacter : UmaContainer
 
         var slots = SplitCySpringContainers(cySpringDataContainers);
 
-        PropagateClothCollisionNames(slots.body);
 
         if (_cySpringController == null)
         {
             _cySpringOwner = new UmaViewerCySpringOwner(this);
             _cySpringController = CySpringController.AddController(gameObject, hip, _cySpringOwner);
+            if (_cySpringController != null)
+                _cySpringController.UpdateMode = CySpringController.SpringUpdateMode.Mode60FPS; // see LoadPhysics
         }
 
         if (_cySpringController == null)
@@ -990,7 +921,7 @@ public class UmaContainerCharacter : UmaContainer
             return;
         }
 
-        BindCySpringOwnerAnchor(_cySpringController, hip);
+        _cySpringHip = hip;
         _cySpringController.EnableWind = CySpringEnableWind;
 
         _cySpringController.LoadFromDataContainers(
@@ -1632,85 +1563,97 @@ public class UmaContainerCharacter : UmaContainer
             return;
         }
 
-        // La pose de reposo del spring (InitLocalRotation / BoneAxis / FirstPosition /
-        // InitBoneDistance) se captura en LoadPhysics, cuando el personaje aun esta en la pose del
-        // prefab. En el live la primera pose animada llega despues, asi que el spring perseguiria
-        // para siempre una pose que no es la del personaje. Se vuelve a ligar UNA sola vez en cuanto
-        // el live ya ha posado al personaje (medido: con la pose del prefab el pelo queda flotando
-        // y atravesando brazos/hombros incluso con la fisica desactivada).
-        if (CySpringRebindOnAnimatedPose && !_cySpringPoseRebound && _cySpringLoaded &&
-            _cySpringController != null && IsAnimatedPoseReadyForCySpring())
-        {
-            _cySpringPoseRebound = true;
-            ReloadClothPhysics();
-        }
-
-        // El rig root ("Position") lo crea el cargador DESPUES de LoadPhysics, asi que el ancla se
-        // resuelve aqui la primera vez que ya existe. Hasta entonces el controller ancla en el Hip,
-        // que tambien es autoconsistente (se pone a cero el mismo transform del que se toma
-        // _previousPos), pero el rig root es el equivalente real del "character root" del juego.
-        if (!_cySpringAnchorResolved && _cySpringController != null && transform.Find("Position") != null)
-        {
-            _cySpringAnchorResolved = true;
-            BindCySpringOwnerAnchor(_cySpringController, _cySpringHip);
-        }
-
-        // (DATAMINE) UN paso por frame con el dt del frame, igual que el juego
-        // (CySpringUpdater.BeginSimulation -> CySpring.BeginSimulation(Time.deltaTime)).
-        //
-        // Motivo MEDIDO: es un solver Verlet y su energÃ­a viene del desplazamiento del hueso
-        // respecto al frame anterior (d = PrevTargetPosition - TargetPosition), pero el ANCLA
-        // (SelfPosition) solo cambia UNA vez por frame (al recoger la pose animada en Begin).
-        // Si se meten varios sub-pasos por frame, los sub-pasos extra resuelven con el ancla
-        // quieta: la restriccion de longitud + la rigidez devuelven la cadena a la pose de
-        // reposo y la tela/pelo se queda RIGIDA (medido: huesos con localRotation constante).
+        // Port of Gallop.Model.Component.CySpringUpdater, run once per frame like the game:
+        //   BeginSimulation @0x7ffd5957a1e0 -> EndSimulation @0x7ffd5957a310 -> AfterEndSimulation @0x7ffd59579ee0.
+        // Replaces the viewer-only fixed-step accumulator (30/60 Hz sub-steps + a re-apply of the last result on frames
+        // without a step): the game steps CySpring once per frame with the frame delta and only skips frames in
+        // the SkipFrame / SkipFramePostAlways update modes (CySpringController.UpdateMode, +0x158).
         if (EnablePhysics && _cySpringLoaded && _cySpringController != null)
         using (LiveRecordMarkers.CharacterCySpring.Auto())
         {
-            float dt = Time.deltaTime;
-            if (dt <= 0.0f)
-                dt = Time.unscaledDeltaTime;
-            dt = Mathf.Clamp(dt, 0.0f, 0.25f);
-
-            // Cadencia del juego: el solver es un Verlet calibrado para pasos fijos
-            // (GetTargetCySpringFPS -> 30 / 60). Alimentarlo en CADA frame de render (120 fps en
-            // este proyecto) lo acelera x2 y el pelo/falda se sienten "ligeros" y se mueven de mas.
-            float targetFps = _cySpringController.TargetCySpringFPS;
-            float fixedStep = targetFps > 0.0f ? 1.0f / targetFps : 0.0f;
-
-            // Los clips del live pueden traer curvas de posicion/escala en huesos Sp_* hechas para
-            // el modelo original de la cancion (1091: anm_liv_son1091_1st/2nd desplazan la raiz de
-            // las coletas 4-5 cm). La fisica solo decide rotaciones, asi que se devuelve cada hueso
-            // simulado a su traslacion/escala de bind ANTES del paso (el solver lee localPosition).
-            _cySpringController.RestoreSimulatedBoneBindTranslation();
-
-            if (fixedStep <= 0.0f)
+            // Pause like the game: Director.PauseModel @0x7ffd591f7c30 -> ModelController.PauseCySpring @0x7ffd596782a0 ->
+            // CySpringController.Pause @0x7ffd58e457d0 only clears _isPlaying (+0x108); with it clear BeginSimulation,
+            // EndSimulation and the warm-up return at once, SkirtController.IsEnableSkirt follows _isPlaying and nothing
+            // re-applies the last solved pose. The viewer's pause is the paused timeline (Director.IsPlaybackPaused);
+            // a step released by the Motion Probe (LiveProbeMotion, viewer tool) runs normally with dt = 1/60.
+            bool holdPause = Gallop.Live.Director.IsPlaybackPaused && !LiveProbeMotion.StepActive;
+            if (holdPause)
             {
-                _cySpringController.BeginSimulation(dt, false);
-                _cySpringController.EndSimulation();
-                return;
+                if (_cySpringController.IsPlaying)
+                {
+                    _cySpringController.Pause();
+                    _cySpringPausedByLive = true;
+                }
+            }
+            else if (_cySpringPausedByLive)
+            {
+                _cySpringController.Resume();
+                _cySpringPausedByLive = false;
+            }
+            // KNOWN LIMITATION (parked on purpose, not to be fixed): like the game, the solver runs ONCE per rendered
+            // frame and is tuned for 60 fps. Below 60 fps (the viewer often runs at ~50 in real time) the skirt, hair
+            // and tail move differently from the game (live 1001 f1300-1400, characters going down the stairs: the
+            // skirts lift too much; clearly visible at 30 fps). At the Motion Probe's fixed 1/60 step the chains match the
+            // game (cloth_skirt finalRot ~2 deg, tips 1-3 cm). Above 60 fps (e.g. 120 fps record) no problem was seen.
+            // Details: Logs/261118-Live 1001 skirt raised on stairs (fps dependent).md
+            float dt = LiveProbeMotion.StepActive ? LiveProbeMotion.StepDelta : Time.deltaTime;
+
+            int mode = (int)_cySpringController.UpdateMode;
+            // (Motion Probe, viewer tool) A released step always runs the solver: no skip frame on that step.
+            bool isSkipMode = !LiveProbeMotion.StepActive &&
+                              (mode == (int)CySpringController.SpringUpdateMode.SkipFrame ||
+                               mode == (int)CySpringController.SpringUpdateMode.SkipFramePostAlways);
+
+            // BeginSimulation: TryUpdateWarmUp, then BeginSimulation(dt) when dt > 1e-6 (DAT_7ffd5a640d34); with a
+            // smaller dt the game runs UpdatePreviousPosture and begins the step ONLY when the owner's virtual bool
+            // get_IsForcedPostSpring (ModelControllerBehaviour vtable slot 10, ModelController override reading
+            // _isForcedPostSpring +0x370) is true; otherwise it does nothing and EndSimulation is skipped.
+            bool isBeginSimulation = false;
+            if (!(isSkipMode && _cySpringSkipFrame))
+            {
+                _cySpringController.TryUpdateWarmUp();
+                if (dt > 1e-6f)
+                {
+                    // The game passes isUseThread = true; the viewer runs the same solver synchronously
+                    // (EndSimulation waits for the worker right after, so the result is the same).
+                    _cySpringController.BeginSimulation(dt, false);
+                }
+                else if (IsForcedPostSpring)
+                {
+                    _cySpringController.UpdatePrevousPosture();
+                }
+                if (dt > 1e-6f || IsForcedPostSpring)
+                    isBeginSimulation = true;
             }
 
-            _cySpringStepAccumulator += dt;
-
-            int steps = 0;
-            while (_cySpringStepAccumulator >= fixedStep && steps < 4)
+            // EndSimulation
+            if (mode == (int)CySpringController.SpringUpdateMode.SkipFrame && _cySpringSkipFrame)
             {
-                _cySpringStepAccumulator -= fixedStep;
-                _cySpringController.BeginSimulation(fixedStep, false);
-                _cySpringController.EndSimulation();
-                steps++;
+            }
+            else if (mode == (int)CySpringController.SpringUpdateMode.SkipFramePostAlways && _cySpringSkipFrame)
+            {
+                _cySpringController.PostSpringAll();
+            }
+            else
+            {
+                if (isBeginSimulation)
+                    _cySpringController.EndSimulation();
+                _cySpringController.TryUpdateWarmUp();
             }
 
-            // Frame de render sin paso de fisica (120 fps con el solver a 30/60 Hz): el Animator ya
-            // ha vuelto a escribir la pose animada en los huesos del spring, asi que se reaplica el
-            // ultimo resultado; si no, pelo y tela saltan entre la pose animada y la simulada.
-            if (steps == 0)
-                _cySpringController.ReapplyLastSimulation();
-
-            // Si el frame fue muy largo (carga, hitch) no acumulamos deuda infinita.
-            if (_cySpringStepAccumulator > fixedStep * 2.0f)
-                _cySpringStepAccumulator = fixedStep;
+            // AfterEndSimulation: skip-frame toggle, then SkirtController.UpdateSkirt with
+            // _isEnableSkirt (+0x101) = _isUpdateSkirt ? CySpringController._isPlaying (+0x108) : false.
+            bool runAfter = true;
+            if (isSkipMode)
+            {
+                if (_cySpringSkipFrame) { _cySpringSkipFrame = false; runAfter = false; }
+                else _cySpringSkipFrame = true;
+            }
+            if (runAfter && _skirtController != null && CySpringEnableSkirtSolver)
+            {
+                _skirtController.IsEnableSkirt = _cySpringController.IsPlaying;
+                _skirtController.UpdateSkirt();
+            }
         }
     }
 

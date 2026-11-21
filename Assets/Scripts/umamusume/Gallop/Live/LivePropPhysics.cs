@@ -32,13 +32,16 @@ namespace Gallop.Live
         }
     }
 
-    // Steps the prop's CySpringController once per rendered frame, after the Animator has posed the wearer
-    // (LateUpdate), with the same fixed-step cadence the characters use (GetTargetCySpringFPS: 30 / 60 Hz).
+    // Steps the prop's CySpringController once per rendered frame with the frame delta, after the Animator has posed the
+    // wearer (LateUpdate): Props.BeginCySpringSimulate @0x7ffd59259d90 (copy the wearer posture, TryUpdateWarmUp, no step
+    // when dt is 0, BeginSimulation(dt)) and Props.AlterLateUpdatePost -> EndSimulation. The game has no accumulator, no
+    // fixed step and no dt clamp for props; the 30 / 60 Hz cadence lives inside the solver (UpdateMode: props keep
+    // ModeNormal = 30 Hz, characters of a 60 fps live use Mode60FPS).
     public sealed class LivePropPhysicsDriver : MonoBehaviour
     {
         private CySpringController _controller;
         private UmaContainerCharacter _wearer;
-        private float _accumulator;
+        private bool _pausedByLive;
 
         public static LivePropPhysicsDriver Create(GameObject owner, CySpringController controller, float warmUpTime,
             UmaContainerCharacter wearer = null)
@@ -47,13 +50,18 @@ namespace Gallop.Live
             driver._controller = controller;
             driver._wearer = wearer;
             controller.Reset();
+            // Props only RESERVE the warm-up (Props.ReserveWarmingUpCySpring @0x7ffd5925c800); it runs in the next
+            // BeginCySpringSimulate (TryUpdateWarmUp), not at creation.
             if (warmUpTime > 0.0f)
-            {
                 controller.ReserveWarmingUpCySpring(warmUpTime);
-                driver.CopyWearerPreviousPosture();
-                controller.TryUpdateWarmUp();
-            }
             return driver;
+        }
+
+        // Props.ReserveWarmingUpCySpring @0x7ffd5925c800: reserves the prop controller's warm-up.
+        public void ReserveWarmingUpCySpring(float warmUpTime)
+        {
+            if (_controller != null)
+                _controller.ReserveWarmingUpCySpring(warmUpTime);
         }
 
         // Props.BeginCySpringSimulate (JP 0x7ffd59259d90) copies the wearer controller's _previousPos (+0x94) and
@@ -72,42 +80,35 @@ namespace Gallop.Live
             if (_controller == null || !isActiveAndEnabled)
                 return;
 
-            float dt = Time.deltaTime;
-            if (dt <= 0.0f)
-                dt = Time.unscaledDeltaTime;
-            dt = Mathf.Clamp(dt, 0.0f, 0.25f);
+            // Pause like the game (PropsManager.Pause @0x7ffd592580f0 -> Props.PauseCySpring @0x7ffd5925c500 ->
+            // CySpringController.Pause: _isPlaying = 0, nothing is stepped or re-applied), except on a step released by
+            // the Motion Probe (LiveProbeMotion), which advances exactly 1/60 s.
+            bool frozen = Gallop.Live.Director.IsPlaybackPaused && !LiveProbeMotion.StepActive;
+            if (frozen)
+            {
+                if (_controller.IsPlaying)
+                {
+                    _controller.Pause();
+                    _pausedByLive = true;
+                }
+            }
+            else if (_pausedByLive)
+            {
+                _controller.Resume();
+                _pausedByLive = false;
+            }
 
-            _controller.RestoreSimulatedBoneBindTranslation();
+            // Props.BeginCySpringSimulate: wearer posture copy, then TryUpdateWarmUp every frame (no-op unless reserved).
             CopyWearerPreviousPosture();
-            // Props.BeginCySpringSimulate calls TryUpdateWarmUp every frame before the step (no-op unless a warm-up
-            // is reserved).
             _controller.TryUpdateWarmUp();
 
-            float targetFps = _controller.TargetCySpringFPS;
-            float fixedStep = targetFps > 0.0f ? 1.0f / targetFps : 0.0f;
-            if (fixedStep <= 0.0f)
-            {
-                _controller.BeginSimulation(dt, false);
-                _controller.EndSimulation();
+            // ModelController.get_DeltaTime = Time.deltaTime; Math.IsFloatEqual(dt, 0) -> no solver step this frame.
+            float dt = LiveProbeMotion.Delta(Time.deltaTime);
+            if (Mathf.Approximately(dt, 0f))
                 return;
-            }
 
-            _accumulator += dt;
-            int steps = 0;
-            while (_accumulator >= fixedStep && steps < 4)
-            {
-                _accumulator -= fixedStep;
-                _controller.BeginSimulation(fixedStep, false);
-                _controller.EndSimulation();
-                steps++;
-            }
-
-            // Render frame without a solver step: the Animator rewrote the animated pose, re-apply the last result.
-            if (steps == 0)
-                _controller.ReapplyLastSimulation();
-
-            if (_accumulator > fixedStep * 2.0f)
-                _accumulator = fixedStep;
+            _controller.BeginSimulation(dt, false);
+            _controller.EndSimulation();
         }
     }
 }

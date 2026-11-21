@@ -11,7 +11,6 @@ namespace Gallop
         public const float DEFAULT_WARMUPTIME = 1f;
         public const float DEFAULT_WIND_POWERSCALE_RATE = 1f;
         private const int PARTS_NUM = 3;
-        private int _targetCySpringFpsMode = 1;
         private static volatile bool _simulationTimeOutError;
 
         public enum Parts
@@ -26,16 +25,14 @@ namespace Gallop
             Tail = 2
         }
 
+        // Gallop.CySpringController.SpringUpdateMode (dump_jp TypeDefIndex 33580328). The old viewer names
+        // (ModeForceUpdate / ModeStop) were invented; value 2 is SkipFrame, not "stop".
         public enum SpringUpdateMode
         {
-            [InspectorName("正常更新")]
             ModeNormal = 0,
-
-            [InspectorName("强制更新")]
-            ModeForceUpdate = 1,
-
-            [InspectorName("停止更新")]
-            ModeStop = 2
+            Mode60FPS = 1,
+            SkipFrame = 2,
+            SkipFramePostAlways = 3
         }
 
         [Header("官方数据容器输入")]
@@ -656,7 +653,8 @@ namespace Gallop
                 // bool 参数是 i == 0，所以只有 Head 是 true
                 float scale = _modelController.GetCySpringCorrectScale(i == (int)Parts.Head);
 
-                spring.GatherSpring(elapsedTime, scale, legacyScale, AdditionalWindTimeScale, IsUpdateScale);
+                // The game passes dt * TimeScale (+0x118) to GatherSpring.
+                spring.GatherSpring(elapsedTime * _timescale, scale, legacyScale, AdditionalWindTimeScale, IsUpdateScale);
             }
 
             if (_skirtController != null)
@@ -911,7 +909,8 @@ namespace Gallop
                 return;
             }
 
-            bool is60FpsPhysics = _targetCySpringFpsMode == 1;
+            // is60 = (UpdateMode == Mode60FPS), as GetTargetCySpringFPS @0x7ffd58e43ac0.
+            bool is60FpsPhysics = UpdateMode == SpringUpdateMode.Mode60FPS;
 
             for (int i = 0; i < PARTS_NUM; i++)
             {
@@ -1218,81 +1217,6 @@ namespace Gallop
                 roots[i]?.SetShouldReflectCalcResult(enable);
         }
 
-        // Reapplies the last solved rotations without stepping the solver. Used on render frames
-        // that fall between two fixed physics steps: the animator has already written the animated
-        // pose back to the spring bones, so without this they would snap to it and flicker.
-        public void ReapplyLastSimulation()
-        {
-            if (_springArray == null || !_isPlaying || !_initialized)
-                return;
-
-            if (_ownerTransform == null)
-                _ownerTransform = transform;
-
-            if (_ownerTransform == null)
-                return;
-
-            // FinalRotation is solved with the owner moved to the origin (UpdatePrevousPosture) and
-            // PostSpring writes it as a world rotation, so the same posture must be in place while it
-            // is applied. Otherwise every chain is rotated by the owner's rotation for this frame
-            // (a character turned 180 degrees flipped its skirt for one frame).
-            Vector3 position = _ownerTransform.position;
-            Quaternion rotation = _ownerTransform.rotation;
-            Vector3 localScale = _ownerTransform.localScale;
-
-            if (!IsAffectOwnerPotision)
-                _ownerTransform.position = Gallop.Math.VECTOR3_ZERO;
-
-            if (!IsAffectOwnerRotation)
-                _ownerTransform.rotation = Gallop.Math.QUATERNION_IDENTITY;
-
-            if (!IsAffectOwnerScale)
-            {
-                float scale = _ownerTransform.lossyScale.x;
-                if (Gallop.Math.IsFloatEqualLight(scale, 0.0f))
-                    scale = 0.000001f;
-
-                _ownerTransform.localScale = localScale / scale;
-            }
-
-            PostSpringAll();
-
-            _ownerTransform.position = position;
-            _ownerTransform.rotation = rotation;
-            _ownerTransform.localScale = localScale;
-        }
-
-        // Puts the local position and scale of every simulated spring bone back to its bind pose
-        // (FirstLocalMatrix, captured from the model when the springs are created). Live motion
-        // clips may carry position/scale curves on Sp_* bones authored for the song's original
-        // model; on any other model they move the chain roots away from where the mesh expects
-        // them (e.g. twintails detached from their hair ties). The solver only drives rotations,
-        // so without this those foreign offsets survive the simulation. Bones whose result is not
-        // applied (ShouldReflectCalcResult == false) keep the clip's full animation.
-        public void RestoreSimulatedBoneBindTranslation()
-        {
-            if (_springArray == null || !_isPlaying || !_initialized)
-                return;
-
-            foreach (CySpringBoneBase bone in FindAllCySpringBones())
-            {
-                if (bone == null || !bone.Exist || !bone.ShouldReflectCalcResult)
-                    continue;
-
-                Transform t = bone.Transform;
-                if (t == null)
-                    continue;
-
-                Matrix4x4 bind = bone.FirstLocalMatrix;
-                Vector3 position = bind.GetColumn(3);
-                Vector3 scale = bind.lossyScale;
-                if (t.localPosition != position)
-                    t.localPosition = position;
-                if (t.localScale != scale)
-                    t.localScale = scale;
-            }
-        }
-
         // (DIAG) Acceso de solo lectura a la cadena de un part (0=Head, 1=Body, 2=Tail).
         public CySpring GetSpringArray(int index)
         {
@@ -1342,10 +1266,11 @@ namespace Gallop
             _isPlaying = false;
         }
 
+        // CySpringController.Resume @0x7ffd58e45c70: only sets _isPlaying = 1 (the old viewer version also called
+        // UpdatePrevousPosture, which the game does not).
         public void Resume()
         {
             _isPlaying = true;
-            UpdatePrevousPosture();
         }
 
         public void SetForceDisableHipMoveParam(bool isDisable)
@@ -1396,6 +1321,19 @@ namespace Gallop
             _onCompleteWarmingUpCySpringReserve = onComplete;
         }
 
+        // _onBeforeBeginWarmUpStepReserve (+0x188) / _onBeforeEndWarmUpStepReserve (+0x190), set by SetWarmUpStepCallback.
+        private Action _onBeforeBeginWarmUpStepReserve;
+        private Action _onBeforeEndWarmUpStepReserve;
+
+        public void SetWarmUpStepCallback(Action onBeforeBegin, Action onBeforeEnd)
+        {
+            _onBeforeBeginWarmUpStepReserve = onBeforeBegin;
+            _onBeforeEndWarmUpStepReserve = onBeforeEnd;
+        }
+
+        // CySpringController.TryUpdateWarmUp @0x7ffd58e47270: while a warm-up is reserved, the delay frames count down;
+        // then the same body as WarmUpCySpring runs with the reserved time (the reservation is only cleared inside
+        // the initialised / playing guard, like the game).
         public void TryUpdateWarmUp()
         {
             if (!_isWarmingUpCySpringReserved)
@@ -1408,31 +1346,47 @@ namespace Gallop
             }
 
             WarmUpCySpring(_warmingUpTimeReserved);
-            _isWarmingUpCySpringReserved = false;
-            Action complete = _onCompleteWarmingUpCySpringReserve;
-            _onCompleteWarmingUpCySpringReserve = null;
-            complete?.Invoke();
         }
 
+        // CySpringController.WarmUpCySpring @0x7ffd58e477b0. Only when the spring array exists, the controller is
+        // playing and initialised: time 0 -> 1.0, (int)(fps * time) solver steps of 1 / fps (fps 60 with
+        // UpdateMode == Mode60FPS, else 30), IsSkipUpdatePre (+0x109) cleared during the steps and
+        // restored, the "before begin" / "before end" step callbacks around every step, then the reservation is cleared
+        // and the complete callback runs.
         private void WarmUpCySpring(float warmUpTime = DEFAULT_WARMUPTIME)
         {
-            int frameCount = Mathf.Max(1, Mathf.CeilToInt(warmUpTime * 60.0f));
-            float dt = 1.0f / 60.0f;
+            if (_springArray == null || !_isPlaying || !_initialized)
+                return;
 
-            for (int i = 0; i < frameCount; i++)
+            if (Mathf.Approximately(warmUpTime, 0f))
+                warmUpTime = 1.0f;
+
+            bool skipUpdatePre = IsSkipUpdatePre;
+            IsSkipUpdatePre = false;
+
+            float fps = TargetCySpringFPS;
+            int stepCount = (int)(fps * warmUpTime);
+            for (int i = 0; i < stepCount; i++)
             {
-                BeginSimulation(dt, false);
+                _onBeforeBeginWarmUpStepReserve?.Invoke();
+                BeginSimulation(1.0f / fps, false);
+                _onBeforeEndWarmUpStepReserve?.Invoke();
                 EndSimulation();
             }
+
+            Action complete = _onCompleteWarmingUpCySpringReserve;
+            IsSkipUpdatePre = skipUpdatePre;
+            _isWarmingUpCySpringReserved = false;
+            complete?.Invoke();
         }
 
         /// <summary>
         /// Frecuencia a la que el juego alimenta el solver (no la del render). `NativeClothUpdate`
-        /// esta calibrado para pasos fijos de 30 Hz (o 60 Hz con `_targetCySpringFpsMode == 1`) y
+        /// esta calibrado para pasos fijos de 30 Hz (o 60 Hz con `UpdateMode == Mode60FPS`) y
         /// `timescale` normalizado a 1. Llamarlo cada frame a 120 fps lo acelera x2 y el pelo se
         /// siente "ligero" y se mueve de mas.
         /// </summary>
-        public float TargetCySpringFPS => _targetCySpringFpsMode == 1 ? 60.0f : 30.0f;
+        public float TargetCySpringFPS => UpdateMode == SpringUpdateMode.Mode60FPS ? 60.0f : 30.0f;
 
         /// <summary>
         /// Permite desactivar el viento del solver (para aislar su efecto). El visor no aplica la

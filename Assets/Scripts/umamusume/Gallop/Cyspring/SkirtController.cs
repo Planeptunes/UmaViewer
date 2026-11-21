@@ -81,21 +81,6 @@ namespace Gallop
         private bool _isEnableSkirt = true;
         private Func<bool> _isEnableCySpringFunc;
 
-        // (FIX ancla del plano de falda) Nodo cuyo espacio usa el solver. Tiene que ser el MISMO
-        // owner de CySpring (el nodo "Position"), porque `UpdatePrevousPosture` lo deja en
-        // (0,0,0)/identidad durante el step y ahi es donde estan las posiciones de hueso contra
-        // las que se compara el plano. Antes se usaba el contenedor (Chara_XXXX_00), que NO se
-        // pone a cero: el plano quedaba desplazado por la posicion del personaje. Medido en el
-        // live 1001 (contenedor en x=8): el panel izquierdo recibia un empuje de 8,47 m y el
-        // frontal ninguno. Con el ancla correcta, el empuje es 0,02-0,03 m (el radio del hueso).
-        [SerializeField] private Transform _rootAnchor;
-
-        public void SetRootAnchor(Transform anchor)
-        {
-            if (anchor != null)
-                _rootAnchor = anchor;
-        }
-
         private static readonly Vector3 SkirtNormal = Vector3.up;
         private static readonly Vector3 RotAxis = Vector3.left;
 
@@ -472,25 +457,15 @@ namespace Gallop
             
         }
 
-        private Transform _ResolveRigRoot()
-        {
-            return transform.Find("Position");
-        }
-
         /// <summary>
-        /// De donde sale NativeArg.RootPos. El plano de falda nativo se coloca con
-        /// `SkirtNormalPos = SkirtRootPos - RootPos` y se compara contra posiciones de hueso que,
-        /// durante el step, estan en el espacio del owner (`UpdatePrevousPosture` lo deja en el
-        /// origen). Por eso RootPos sale del ancla del owner, que vale 0 en ese momento: asi
-        /// `SkirtNormalPos` cae exactamente sobre la raiz de la falda. Leyendolo del contenedor
-        /// (que no se pone a cero) el plano quedaba desplazado por la posicion del personaje
-        /// (medido en el live 1001: hasta 8,47 m de empuje en un panel).
+        /// NativeArg.RootPos as in Gallop.SkirtController._UpdateSkirtArg @0x7ffd58e1c4d0:
+        /// RootPos (+0x78) = _cachedTransform.position, i.e. the SkirtController's own transform
+        /// (the model root, where ModelController adds the component). Replaces the viewer-only
+        /// "Position" node anchor.
         /// </summary>
         private Vector3 _ResolveRootPos()
         {
-            Transform anchor = _rootAnchor != null ? _rootAnchor : _ResolveRigRoot();
-
-            return anchor != null ? anchor.position : Vector3.zero;
+            return CachedTransform.position;
         }
 
         public void UpdateSkirt()
@@ -633,27 +608,21 @@ namespace Gallop
             }
         }
 
+        // Port of Gallop.SkirtController.IsUpdateSelf @0x7ffd58e1b970 (the same test is inlined in UpdateSkirt
+        // @0x7ffd58e1bd60): while the CySpring is enabled (_isEnableCySpringFunc() true) a skirt segment is updated by
+        // this controller only when it has no linked CySpring root (SkirtData +0x48); with the callback missing or
+        // returning false every segment is updated here. The viewer used to require skirtData.IsUpdate (which
+        // UpdateSkirt had just cleared) and returned false for a missing callback, so no segment was ever
+        // self-updated and the native skirt solver (leg collision, evaluation, root rotation) never ran.
         private bool IsUpdateSelf(SkirtData skirtData)
         {
             if (skirtData == null)
                 return false;
 
-            if (!_isEnableSkirt)
-                return false;
+            if (_isEnableCySpringFunc != null && _isEnableCySpringFunc())
+                return skirtData.CySpringRoot == null;
 
-            if (!skirtData.IsUpdate)
-                return false;
-
-            if (skirtData.SkirtRoot == null)
-                return false;
-
-            if (skirtData.CySpringRoot == null)
-                return true;
-
-            if (_isEnableCySpringFunc == null)
-                return false;
-
-            return !_isEnableCySpringFunc();
+            return true;
         }
 
         private static Transform _GetBone(Transform root, string name)

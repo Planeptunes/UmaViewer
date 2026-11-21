@@ -1642,6 +1642,31 @@ namespace Gallop.Live.Cutt
             }
         }
 
+        // Port of <AlterUpdate_FormationOffset>g__UpdateCharacterObject|706_1 @0x7ffd592c8830, run per character with the
+        // current formation-offset key: without warmUpCySpring the character's prevFrameWarmUpCyspring (+0xB8) is reset to 0;
+        // with it, once per key frame the character's models reserve a CySpring warm-up of key.CySpringWarmUpTime
+        // (ModelController.ReserveWarmingUpCySpring, delay 0) and the props one of key.PropCySpringWarmUpTime
+        // (OnReserveWarmingUpCySpring), and the key frame is stored. The warm-up itself (CySpringController.TryUpdateWarmUp,
+        // (int)(fps * time) extra solver steps in the same frame) lets the cloth settle at a teleport before it is drawn.
+        private void UpdateFormationWarmUp(int characterIndex, LiveTimelineKeyFormationOffsetData key)
+        {
+            if (key == null || Director.instance == null || characterIndex >= Director.instance.CharaContainerScript.Count)
+                return;
+            var chara = Director.instance.CharaContainerScript[characterIndex];
+            if (chara == null)
+                return;
+            if (!key.warmUpCySpring)
+            {
+                chara.PrevFrameWarmUpCySpring = 0;
+                return;
+            }
+            if (chara.PrevFrameWarmUpCySpring == key.frame)
+                return;
+            chara.ReserveWarmingUpCySpring(key.CySpringWarmUpTime);
+            Director.instance.ReserveWarmingUpCySpring(characterIndex, key.PropCySpringWarmUpTime);
+            chara.PrevFrameWarmUpCySpring = key.frame;
+        }
+
         private void AlterLateUpdate_FormationOffset(float liveTime)
         {
 
@@ -1653,6 +1678,7 @@ namespace Gallop.Live.Cutt
 
                 if (curKey != null && curKey.index != -1)
                 {
+                    UpdateFormationWarmUp(i, curKey.key as LiveTimelineKeyFormationOffsetData);
                     LateUpdateFormationOffset_Transform(i, curKey, liveTime);
 
                     // Capa del personaje (CHAR / Character3D_0 / Character3D_1) de la key actual,

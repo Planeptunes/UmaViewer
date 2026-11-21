@@ -243,6 +243,9 @@ namespace Gallop
                 //(AÑADIDO — ver DisableNativePluginOnce.)
                 try
                 {
+                    //(Capture tool, read-only) rows only while a viewer capture is armed.
+                    bool probeRec = LiveProbeTraces.CySpringActive;
+                    float[] probeBefore = probeRec ? LiveProbeTraces.CySpringSnapshot(clothPin.Ptr, nClothWorking) : null;
                     NativeClothUpdate(
                         clothPin.Ptr,
                         nClothWorking,
@@ -261,6 +264,9 @@ namespace Gallop
                         moveRate,
                         addMoveRate,
                         springRate);
+                    if (probeRec)
+                        LiveProbeTraces.CySpringAddCloth("cloth", clothPin.Ptr, nClothWorking, probeBefore, stiffnessForceRate, dragForceRate, gravityRate,
+                            windX, windY, windZ, windStrength, bCollisionSwitch, timescale, is60FPS, moveRate, addMoveRate, springRate, float.NaN, float.NaN);
                 }
                 catch (DllNotFoundException) { DisableNativePluginOnce("NativeClothUpdate"); }
                 catch (EntryPointNotFoundException) { DisableNativePluginOnce("NativeClothUpdate"); }
@@ -337,6 +343,10 @@ namespace Gallop
                 //la simulacion en vez de propagar la excepcion cada frame.)
                 try
                 {
+                    //(Capture tool, read-only) rows only while a viewer capture is armed.
+                    bool probeRec = LiveProbeTraces.CySpringActive;
+                    float[] probeBefore = probeRec ? LiveProbeTraces.CySpringSnapshot(clothPtr, nClothWorking) : null;
+                    float probeEvBefore = probeRec ? LiveProbeTraces.CySpringSkirtEval(workingPtr) : float.NaN;
                     NativeClothSkirtUpdate(
                         clothPtr,
                         nClothWorking,
@@ -357,6 +367,10 @@ namespace Gallop
                         moveRate,
                         addMoveRate,
                         springRate);
+                    if (probeRec)
+                        LiveProbeTraces.CySpringAddCloth("cloth_skirt", clothPtr, nClothWorking, probeBefore, stiffnessForceRate, dragForceRate, gravityRate,
+                            windX, windY, windZ, windStrength, bCollisionSwitch, timescale, is60FPS, moveRate, addMoveRate, springRate,
+                            probeEvBefore, LiveProbeTraces.CySpringSkirtEval(workingPtr));
                 }
                 catch (DllNotFoundException) { DisableNativePluginOnce("NativeClothSkirtUpdate"); }
                 catch (EntryPointNotFoundException) { DisableNativePluginOnce("NativeClothSkirtUpdate"); }
@@ -460,9 +474,13 @@ namespace Gallop
                 //(AÑADIDO — ver DisableNativePluginOnce.)
                 try
                 {
+                    //(Capture tool, read-only) rows only while a viewer capture is armed.
+                    bool probeRec = LiveProbeTraces.CySpringActive;
+                    float probeEvBefore = probeRec ? LiveProbeTraces.CySpringSkirtEval(workingPtr) : float.NaN;
                     NativeSkirtUpdate(
                         workingPtr,
                         argPtr);
+                    if (probeRec) LiveProbeTraces.CySpringAddSkirt(workingPtr, probeEvBefore, LiveProbeTraces.CySpringSkirtEval(workingPtr));
 
                     arg = argPin.Value;
                 }

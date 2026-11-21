@@ -535,16 +535,21 @@ namespace Gallop
                 return;
             }
 
-            // (INTENTO 14 - BUG DEL PELO) NO recortar la cadena.
-            // El motor recorre los huesos 0..nCond-1 y, para cada uno, hereda
-            // SelfPosition = TargetPosition del ANTERIOR. Antes se pasaba Length-1 (por el
-            // NeedSimulateEndBone=false del ultimo hueso), asi que el ULTIMO hueso no se
-            // recorria: su SelfPosition quedaba congelada mientras su padre avanzaba y la
-            // cadena se "desenganchaba" por la punta.
-            // MEDIDO ([DiagPelo] enlace_max, siempre en el hueso _03): 1,7-4,8 cm al principio
-            // y hasta 9,6 cm a los 300 frames, CRECIENDO -> la punta del pelo se iba hacia
-            // fuera ("hace una circunferencia"). Con la cadena completa el enlace se mantiene.
-            TrueNativesCount = NativeArray.Length;
+            // Port of Gallop.CySpringRootBone.SetTrueNativesCount @0x7ffd58e57ea0:
+            // empty child list -> NativeArray.Length; otherwise, when the LAST child bone has
+            // _needSimulateEndBone (+0xD4) == false the tip is not simulated -> Length - 1.
+            // (Replaces the viewer-only "INTENTO 14" full-length chain, which sent one extra
+            // bone per chain to the solver: nCond +1 vs the game, live 1001 f4320.)
+            if (_childBoneList == null || _childBoneList.Count == 0)
+            {
+                TrueNativesCount = NativeArray.Length;
+                return;
+            }
+
+            var last = _childBoneList[_childBoneList.Count - 1];
+            TrueNativesCount = (last != null && !last.NeedSimulateEndBone)
+                ? NativeArray.Length - 1
+                : NativeArray.Length;
         }
 
         public void FindCySpringBone(List<CySpringBoneBase> resultBoneList, Func<string, bool> checkFunc, bool firstHitBreak)

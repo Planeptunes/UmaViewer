@@ -59,6 +59,10 @@ namespace Gallop.Live.Cutt
         public bool visible;
         public int DressIndex;
         public bool warmUpCySpring;
+        // +0x54 / +0x58 in the game key: warm-up time (seconds) of the character CySpring and of its props, used by
+        // LiveTimelineControl.<AlterUpdate_FormationOffset>g__UpdateCharacterObject (@0x7ffd592c8830).
+        public float CySpringWarmUpTime;
+        public float PropCySpringWarmUpTime;
         public bool isEnabledOffset;
         public Vector3 offsetMaxPosition;
         public Vector3 offsetMinPosition;
