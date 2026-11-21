@@ -4,7 +4,21 @@ using UnityEngine;
 namespace Gallop.Live.Cutt
 {
     // Mini character tracks (a chibi copy of a live character, e.g. the plush held in son1156).
-    // Field names and types follow the cutt TypeTree (son1156_camera).
+    // Field names and types follow the cutt TypeTree (son1156_camera); the runtime layout was
+    // verified against LiveTimelineControl.AlterUpdate_MiniCharaMotion @0x7ffd592a84f0, which
+    // reads the key fields at: clip +0x18, headFrame +0x20, playSpeed +0x24 (the same offsets for
+    // facial +0x28/+0x30/+0x34, ear +0x38/+0x40/+0x44 and position +0x48/+0x50/+0x54) and Loop
+    // at +0x58. The viewer fields match that order.
+    //
+    // MiniCharaCamera track (game only, not ported): the worksheet carries a
+    // MiniCharaCameraDataList at +0x3b8 (LiveTimelineKeyMiniCharaCameraData) driving
+    // Director.CreateMiniCharaCamera @0x7ffd591eb500: a dedicated orthographic camera on culling
+    // layer 20 (GraphicSettings.GetCullingLayer(0x14)) that renders the mini into a
+    // GallopFrameBuffer and composites it with a CommandBuffer Blit (Director +0x188 material)
+    // in OnMiniCharaCameraAfterRendering @0x7ffd591f4be0; the key animates the camera's enabled
+    // flag (+0x30) and orthographicSize (+0x34) in AlterUpdate_MiniCharaCamera @0x7ffd592a7be0.
+    // Not ported: the composite material/shader and the GallopFrameBuffer semantics (see the
+    // report of the mini-character work).
 
     [Serializable]
     public class LiveTimelineKeyMiniCharaTransformData : LiveTimelineKeyWithInterpolate
