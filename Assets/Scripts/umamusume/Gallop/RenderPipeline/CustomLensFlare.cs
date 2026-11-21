@@ -28,7 +28,7 @@ namespace Gallop.RenderPipeline
         public static float RuntimeStrength = 1f;
 
         // The native LensFlareRenderPass draws the flares AFTER the camera's DOF / bloom / chromatic chain
-        // (JP probe), so the DOF never blurs the rays. The quads therefore live on a layer that the
+        // (JP game), so the DOF never blurs the rays. The quads therefore live on a layer that the
         // presentation cameras do not render; LensFlareRenderPass culls and draws it inside the chain.
         // Mirror and monitor cameras have no such chain here: they render the layer in the scene.
         public const int PassLayer = 15;
@@ -46,7 +46,7 @@ namespace Gallop.RenderPipeline
             if (!PassMode || camera == null) return;
             int bit = 1 << PassLayer;
             string n = camera.name;
-            bool sceneRender = n == "MonitorCameraCapture" || n.IndexOf("Mirror", System.StringComparison.OrdinalIgnoreCase) >= 0;
+            bool sceneRender = Gallop.Live.MonitorCamera.IsMonitorCamera(camera) || n.IndexOf("Mirror", System.StringComparison.OrdinalIgnoreCase) >= 0;
             if (sceneRender) camera.cullingMask |= bit;
             else camera.cullingMask &= ~bit;
         }

@@ -1,4 +1,4 @@
-using Gallop.Live.Cutt;
+﻿using Gallop.Live.Cutt;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -8,7 +8,7 @@ using Gallop.ImageEffect;
 
 namespace Gallop.Live
 {
-    public class Director : MonoBehaviour
+    public partial class Director : MonoBehaviour
     {
         private static Director _instance = null;
         public LiveTimelineControl _liveTimelineControl; //Edited to public
@@ -809,6 +809,10 @@ namespace Gallop.Live
                 LiveLightShaftsResources.LoadTextures(_liveTimelineControl.data.indirectLightShaftsSettings));
             UpdateMainCamera();
             InitializeMultiCamera(_liveTimelineControl);
+            // Native ApplyGraphicSetting makes the one-texture monitor array; InitializeMonitorCamera then
+            // creates the cameras and rebuilds the array (see Director.MonitorCamera.cs).
+            InitializeMonitorTexture();
+            InitializeMonitorCamera(CountMonitorCameraTracks(_liveTimelineControl));
             InitializeLiveEffects(GraphicSettings.GetLayer(GraphicSettings.LayerIndex.LayerEFFECT),
                 GraphicSettings.GetLayer(GraphicSettings.LayerIndex.LayerCircleProfile),
                 GraphicSettings.GetLayer(GraphicSettings.LayerIndex.LayerTransparentFX));
@@ -2424,6 +2428,7 @@ namespace Gallop.Live
         {
             UnityEngine.Rendering.RenderPipelineManager.beginCameraRendering -= OnBeginCameraRenderingTransparent;
             RemoveTransparentCameraFromStack();
+            ReleaseMonitorTexture();
             _stageController?.DestroyMirrorReflections();
             UnbindTimelineEvents();
             _footLightRuntime?.Dispose();

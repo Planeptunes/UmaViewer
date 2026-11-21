@@ -7,7 +7,7 @@ using Gallop.Live;
 
 namespace Gallop.Live.Cutt
 {
-    public class LiveTimelineControl : MonoBehaviour
+    public partial class LiveTimelineControl : MonoBehaviour
     {
         public LiveTimelineData data;
         public event Action<int, Gallop.ImageEffect.ScreenOverlay.Overlay> OnUpdatePostFilm;
@@ -740,6 +740,9 @@ namespace Gallop.Live.Cutt
             AlterUpdate_MultiCamera(camSheet, _currentFrame);
 
             AlterUpdate_GlobalLight(camSheet, _currentFrame);
+            // Native AlterLateUpdate @0x7ffd59294960: MonitorCamera Layer/Position/LookAt/roll run after
+            // GlobalLight / PropControl / HandShakeCamera (see LiveTimelineControl.MonitorCamera.cs).
+            AlterUpdate_MonitorCamera(camSheet, _currentFrame);
             // Native order: AlterUpdate_MultiLightShadow → AlterUpdate_AdditionalLight →
             // AlterUpdate_FacialToon. The light count update comes before the per-light updates.
             AlterUpdate_MultiLightShadow(camSheet, _currentFrame);

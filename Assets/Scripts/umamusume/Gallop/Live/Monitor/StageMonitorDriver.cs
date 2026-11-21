@@ -41,6 +41,7 @@ namespace Gallop.Live
         {
             public Renderer renderer;
             public Material material;
+            public int materialIndex;
             public Texture baseMainTexture;
             public Vector2 baseMainScale;
             public Vector2 baseMainOffset;
@@ -62,6 +63,7 @@ namespace Gallop.Live
             public float baseSrcBlendMode;
             public bool hasDstBlendMode;
             public float baseDstBlendMode;
+            public int baseRenderQueue;
             public bool hasAppliedState;
             public MonitorShaderState appliedState;
         }
@@ -96,10 +98,16 @@ namespace Gallop.Live
             public bool useMonitorCamera;
         }
 
+        // Authored render queue of each shared stage material: UpdateMonitor sets the queue of the key when it has one
+        // and the entry's default (StageController +0x110 element +0x10) otherwise.
+        private readonly Dictionary<Material, int> _authoredRenderQueues = new Dictionary<Material, int>();
+
         private LiveTimelineControl _ctl;
         private StageController _stage;
         private MonitorUvMovieProvider _provider;
-        private StageMonitorCameraDriver _cameraDriver;
+        // Gallop.Live.MonitorController per monitor control track (StageController keeps one per monitor entry).
+        private readonly Dictionary<LiveTimelineMonitorControlData, MonitorController> _monitorControllers =
+            new Dictionary<LiveTimelineMonitorControlData, MonitorController>();
         private bool _hasBuiltCache;
         private bool _hasMonitorTimelineData;
         private bool _providerContextReady;
@@ -116,15 +124,7 @@ namespace Gallop.Live
         private readonly HashSet<string> _rebuildAttemptedForMissingBinding =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly List<MonitorMaterialBinding> _resolveBuffer = new List<MonitorMaterialBinding>(8);
-        private readonly List<Renderer> _cameraScreenRenderers = new List<Renderer>(32);
         private static readonly List<MonitorMaterialBinding> EmptyBindingList = new List<MonitorMaterialBinding>(0);
-
-        private void Awake()
-        {
-            _cameraDriver = GetComponent<StageMonitorCameraDriver>();
-            if (_cameraDriver == null)
-                _cameraDriver = gameObject.AddComponent<StageMonitorCameraDriver>();
-        }
 
         private void OnEnable()
         {
@@ -136,8 +136,6 @@ namespace Gallop.Live
         private void OnDisable()
         {
             Unbind();
-            if (_cameraDriver != null)
-                _cameraDriver.ReleaseCapture();
             ClearCaches();
         }
 
@@ -146,8 +144,6 @@ namespace Gallop.Live
             BindIfPossible();
             if (_ctl == null || _stage == null || !_hasMonitorTimelineData)
             {
-                if (_cameraDriver != null)
-                    _cameraDriver.UpdateCapture(null, 0f, null);
                 RestoreCameraBindings(true);
                 return;
             }
@@ -157,57 +153,10 @@ namespace Gallop.Live
             if (!_hasBuiltCache)
                 RebuildCache();
 
-            _cameraDriver.UpdateCapture(_ctl, _ctl.currentLiveTime * LiveTimelineControl.kTargetFpsF, _ctl.data);
             for (int i = 0; i < _bindings.Count; i++)
                 _bindings[i].cameraAppliedThisFrame = false;
-            EnsureFramesDrawBeforeScreens();
             ApplyMonitorTimeline();
             RestoreCameraBindings();
-        }
-
-        // The game's wide wall frame (monitor_side_frame) has sortingOrder 0 while the screen images (monitor004/005,
-        // additive, ZTest-less) have -1, so in the viewer's pipeline the cut-out frame is drawn AFTER the image and its
-        // bars hide it (the game shows the image over the frame). Raising the image above the frame would also draw it
-        // over the characters (sortingOrder 0), so the frame goes below the images instead, like the four
-        // monitor_*_frame meshes (-2 / -1). RendererController.Start rewrites the authored order once, so this is
-        // re-checked every frame on a small cached list.
-        private readonly List<Renderer> _monitorFrameRenderers = new List<Renderer>();
-        private bool _monitorFramesCached;
-
-        private void EnsureFramesDrawBeforeScreens()
-        {
-            if (_bindings.Count == 0 || _stage == null)
-                return;
-            if (!_monitorFramesCached)
-            {
-                _monitorFramesCached = true;
-                _monitorFrameRenderers.Clear();
-                foreach (Renderer r in _stage.GetComponentsInChildren<Renderer>(true))
-                {
-                    if (r == null || !r.name.StartsWith("monitor", StringComparison.Ordinal) ||
-                        !r.name.EndsWith("_frame", StringComparison.Ordinal))
-                        continue;
-                    Material shared = r.sharedMaterial;
-                    if (shared != null && shared.shader != null && shared.shader.name.IndexOf("DefaultCutoff", StringComparison.Ordinal) >= 0)
-                        _monitorFrameRenderers.Add(r);
-                }
-            }
-
-            int minScreenOrder = int.MaxValue;
-            for (int i = 0; i < _bindings.Count; i++)
-            {
-                Renderer screen = _bindings[i].renderer;
-                if (screen != null && screen.sortingOrder < minScreenOrder)
-                    minScreenOrder = screen.sortingOrder;
-            }
-            if (minScreenOrder == int.MaxValue)
-                return;
-            for (int i = 0; i < _monitorFrameRenderers.Count; i++)
-            {
-                Renderer frame = _monitorFrameRenderers[i];
-                if (frame != null && frame.sortingOrder >= minScreenOrder)
-                    frame.sortingOrder = minScreenOrder - 1;
-            }
         }
 
         // LightProjection's movie mode consumes the Monitor's already-authored movie clock/slot,
@@ -232,7 +181,7 @@ namespace Gallop.Live
                         !keys.EnablePlayModeTimeline(_ctl.PlayMode)) continue;
                     LiveTimelineControl.FindTimelineKey(out var selected, out var next, keys, currentFrame);
                     var key = selected as LiveTimelineKeyMonitorControlData;
-                    if (key == null || key.IsMonitorCameraFlag() || key.IsForcedUseMonitorCamera) continue;
+                    if (key == null || key.IsMonitorCameraFlag()) continue;
                     var primary = ResolvePrimarySlot(monitor, key);
                     var fade = ResolveFadeSlot(monitor, key);
                     var slot = primary != null && primary.slotId == slotId ? primary :
@@ -330,9 +279,7 @@ namespace Gallop.Live
             _missingClipLogged.Clear();
             _rebuildAttemptedForMissingBinding.Clear();
             _resolveBuffer.Clear();
-            _cameraScreenRenderers.Clear();
-            if (_cameraDriver != null)
-                _cameraDriver.SetScreenRenderers(null);
+            _monitorControllers.Clear();
             _hasBuiltCache = false;
         }
 
@@ -402,9 +349,6 @@ namespace Gallop.Live
         public void RebuildCache()
         {
             RestoreCameraBindings(true);
-            _cameraScreenRenderers.Clear();
-            if (_cameraDriver != null)
-                _cameraDriver.SetScreenRenderers(null);
             _bindings.Clear();
             _bindingCache.Clear();
             _missingBindingLogged.Clear();
@@ -423,7 +367,9 @@ namespace Gallop.Live
                 Material[] materials;
                 try
                 {
-                    materials = renderer.materials;
+                    // The game's monitor screens share the stage materials (StageController.UpdateMonitorControl uses
+                    // Renderer.GetMaterial through the authored shared entries), so no per-renderer instances here.
+                    materials = renderer.sharedMaterials;
                 }
                 catch (Exception ex)
                 {
@@ -445,11 +391,18 @@ namespace Gallop.Live
                     {
                         renderer = renderer,
                         material = material,
+                        materialIndex = j,
                         rendererKey = NormalizeName(renderer.name),
                         materialKey = NormalizeName(material.name),
                         rendererCompact = CompactName(renderer.name),
                         materialCompact = CompactName(material.name),
                     };
+
+                    if (!_authoredRenderQueues.TryGetValue(material, out binding.baseRenderQueue))
+                    {
+                        binding.baseRenderQueue = material.renderQueue;
+                        _authoredRenderQueues[material] = binding.baseRenderQueue;
+                    }
 
                     binding.groupKey = BuildGroupKey(binding);
                     if (HasTextureProperty(material, mainTexProperty))
@@ -515,12 +468,6 @@ namespace Gallop.Live
 
                 return string.Compare(a.rendererKey, b.rendererKey, StringComparison.OrdinalIgnoreCase);
             });
-            for (int i = 0; i < _bindings.Count; i++)
-                if (!_cameraScreenRenderers.Contains(_bindings[i].renderer))
-                    _cameraScreenRenderers.Add(_bindings[i].renderer);
-            if (_cameraDriver != null)
-                _cameraDriver.SetScreenRenderers(_cameraScreenRenderers);
-
             if (verboseLog)
                 Debug.Log($"[StageMonitorDriver] cache rebuilt: bindings={_bindings.Count}");
         }
@@ -683,35 +630,38 @@ namespace Gallop.Live
             // instead of playing the atlas at the clip fps.
             float playbackSpeed = Mathf.Abs(curKey.speed);
 
-            state.useMonitorCamera = curKey.IsMonitorCameraFlag() || curKey.IsForcedUseMonitorCamera;
+            // Native UpdateMonitor @0x7ffd592730a0: the key's monitor-camera attribute (+0x5c) selects the camera
+            // path; with LiveQualitySettings.IsMonitor set (true in the game) the forced-use attribute (+0x5d) does not
+            // change the branch and the screen always reads the shared Director.MonitorTextureArray.
+            state.useMonitorCamera = curKey.IsMonitorCameraFlag();
             if (state.useMonitorCamera)
             {
-                // Never replace an authored camera with an unrelated movie or placeholder.
-                if (_cameraDriver == null || !_cameraDriver.IsActive || _cameraDriver.Texture == null)
+                // StageController.UpdateMonitorInCapureScreen @0x7ffd59271ea0: texture = MonitorTextureArray[dispID];
+                // nothing is applied when the array or the index is missing.
+                Director director = Director.instance;
+                RenderTexture[] textures = director != null ? director.MonitorTextureArray : null;
+                if (textures == null || curKey.dispID < 0 || curKey.dispID >= textures.Length ||
+                    textures[curKey.dispID] == null)
+                {
+                    if (_cameraDiagLogged.Add(-1000 - curKey.dispID))
+                        Debug.LogWarning($"[MonitorDiag] camera key wants MonitorTextureArray[{curKey.dispID}] but array is " +
+                            (textures == null ? "null" : "length " + textures.Length));
                     return false;
-                state.main.texture = _cameraDriver.Texture;
-                Vector2 captureSize = size;
-                Vector2 capturePosition = position;
-                // Native MonitorController.UpdateParam (0x1aa4660).
-                if (curKey.IsMultiFlag())
-                {
-                    captureSize = new Vector2(Mathf.Abs(captureSize.x), Mathf.Abs(captureSize.y));
-                    if (captureSize.x == 0f) captureSize.x = 1f;
-                    if (captureSize.y == 0f) captureSize.y = 1f;
-                    capturePosition.x = Mathf.Clamp(capturePosition.x, -1f, 1f);
-                    capturePosition.y = Mathf.Clamp(capturePosition.y, -1f, 1f);
                 }
-                else
+                state.main.texture = textures[curKey.dispID];
+                // The controller is stateful: the key's position / scale / multi flag are written into it and
+                // UpdateParam clamps them in place (scale to [-1, 1]) before the offset is derived.
+                if (!_monitorControllers.TryGetValue(monitorData, out MonitorController controller))
                 {
-                    captureSize.x = Mathf.Clamp01(captureSize.x);
-                    captureSize.y = Mathf.Clamp01(captureSize.y);
-                    float extentX = captureSize.x == 0f ? 0f : 1f - captureSize.x;
-                    float extentY = captureSize.y == 0f ? 0f : 1f - captureSize.y;
-                    capturePosition.x = Mathf.Clamp(capturePosition.x, -extentX, extentX);
-                    capturePosition.y = Mathf.Clamp(capturePosition.y, -extentY, extentY);
+                    controller = new MonitorController();
+                    _monitorControllers[monitorData] = controller;
                 }
-                state.main.scale = captureSize;
-                state.main.offset = (Vector2.one + capturePosition - captureSize) * 0.5f;
+                controller.m_CenterPosition = position;
+                controller.m_Scale = size;
+                controller.m_Multi = curKey.IsMultiFlag();
+                controller.UpdateParam();
+                state.main.scale = controller.m_Scale;
+                state.main.offset = controller.m_Offset;
                 state.hasMainTexture = true;
             }
             else
@@ -1088,11 +1038,41 @@ namespace Gallop.Live
             frameOffset = new Vector2(column * frameScale.x, row * frameScale.y);
         }
 
+        private readonly HashSet<int> _cameraDiagLogged = new HashSet<int>();
+        private readonly Dictionary<int, bool> _cameraDiagState = new Dictionary<int, bool>();
+
+        private static readonly List<Material> LiveMaterialBuffer = new List<Material>(4);
+
+        // Other stage systems replace the renderer's shared materials with per-renderer instances after the cache is
+        // built; writing to the original asset then never reaches the screen (monitors stay on the placeholder
+        // movie). Always write to the material the renderer is actually drawing with.
+        private static void RefreshLiveMaterial(MonitorMaterialBinding binding)
+        {
+            Renderer renderer = binding.renderer;
+            if (renderer == null)
+                return;
+
+            LiveMaterialBuffer.Clear();
+            renderer.GetSharedMaterials(LiveMaterialBuffer);
+            if (binding.materialIndex < 0 || binding.materialIndex >= LiveMaterialBuffer.Count)
+                return;
+
+            Material live = LiveMaterialBuffer[binding.materialIndex];
+            if (live == null || live == binding.material)
+                return;
+
+            binding.material = live;
+            // Fresh instance: everything must be written again.
+            binding.hasAppliedState = false;
+            binding.cameraTextureBound = false;
+        }
+
         private void RestoreCameraBindings(bool force = false)
         {
             for (int i = 0; i < _bindings.Count; i++)
             {
                 MonitorMaterialBinding binding = _bindings[i];
+                RefreshLiveMaterial(binding);
                 if (!binding.cameraTextureBound ||
                     (!force && binding.cameraAppliedThisFrame))
                     continue;
@@ -1113,6 +1093,7 @@ namespace Gallop.Live
 
         private void ApplyShaderState(MonitorMaterialBinding binding, MonitorShaderState state)
         {
+            RefreshLiveMaterial(binding);
             Material material = binding.material;
             if (material == null)
                 return;
@@ -1135,6 +1116,32 @@ namespace Gallop.Live
                     material.SetTextureOffset(mainTexProperty, state.main.offset);
                 }
                 binding.cameraTextureBound = state.useMonitorCamera;
+                // UpdateMonitorInCapureScreen: Texture.set_wrapMode(mainTexture, Clamp) every update.
+                if (state.useMonitorCamera && state.main.texture.wrapMode != TextureWrapMode.Clamp)
+                    state.main.texture.wrapMode = TextureWrapMode.Clamp;
+            }
+
+            {
+                int diagId = material.GetInstanceID();
+                bool wasCamera = _cameraDiagState.TryGetValue(diagId, out bool prevCamera) && prevCamera;
+                if (wasCamera != state.useMonitorCamera)
+                {
+                    _cameraDiagState[diagId] = state.useMonitorCamera;
+                    Debug.Log($"[MonitorDiag] '{material.name}' camera mode -> {state.useMonitorCamera} " +
+                        $"liveTime={(_ctl != null ? _ctl.currentLiveTime : -1f):F2} " +
+                        $"tex={(state.main.texture != null ? state.main.texture.name + " " + state.main.texture.width + "x" + state.main.texture.height : "null")} " +
+                        $"hasMainTexture={state.hasMainTexture} colorFade={state.colorFade}");
+                }
+            }
+
+            if (state.useMonitorCamera && _cameraDiagLogged.Add(material.GetInstanceID()))
+            {
+                Debug.Log($"[MonitorDiag] camera screen material='{material.name}' shader='{material.shader.name}' " +
+                    $"hasMainTexProp={HasTextureProperty(material, mainTexProperty)} hasMainTexture={state.hasMainTexture} " +
+                    $"tex={(state.main.texture != null ? state.main.texture.width + "x" + state.main.texture.height : "null")} " +
+                    $"scale={state.main.scale} offset={state.main.offset} alpha={state.alpha} colorFade={state.colorFade} " +
+                    $"baseColor={state.baseColor} useBaseColor={state.useBaseColor} blend={state.blendFactor} " +
+                    $"queue={material.renderQueue} matTex={(material.GetTexture(mainTexProperty) != null ? material.GetTexture(mainTexProperty).name : "null")}");
             }
 
             if (HasTextureProperty(material, fadeTexProperty))
@@ -1266,13 +1273,11 @@ namespace Gallop.Live
                 }
             }
 
-            if (applyRenderQueue &&
-                state.hasRenderQueue &&
-                (!binding.hasAppliedState ||
-                 !binding.appliedState.hasRenderQueue ||
-                 binding.appliedState.renderQueue != state.renderQueue))
+            if (applyRenderQueue)
             {
-                material.renderQueue = state.renderQueue;
+                int queue = state.hasRenderQueue ? state.renderQueue : binding.baseRenderQueue;
+                if (material.renderQueue != queue)
+                    material.renderQueue = queue;
             }
 
             MonitorShaderState storedState = state;
@@ -1338,7 +1343,7 @@ namespace Gallop.Live
             if (authored == null)
                 return;
 
-            // Bindings hold per-renderer instances; match them back to the authored shared material.
+            // Bindings hold the shared stage materials; match them back to the authored material.
             string authoredKey = NormalizeName(authored.name);
             for (int i = 0; i < _bindings.Count; i++)
             {

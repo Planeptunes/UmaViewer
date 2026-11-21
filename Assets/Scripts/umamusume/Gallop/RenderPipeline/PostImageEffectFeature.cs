@@ -57,6 +57,7 @@ namespace Gallop.RenderPipeline
         private MultiCameraCompositePass _multiCameraCompositePass;
         private MultiCameraFinalCompositePass _multiCameraFinalCompositePass;
         private ProjectorRenderPass _projectorPass;
+        private MonitorScreenCapturePass _monitorCapturePass;
 
         private RenderTextureHandle _sourceRT;
         private List<ScriptableRenderPass> _registerPass;
@@ -173,6 +174,7 @@ namespace Gallop.RenderPipeline
             _multiCameraCompositePass = new MultiCameraCompositePass();
             _multiCameraFinalCompositePass = new MultiCameraFinalCompositePass();
             _projectorPass = new ProjectorRenderPass();
+            _monitorCapturePass = new MonitorScreenCapturePass((RenderPassEvent)650);
             // PostImageEffectFeature.Create: BlurOptimizePass(0x226).
             _blurOptimizePass = new BlurOptimizePass((RenderPassEvent)0x226);
 
@@ -199,7 +201,7 @@ namespace Gallop.RenderPipeline
                 renderer.EnqueuePass(_projectorPass);
             }
 
-            if (string.Equals(camera.name, "MonitorCameraCapture", StringComparison.Ordinal))
+            if (Gallop.Live.MonitorCamera.IsMonitorCamera(camera))
                 return;
 
             // The timeline parameter is authored for the Live presentation
@@ -235,6 +237,13 @@ namespace Gallop.RenderPipeline
             else if (camera == director.MainRenderCamera && _multiCameraFinalCompositePass != null &&
                 _multiCameraFinalCompositePass.Setup(director.MultiCameraFinalComposite))
                 renderer.EnqueuePass(_multiCameraFinalCompositePass);
+
+            // Game captures show the stage monitors displaying the main camera image (a face close-up at f1236 of
+            // live 1001) while the MonitorCamera is inactive: the screen texture holds the presentation camera's
+            // final image whenever no monitor camera is rendering into it.
+            if (multiCamera == null && camera == director.MainRenderCamera && _monitorCapturePass != null &&
+                _monitorCapturePass.Setup(director))
+                renderer.EnqueuePass(_monitorCapturePass);
 
             bool renderEnabled = _enableRendering;
             if (!renderEnabled)
@@ -718,6 +727,58 @@ namespace Gallop.RenderPipeline
                     context.ExecuteCommandBuffer(cmd);
                     LiveRuntimeDiagnostics.RecordRenderExecution(renderingData.cameraData.camera,
                         "SourceSetup", renderPassEvent, default, _owner.SourceRT);
+                }
+                finally
+                {
+                    CommandBufferPool.Release(cmd);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Copies the presentation camera's final colour into Director.MonitorTextureArray[i] for every monitor camera
+        /// that is not rendering this frame.
+        /// </summary>
+        private sealed class MonitorScreenCapturePass : ScriptableRenderPass
+        {
+            private Director _director;
+
+            public MonitorScreenCapturePass(RenderPassEvent passEvent)
+            {
+                renderPassEvent = passEvent;
+            }
+
+            public bool Setup(Director director)
+            {
+                _director = director;
+                RenderTexture[] textures = director != null ? director.MonitorTextureArray : null;
+                if (textures == null || textures.Length == 0)
+                    return false;
+                for (int i = 0; i < textures.Length; i++)
+                    if (textures[i] != null && !director.IsActiveMonitorCamera(i))
+                        return true;
+                return false;
+            }
+
+            public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
+            {
+                RenderTexture[] textures = _director != null ? _director.MonitorTextureArray : null;
+                if (textures == null)
+                    return;
+                RTHandle color = renderingData.cameraData.renderer.cameraColorTargetHandle;
+                if (color == null)
+                    return;
+
+                CommandBuffer cmd = CommandBufferPool.Get("PostImageEffectFeature.MonitorScreenCapture");
+                try
+                {
+                    for (int i = 0; i < textures.Length; i++)
+                    {
+                        if (textures[i] == null || _director.IsActiveMonitorCamera(i))
+                            continue;
+                        cmd.Blit(color.nameID, textures[i]);
+                    }
+                    context.ExecuteCommandBuffer(cmd);
                 }
                 finally
                 {
