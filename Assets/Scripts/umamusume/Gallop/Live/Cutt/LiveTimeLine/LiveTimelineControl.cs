@@ -2322,11 +2322,40 @@ namespace Gallop.Live.Cutt
                 {
                     pos = LerpWithoutClamp(getFunc(liveTimelineKeyCameraPositionData, this, config), getFunc(liveTimelineKeyCameraPositionData2, this, config), t);
                 }
-                else
+                else if (liveTimelineKeyCameraPositionData2.necessaryToUseNewBezierCalcMethod)
                 {
                     BezierCalcWork.cameraPos.Set(getFunc(liveTimelineKeyCameraPositionData, this, config), getFunc(liveTimelineKeyCameraPositionData2, this, config), bezierPointCount);
                     BezierCalcWork.cameraPos.UpdatePoints(liveTimelineKeyCameraPositionData2, this);
                     BezierCalcWork.cameraPos.Calc(bezierPointCount, t, out pos);
+                }
+                else
+                {
+                    // Game CalculateCameraPos (@0x7ffd592bba10, code_JP Gallop.Live.Cutt.LiveTimelineControl.c ~l.23373):
+                    // when NecessaryToUseNewBezierCalcMethod is false (attribute 0x10000 clear and <= 3 control points) the
+                    // game evaluates the closed-form BezierUtil.Calc overloads with the control points of the NEXT key
+                    // (GetBezierPoint(i) = nextKey.GetValue + bezierPoints[i]). The 3-point overload is NOT a true Bernstein
+                    // polynomial (see BezierUtil.Calc 5-point), which is what the viewer was missing (the viewer always used
+                    // the recursive De Casteljau path here).
+                    Vector3 start = getFunc(liveTimelineKeyCameraPositionData, this, config);
+                    Vector3 end = getFunc(liveTimelineKeyCameraPositionData2, this, config);
+                    Vector3 cp1 = liveTimelineKeyCameraPositionData2.GetBezierPoint(0, this);
+                    Vector3 cp2 = liveTimelineKeyCameraPositionData2.GetBezierPoint(1, this);
+                    Vector3 cp3 = liveTimelineKeyCameraPositionData2.GetBezierPoint(2, this);
+                    switch (bezierPointCount)
+                    {
+                        case 1:
+                            BezierUtil.Calc(ref start, ref end, ref cp1, t, out pos);
+                            break;
+                        case 2:
+                            BezierUtil.Calc(ref start, ref end, ref cp1, ref cp2, t, out pos);
+                            break;
+                        case 3:
+                            BezierUtil.Calc(ref start, ref end, ref cp1, ref cp2, ref cp3, t, out pos);
+                            break;
+                        default:
+                            pos = LerpWithoutClamp(start, end, t);
+                            break;
+                    }
                 }
             }
             else
@@ -2532,42 +2561,13 @@ namespace Gallop.Live.Cutt
                     float t = CalculateInterpolationValue(liveTimelineKeyCameraRollData, liveTimelineKeyCameraRollData2, currentFrame);
                     num = LerpWithoutClamp(liveTimelineKeyCameraRollData.degree, liveTimelineKeyCameraRollData2.degree, t);
                 }
-                else if (liveTimelineKeyCameraPositionData2.necessaryToUseNewBezierCalcMethod)
+                else
                 {
                     num = liveTimelineKeyCameraRollData.degree;
                 }
                 camera.cacheTransform.Rotate(0f, 0f, num);
             }
         }
-                else
-                {
-                    // Game CalculateCameraPos (@0x7ffd592bba10, code_JP Gallop.Live.Cutt.LiveTimelineControl.c ~l.23373):
-                    // when NecessaryToUseNewBezierCalcMethod is false (attribute 0x10000 clear and <= 3 control points) the
-                    // game evaluates the closed-form BezierUtil.Calc overloads with the control points of the NEXT key
-                    // (GetBezierPoint(i) = nextKey.GetValue + bezierPoints[i]). The 3-point overload is NOT a true Bernstein
-                    // polynomial (see BezierUtil.Calc 5-point), which is what the viewer was missing (the viewer always used
-                    // the recursive De Casteljau path here).
-                    Vector3 start = getFunc(liveTimelineKeyCameraPositionData, this, config);
-                    Vector3 end = getFunc(liveTimelineKeyCameraPositionData2, this, config);
-                    Vector3 cp1 = liveTimelineKeyCameraPositionData2.GetBezierPoint(0, this);
-                    Vector3 cp2 = liveTimelineKeyCameraPositionData2.GetBezierPoint(1, this);
-                    Vector3 cp3 = liveTimelineKeyCameraPositionData2.GetBezierPoint(2, this);
-                    switch (bezierPointCount)
-                    {
-                        case 1:
-                            BezierUtil.Calc(ref start, ref end, ref cp1, t, out pos);
-                            break;
-                        case 2:
-                            BezierUtil.Calc(ref start, ref end, ref cp1, ref cp2, t, out pos);
-                            break;
-                        case 3:
-                            BezierUtil.Calc(ref start, ref end, ref cp1, ref cp2, ref cp3, t, out pos);
-                            break;
-                        default:
-                            pos = LerpWithoutClamp(start, end, t);
-                            break;
-                    }
-                }
 
         //public void SetMultiCamera(MultiCameraManager manager, MultiCamera[] multiCamera)
         public void SetMultiCamera(MultiCamera[] multiCamera)
