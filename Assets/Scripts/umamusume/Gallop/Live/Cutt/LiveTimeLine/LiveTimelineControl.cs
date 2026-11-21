@@ -3490,8 +3490,8 @@ namespace Gallop.Live.Cutt
         // feet up to hightMax. The client's CharacterObject.SetFootLightParameter writes
         // _HightLightParam = (rootY, hightMax, easing, blendMode) + _HightLightColor, which is what
         // makes the lower legs glow while the thighs stay sharp. Native:
-        // AlterLateUpdate_CharaFootLight — one update per character selected by positionFlag, with
-        // the per-character values coming from the key arrays.
+        // AlterLateUpdate_CharaFootLight — one update per character; selected by positionFlag it takes
+        // the per-character values from the key arrays, otherwise the default struct.
         private void AlterLateUpdate_CharaFootLight(LiveTimelineWorkSheet sheet, float currentFrame)
         {
             if (sheet == null || sheet.charaFootLightKeys == null || OnUpdateCharaFootLight == null)
@@ -3510,35 +3510,21 @@ namespace Gallop.Live.Cutt
                 ? CalculateInterpolationValue(cur, next, currentFrame)
                 : -1f;
 
-            // The native update only touches the characters selected by positionFlag and every other
-            // character keeps whatever the last key that selected it wrote. Playing forward that state is
-            // implicit; after a seek back the viewer would keep the values of a LATER key (live 1053 f534:
-            // the background characters kept the blue of the f802 key instead of the f0 state). So the
-            // unselected characters are re-fed from the latest earlier key that selected them.
-            int curIndex = keys.thisList != null ? keys.thisList.IndexOf(cur) : -1;
+            // AlterLateUpdate_CharaFootLight @0x7ffd59292f70: the game invokes the callback for ALL 20
+            // characters every frame. The struct is re-initialised for each one
+            // (CharaFootLightUpdateInfo.Initialize @0x7ffd592e70c0: hightMax = 1, colour = clear, blend 0,
+            // easing 0) and only filled from the key when positionFlag selects the character, so an
+            // unselected character gets the default (no glow) instead of a held earlier key (game values, live 1083
+            // f3358..f3457: every character has hightMax 1 / clear / 0 / 0).
             for (int i = 0; i < 20; i++)
             {
                 if ((((int)cur.positionFlag >> i) & 1) == 0)
                 {
-                    for (int j = curIndex - 1; j >= 0; j--)
-                    {
-                        var prev = keys.thisList[j];
-                        if (prev == null || (((int)prev.positionFlag >> i) & 1) == 0) continue;
-                        if (prev.hightMax == null || i >= prev.hightMax.Length) break;
-                        if (prev.lightColor == null || i >= prev.lightColor.Length) break;
-                        CharaFootLightUpdateInfo held = default;
-                        held.CharacterIndex = i;
-                        held.hightMax = prev.hightMax[i];
-                        held.lightColor = prev.lightColor[i];
-                        held.LightBlendMode = (prev.LightBlendModeArray != null && i < prev.LightBlendModeArray.Length)
-                            ? prev.LightBlendModeArray[i]
-                            : LiveDefine.HightLightBlendMode.Addition;
-                        held.Easing = (prev.EasingArray != null && i < prev.EasingArray.Length)
-                            ? prev.EasingArray[i]
-                            : LiveDefine.Easing.Linear;
-                        OnUpdateCharaFootLight.Invoke(ref held);
-                        break;
-                    }
+                    CharaFootLightUpdateInfo unselected = default;
+                    unselected.CharacterIndex = i;
+                    unselected.hightMax = 1f;
+                    unselected.lightColor = Color.clear;
+                    OnUpdateCharaFootLight.Invoke(ref unselected);
                     continue;
                 }
                 if (cur.hightMax == null || i >= cur.hightMax.Length)
