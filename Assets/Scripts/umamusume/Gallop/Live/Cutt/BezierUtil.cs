@@ -54,12 +54,16 @@ namespace Gallop.Live.Cutt
             v3.z = num2 * end.z + num3 * cp2.z + num4 * cp1.z + num5 * start.z;
         }
 
+        // Game BezierUtil.Calc 5-point overload (JP RVA 0x7ffd592d4820 in code_JP Gallop.Live.Cutt.BezierUtil.c): ONE constant
+        // DAT_7ffd5a640fc0 (= 4.0 in GameAssembly_jp_dumped.dll, RVA 0x62C0FC0) multiplies all three middle terms, so the
+        // weights are (1, 4, 4, 4, 1), NOT the Bernstein (1, 4, 6, 4, 1). Verified against the game camera of Live 1001
+        // f4757-4823 (error <= 0.08 m with 4, up to 3.8 m with 6).
         public static void Calc(ref Vector3 start, ref Vector3 end, ref Vector3 cp1, ref Vector3 cp2, ref Vector3 cp3, float t, out Vector3 v3)
         {
             float num = 1f - t;
             float num2 = t * t * t * t;
             float num3 = 4f * t * t * t * num;
-            float num4 = 6f * t * t * num * num;
+            float num4 = 4f * t * t * num * num;
             float num5 = 4f * t * num * num * num;
             float num6 = num * num * num * num;
 
@@ -73,8 +77,10 @@ namespace Gallop.Live.Cutt
             float num = 1f - t;
             float num2 = t * t * t * t * t;
             float num3 = 5f * t * t * t * t * num;
-            float num4 = 10f * t * t * t * num * num;
-            float num5 = 10f * t * t * num * num * num;
+            // Game 6-point overload (RVA 0x7ffd592d4ae0): one constant DAT_7ffd5a640fc8 (= 5.0) for all four middle terms
+            // (weights 1,5,5,5,5,1). Unreachable from the camera code (> 3 points forces the recursive path).
+            float num4 = 5f * t * t * t * num * num;
+            float num5 = 5f * t * t * num * num * num;
             float num6 = 5f * t * num * num * num * num;
             float num7 = num * num * num * num * num;
 
