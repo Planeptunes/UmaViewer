@@ -145,6 +145,44 @@ public static class LiveProbeTraces
 
     private static string V4s(Vector4 v) => "(" + F5(v.x) + "," + F5(v.y) + "," + F5(v.z) + "," + F5(v.w) + ")";
 
+    // ---------------------------------------------------------------- particle_trace.csv
+    //Read-only dump of every ParticleSystem under the Director (state at the capture frame): is it playing / emitting,
+    //how many particles are alive, its time and main-module values, and whether its renderer is enabled / visible.
+    //Lets the stage smoke / floor fog effects be checked when the visible result differs from the reference.
+    public static string WriteParticleTrace(string dir, int live, int frame, Transform root)
+    {
+        if (root == null) return "[particles] skipped: no Director root";
+        var sb = new StringBuilder("live,run,frame,path,activeInHierarchy,isPlaying,isEmitting,isPaused,particleCount,maxParticles,time,duration,loop,simulationSpace,startSizeMax,startLifetimeMax,startColor,emissionRateOverTime,rendererEnabled,isVisible,material,queue,layer,worldPos\n");
+        string rootGame = GameRootName(root);
+        int count = 0;
+        foreach (ParticleSystem ps in root.GetComponentsInChildren<ParticleSystem>(true))
+        {
+            if (ps == null || count >= 1000) continue;
+            count++;
+            string path = ps.transform.name;
+            for (Transform p = ps.transform.parent; p != null; p = p.parent) path = p.name + "/" + path;
+            int slash = path.IndexOf('/');
+            path = rootGame + (slash >= 0 ? path.Substring(slash) : "");
+            var main = ps.main;
+            var emission = ps.emission;
+            var rend = ps.GetComponent<ParticleSystemRenderer>();
+            Material mat = rend != null ? rend.sharedMaterial : null;
+            Color sc = main.startColor.color;
+            Vector3 wp = ps.transform.position;
+            sb.Append(live).Append(",1,").Append(frame).Append(',').Append(Q(path)).Append(',')
+              .Append(ps.gameObject.activeInHierarchy ? 1 : 0).Append(',').Append(ps.isPlaying ? 1 : 0).Append(',').Append(ps.isEmitting ? 1 : 0).Append(',')
+              .Append(ps.isPaused ? 1 : 0).Append(',').Append(ps.particleCount).Append(',').Append(main.maxParticles).Append(',')
+              .Append(F5(ps.time)).Append(',').Append(F5(main.duration)).Append(',').Append(main.loop ? 1 : 0).Append(',').Append(main.simulationSpace).Append(',')
+              .Append(F5(main.startSize.constantMax)).Append(',').Append(F5(main.startLifetime.constantMax)).Append(',')
+              .Append(V4s(new Vector4(sc.r, sc.g, sc.b, sc.a))).Append(',').Append(F5(emission.rateOverTime.constantMax)).Append(',')
+              .Append(rend != null && rend.enabled ? 1 : 0).Append(',').Append(rend != null && rend.isVisible ? 1 : 0).Append(',')
+              .Append(Q(mat != null ? mat.name : "")).Append(',').Append(mat != null ? mat.renderQueue : -1).Append(',').Append(ps.gameObject.layer).Append(',')
+              .Append(Q(F5(wp.x) + ":" + F5(wp.y) + ":" + F5(wp.z))).Append('\n');
+        }
+        File.WriteAllText(Path.Combine(dir, "particle_trace.csv"), sb.ToString(), new UTF8Encoding(false));
+        return "[particles] particle_trace.csv (" + count + " particle systems)";
+    }
+
     public static string WriteMonitorTrace(string dir, int live, int frame, Transform root)
     {
         if (root == null) return "[monitor] skipped: no Director root";

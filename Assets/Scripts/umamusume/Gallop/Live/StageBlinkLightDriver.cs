@@ -31,8 +31,28 @@ namespace Gallop.Live
         // 官方 LightBlinkBlend 常见 fallback 是 Multiply = DstColor / One
         public BlendMode lightBlinkBlendSrc = BlendMode.DstColor;
         public BlendMode lightBlinkBlendDst = BlendMode.One;
-        // Game (JP, live 1156): every LightBlinkBlend material of the stage runs at renderQueue 3112.
-        public int lightBlinkBlendRenderQueue = 3112;
+        // JP BlinkLightController..cctor (0x58F2F50): LightRenderQueueDefault = 0xC1C (3100) and
+        // RENDER_QUEUE_OFFSET_DICTIONARY (shader short name -> offset, 9 entries: 0,10,11,12,13,14,20,21,22).
+        // BlinkLightController.Initialize (JP) sets material.renderQueue = 3100 + offset for each renderer whose
+        // shader short name is in the dictionary. Only the entries confirmed on game captures are ported
+        // (LightBlink 3110, LightBlinkSimple 3111, LightBlinkBlend 3112); the other six keys are not recovered
+        // (string literals are not in the dump), so they are left out instead of guessed.
+        private const int LightRenderQueueDefault = 0xC1C;
+        private static readonly Dictionary<string, int> RenderQueueOffsets = new Dictionary<string, int>
+        {
+            { "LightBlink", 10 },
+            { "LightBlinkSimple", 11 },
+            { "LightBlinkBlend", 12 },
+        };
+
+        private static void ApplyBlinkRenderQueue(Material material)
+        {
+            if (material == null || material.shader == null) return;
+            string full = material.shader.name;
+            string shortName = full.Substring(full.LastIndexOf('/') + 1);
+            if (RenderQueueOffsets.TryGetValue(shortName, out int offset))
+                material.renderQueue = LightRenderQueueDefault + offset;
+        }
 
         public bool useTimelineLightBlendMode = true;
         public LiveDefine.LightBlendMode fallbackLightBlendMode = LiveDefine.LightBlendMode.Multiply;
@@ -745,6 +765,7 @@ namespace Gallop.Live
                     var flare = go.GetComponent<UnityLensFlareController>();
                     var customFlare = go.GetComponent<Gallop.RenderPipeline.CustomLensFlare>();
                     var runtimeMat = r.material;
+                    ApplyBlinkRenderQueue(runtimeMat);
                     var mats = r.sharedMaterials;
                     pendingRenderers.Add(new RendererEntry
                     {
@@ -1553,9 +1574,6 @@ namespace Gallop.Live
                     continue;
 
                 touched = true;
-
-                if (lightBlinkBlendRenderQueue >= 0)
-                    m.renderQueue = lightBlinkBlendRenderQueue;
 
                 if (verboseLog && m.HasProperty("_SrcBlend") && m.HasProperty("_DstBlend"))
                 {

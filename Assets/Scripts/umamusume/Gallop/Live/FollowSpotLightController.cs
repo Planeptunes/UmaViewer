@@ -96,7 +96,8 @@ namespace Gallop.Live
 
         public void ApplyLight(Color color, float power, float scale)
         {
-            _illuminated = power != 0f;
+            // JP FollowSpotLightController.AlterLateUpdate (0x7ffd5923b870): the renderer is drawn only while ColorPower > 0.
+            _illuminated = power > 0f;
             _power = power;
             // SetScale: the key scale is absolute on X/Z, Y is kept.
             transform.localScale = new Vector3(scale, transform.localScale.y, scale);
@@ -108,12 +109,6 @@ namespace Gallop.Live
                 _block.SetFloat(PowerId, power);
                 target.SetPropertyBlock(_block);
             }
-        }
-
-        public void SetCharacterVisible(bool visible)
-        {
-            foreach (var target in _renderers)
-                target.enabled = visible && DrawsLight;
         }
 
         public void AlterLateUpdate(Vector3 groundPosition)

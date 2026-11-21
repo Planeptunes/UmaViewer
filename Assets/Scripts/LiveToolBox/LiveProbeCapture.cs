@@ -239,6 +239,7 @@ public class LiveProbeCapture : MonoBehaviour
         notes.Add(WriteCameras(dir, live, frame));
         notes.Add(LiveProbeTraces.WriteStateTrace(dir, live, frame, LiveTraceExporter.CaptureRootTransform));
         notes.Add(LiveProbeTraces.WriteMonitorTrace(dir, live, frame, LiveTraceExporter.CaptureRootTransform));
+        notes.Add(LiveProbeTraces.WriteParticleTrace(dir, live, frame, LiveTraceExporter.CaptureRootTransform));
         notes.Add(LiveProbeTraces.WriteCySpring(dir, frame));
         notes.Add(WriteGlobals(dir, frame));
         WriteSettings(dir, n, live, frame, time);

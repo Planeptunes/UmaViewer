@@ -211,8 +211,14 @@ namespace Gallop.Live
                 Binding binding = _bindings[i];
                 bool active = binding.character != null && binding.character.gameObject.activeInHierarchy
                     && (binding.container == null || binding.container.LiveLocator == null || binding.container.LiveLocator.liveCharaVisible);
-                if (binding.spotlight != null && binding.spotlight.gameObject.activeSelf != active)
-                    binding.spotlight.gameObject.SetActive(active);
+                // JP Director.AlterLateUpdate (0x7ffd591e9500 area) walks every CharacterObject and calls
+                // CharacterObject.UpdateCharaEffect (0x7ffd5922e630), which runs FollowSpotLightController.
+                // AlterLateUpdate (0x7ffd5923b870) for every spotlight with NO visibility check: the pool follows the
+                // root and is drawn whenever ColorPower > 0, also for characters that are not visible (their foot
+                // shadows are hidden, the spotlight is not: CharacterObject.OnLiveCharaVisible 0x7ffd5922c2b0 only
+                // touches the FakeShadowControllers, props and colliders).
+                if (binding.spotlight != null)
+                    binding.spotlight.AlterLateUpdate(_groundPositionResolver(binding.characterIndex));
                 // OnLiveCharaVisible: foot shadows follow the character visibility.
                 if (binding.leftShadow != null && binding.leftShadow.IsVisible != active)
                     binding.leftShadow.IsVisible = active;
@@ -221,9 +227,6 @@ namespace Gallop.Live
                 if (!active) continue;
                 binding.leftShadow?.AlterLateUpdate();
                 binding.rightShadow?.AlterLateUpdate();
-                Vector3 position = _groundPositionResolver(binding.characterIndex);
-                if (binding.spotlight != null) binding.spotlight.AlterLateUpdate(position);
-                if (binding.spotlight != null) binding.spotlight.SetCharacterVisible(active);
                 // Sombra real del personaje (shadow map de la AdditionalLight). En el juego
                 // (Live 1093): los personajes cuya FormationOffset tiene IsCastShadow proyectan (cuerpo, cara,
                 // pelo y cola) SOLO mientras la AdditionalLight esta encendida (frames 3885-4185); con la luz
