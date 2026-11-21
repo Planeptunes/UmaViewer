@@ -404,6 +404,15 @@ namespace Gallop.Live.Cutt
 
         private Vector3 _cameraLayerOffset = Vector3.zero;
 
+        // Main camera layer offset (LiveTimelineControl +0x2F4 min, +0x300 max, +0x30C diff = max - min,
+        // +0x318 position offset, +0x324 look-at offset). Filled by AlterUpdate_CameraLayer / CameraPos / CameraLookAt
+        // and applied (rotated by the camera rotation) in AlterLateUpdate right after the look-at.
+        private Vector3 _cameraLayerOffsetMin = Vector3.zero;
+        private Vector3 _cameraLayerOffsetMax = Vector3.zero;
+        private Vector3 _cameraLayerOffsetDiff = Vector3.zero;
+        private Vector3 _cameraPosLayerOffset = Vector3.zero;
+        private Vector3 _cameraLookAtLayerOffset = Vector3.zero;
+
         private CacheCamera[] _cameraArray = new CacheCamera[3];
 
         private LiveTimelineCamera[] _cameraScriptArray = new LiveTimelineCamera[3];
@@ -732,8 +741,12 @@ namespace Gallop.Live.Cutt
             AlterUpdate_Effects(false);
             AlterLateUpdate_FormationOffset(currentLiveTime);
             AlterUpdate_CameraSwitcher(camSheet, _currentFrame);
+            // Native AlterLateUpdate @0x7ffd59294960: AlterUpdate_CameraLayer -> CameraPos -> CameraLookAt -> camera layer
+            // offset application -> CameraRoll -> CameraFov.
+            AlterUpdate_CameraLayer(camSheet, _currentFrame);
             AlterUpdate_CameraPos(camSheet, _currentFrame);
             AlterUpdate_CameraLookAt(camSheet, _currentFrame, ref outLookAt);
+            ApplyCameraLayerOffset(camSheet, outLookAt);
             AlterUpdate_CameraFov(camSheet, _currentFrame);
             AlterUpdate_CameraRoll(camSheet, _currentFrame);
             AlterUpdate_Effects(true);
@@ -2234,8 +2247,50 @@ namespace Gallop.Live.Cutt
             }
         }
 
+        // AlterUpdate_CameraLayer @0x7ffd592993c0: min = key offsetMinPosition (+0x3C), max = key offsetMaxPosition (+0x30),
+        // both interpolated with the next key when it is an interpolate key; diff = max - min. Like the game it does not
+        // clear the values when no key is active (they keep the last result).
+        private void AlterUpdate_CameraLayer(LiveTimelineWorkSheet sheet, float currentFrame)
+        {
+            if (sheet == null || sheet.cameraLayerKeys == null) return;
+            var keys = sheet.cameraLayerKeys;
+            if (keys.HasAttribute(LiveTimelineKeyDataListAttr.Disable) || !keys.EnablePlayModeTimeline(_playMode)) return;
+            FindTimelineKey(out var curBase, out var nextBase, keys, currentFrame);
+            var cur = curBase as LiveTimelineKeyCameraLayerData;
+            var next = nextBase as LiveTimelineKeyCameraLayerData;
+            if (cur == null) return;
+            Vector3 max = cur.offsetMaxPosition;
+            Vector3 min = cur.offsetMinPosition;
+            if (next != null && next.IsInterpolateKey())
+            {
+                float t = CalculateInterpolationValue(cur, next, currentFrame);
+                max = (next.offsetMaxPosition - cur.offsetMaxPosition) * t + cur.offsetMaxPosition;
+                min = (next.offsetMinPosition - cur.offsetMinPosition) * t + cur.offsetMinPosition;
+            }
+            _cameraLayerOffsetMax = max;
+            _cameraLayerOffsetMin = min;
+            _cameraLayerOffsetDiff = max - min;
+        }
+
+        // The block of AlterLateUpdate @0x7ffd59294960 right after AlterUpdate_CameraLookAt (l.1604-1641 of the
+        // decompiled function): camera.position += camera.rotation * _cameraPosLayerOffset (+0x318); then
+        // lookAt = outLookAt + camera.rotation * _cameraLookAtLayerOffset (+0x324) and Transform.LookAt(lookAt, up).
+        // The rotation of the second product is the one after the first LookAt of CameraLookAt (position does not change it).
+        private void ApplyCameraLayerOffset(LiveTimelineWorkSheet sheet, Vector3 outLookAt)
+        {
+            if (sheet == null) return;
+            CacheCamera camera = GetCamera(sheet.targetCameraIndex);
+            if (camera == null || camera.cacheTransform == null) return;
+            Transform transform = camera.cacheTransform;
+            transform.position = transform.position + transform.rotation * _cameraPosLayerOffset;
+            Vector3 lookAt = outLookAt + transform.rotation * _cameraLookAtLayerOffset;
+            transform.LookAt(lookAt, Vector3.up);
+        }
+
         private void AlterUpdate_CameraPos(LiveTimelineWorkSheet sheet, float currentFrame)
         {
+            // Native AlterUpdate_CameraPos @0x7ffd59299fe0 clears the position layer offset (+0x318) first.
+            _cameraPosLayerOffset = Vector3.zero;
             if (sheet.cameraPosKeys.HasAttribute(LiveTimelineKeyDataListAttr.Disable) || !sheet.cameraPosKeys.EnablePlayModeTimeline(_playMode))
             {
                 return;
@@ -2265,7 +2320,12 @@ namespace Gallop.Live.Cutt
             if (CalculateCameraPos(out var pos, sheet, curKey, nextKey, currentFrame))
             {
                 camera.cacheTransform.position = pos;
-
+                // LiveTimelineKeyCameraPositionData.GetLayerOffset @0x7ffd592d9540: only for setType == Character (1),
+                // via GetCameraLayerOffset(charaRelativeBase flags, min, diff); stored only when it succeeds.
+                if (liveTimelineKeyCameraPositionData.setType == LiveCameraPositionType.Character &&
+                    GetCameraLayerOffset(liveTimelineKeyCameraPositionData.charaRelativeBase, _cameraLayerOffsetMin,
+                        _cameraLayerOffsetDiff, out Vector3 layerOffset))
+                    _cameraPosLayerOffset = layerOffset;
             }
         }
 
@@ -2386,6 +2446,8 @@ namespace Gallop.Live.Cutt
 
         private void AlterUpdate_CameraLookAt(LiveTimelineWorkSheet sheet, float currentFrame, ref Vector3 outLookAt)
         {
+            // Native AlterUpdate_CameraLookAt @0x7ffd592997a0 clears the look-at layer offset (+0x324) first.
+            _cameraLookAtLayerOffset = Vector3.zero;
             if (!sheet.cameraLookAtKeys.HasAttribute(LiveTimelineKeyDataListAttr.Disable) && sheet.cameraLookAtKeys.EnablePlayModeTimeline(_playMode))
             {
                 CacheCamera camera = GetCamera(sheet.targetCameraIndex);
@@ -2396,6 +2458,14 @@ namespace Gallop.Live.Cutt
                     DofCameraLookAt = lookAtPos;
                     DofLookAtCamera = camera.camera;
                     HasDofCameraLookAt = true;
+                    // LiveTimelineKeyCameraLookAtData.GetLayerOffset @0x7ffd592d82d0: only for lookAtType == Character (1),
+                    // via GetCameraLayerOffset(lookAtCharaPos flags, min, diff); stored only when it succeeds.
+                    FindTimelineKey(out var lookAtCurBase, out _, sheet.cameraLookAtKeys, currentFrame);
+                    var lookAtCur = lookAtCurBase as LiveTimelineKeyCameraLookAtData;
+                    if (lookAtCur != null && lookAtCur.lookAtType == LiveCameraLookAtType.Character &&
+                        GetCameraLayerOffset(lookAtCur.lookAtCharaPos, _cameraLayerOffsetMin, _cameraLayerOffsetDiff,
+                            out Vector3 lookAtLayerOffset))
+                        _cameraLookAtLayerOffset = lookAtLayerOffset;
                 }
             }
         }

@@ -401,6 +401,8 @@ namespace Gallop.Live.Cutt
         [SerializeField] public LiveTimelineKeyCameraLookAtDataList cameraLookAtKeys;
         [SerializeField] public LiveTimelineKeyCameraFovDataList cameraFovKeys;
         [SerializeField] public LiveTimelineKeyCameraRollDataList cameraRollKeys;
+        // Native worksheet offset 0x160 (LiveTimelineKeyCameraLayerDataList): main camera layer offset range.
+        [SerializeField] public LiveTimelineKeyCameraLayerDataList cameraLayerKeys;
 
         [SerializeField]
         public LiveTimelineKeyPostEffectBloomDiffusionDataList postEffectBloomDiffusionKeys;
