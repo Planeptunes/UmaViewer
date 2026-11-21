@@ -666,6 +666,11 @@ namespace Gallop.Live
                     default: return;
                 }
                 if (charaMask <= 0) return;
+                // UpdateCharaColor1 (0x7ffd5926edf0), before the character loop: outline width = outlineWidthPower *
+                // 0.325 (constant 0x7ffd5a8bad58) and outline colour = ModelController.GetOutlineColor(outlineColor,
+                // outlineColorBlend) (0x7ffd59673e90), the same for every character of the track.
+                float outlineWidth = updateInfo.outlineWidthPower * 0.325f;
+                Color outlineColor = UmaContainerCharacter.GetOutlineColor(updateInfo.outlineColor, updateInfo.outlineColorBlend);
                 foreach (var locator in _liveTimelineControl.liveCharactorLocators)
                 {
                     var EFlags = (LiveCharaPositionFlag)charaMask;
@@ -674,6 +679,32 @@ namespace Gallop.Live
                         var container = charaLocator.UmaContainer;
                         if (container)
                         {
+                            // JP StageController.UpdateCharaColor1 (0x7ffd5926edf0), first thing inside the
+                            // per-character block (also factored in <UpdateCharaColor1>g__IsEnableTargetModel|216_0
+                            // @0x7ffd5926dbc0): the track's TargetCharaIdArray/TargetDressIdArray filter. When both
+                            // arrays are empty the character is enabled; otherwise it is enabled only if
+                            // ModelController.GetCharaID (@0x7ffd578425c0, CharacterBuildInfo._charaId) is in
+                            // TargetCharaIdArray or ModelController.GetDressId (@0x7ffd57842ad0,
+                            // CharacterBuildInfo._dressId) is in TargetDressIdArray. A character that is not enabled
+                            // is skipped completely: no colours, outline, saturation or FakeLightReceiveSetting.
+                            int[] targetCharaIds = updateInfo.TargetCharaIdArray;
+                            int[] targetDressIds = updateInfo.TargetDressIdArray;
+                            bool hasCharaFilter = targetCharaIds != null && targetCharaIds.Length > 0;
+                            bool hasDressFilter = targetDressIds != null && targetDressIds.Length > 0;
+                            if (hasCharaFilter || hasDressFilter)
+                            {
+                                int targetCharaId = container.LiveCharaId;
+                                int targetDressId = container.LiveDressId;
+                                bool isTarget = false;
+                                if (hasCharaFilter)
+                                    for (int t = 0; t < targetCharaIds.Length && !isTarget; t++)
+                                        isTarget = targetCharaIds[t] == targetCharaId;
+                                if (!isTarget && hasDressFilter)
+                                    for (int t = 0; t < targetDressIds.Length && !isTarget; t++)
+                                        isTarget = targetDressIds[t] == targetDressId;
+                                if (!isTarget)
+                                    continue;
+                            }
                             // Port of StageController.UpdateCharaColor1 (JP 0x7ffd5926edf0), per character.
                             // Current colour: the key colour (CurrentColor), replaced by the character's master colour
                             // for ColorType 1..6 (LiveTimelineDefine.TryGetExtraColor 0x7ffd592e97a0).
@@ -714,6 +745,8 @@ namespace Gallop.Live
                             container.LiveCharaColor = finalCharaColor;
                             container.LiveToonDarkColor = updateInfo.toonDarkColor;
                             container.LiveToonBrightColor = updateInfo.toonBrightColor;
+                            // ModelController.SetOutlineParameter(float, Color) (0x7ffd5967e420).
+                            container.SetOutlineParameter(outlineWidth, outlineColor);
                             var propertyBlock = _characterLightingBlock ?? (_characterLightingBlock = new MaterialPropertyBlock());
                             foreach (var renderer in container.Renderers)
                             {
@@ -723,10 +756,23 @@ namespace Gallop.Live
                                 propertyBlock.SetFloat("_Silhouette", updateInfo.IsSilhouette ? 1f : 0f);
                                 propertyBlock.SetColor("_ToonDarkColor", updateInfo.toonDarkColor);
                                 propertyBlock.SetColor("_ToonBrightColor", updateInfo.toonBrightColor);
-                                propertyBlock.SetColor("_OutlineColor", updateInfo.outlineColor);
+                                // MaterialPropertyBlock.SetFloat(ShaderManager id 0x14 = _VertexColorToonPower,
+                                // updateInfo.vertexColorToonPower) right after SetToonColor.
+                                propertyBlock.SetFloat(ShaderManager.GetPropertyId(ShaderManager.PropertyId._VertexColorToonPower),
+                                    updateInfo.vertexColorToonPower);
+                                // ModelController.UpdateMaterialPropertyBlockOutline (0x7ffd59685150).
+                                container.UpdateMaterialPropertyBlockOutline(propertyBlock);
                                 propertyBlock.SetFloat("_Saturation", updateInfo.Saturation);
                                 renderer.SetPropertyBlock(propertyBlock);
                             }
+                            // JP StageController.UpdateCharaColor1 (0x7ffd5926edf0), end of the per-character block:
+                            // CharacterObject.SetFakeLightReceiveSetting (0x7ffd5922ce90) stores the FakeLight tail of
+                            // the BgColor1 update info on the character (IsEnabledFakeLight, IsFakeLightOutline,
+                            // FakeLightRate, FakeLightReceiveColor, FakeLightBlendMode). The material side is applied
+                            // later by the game's AlterLateUpdateFakeLight chain (not ported yet).
+                            container.SetFakeLightReceiveSetting(updateInfo.IsEnabledFakeLight,
+                                updateInfo.IsFakeLightOutline, updateInfo.FakeLightRate,
+                                updateInfo.FakeLightReceiveColor, updateInfo.FakeLightBlendMode);
                         }
                     }
                 }
@@ -1115,6 +1161,11 @@ namespace Gallop.Live
                 ApplyVideoSpeed();
         }
 
+        // Camera field of view, known difference (not a bug, kept on purpose): the viewer uses the fov the cutt camera
+        // keys give (live 1156: 50). Live 1156 is made for a VERTICAL layout; the fov 60 seen on the main camera in the
+        // horizontal reference (CameraTimeline1 at f2230-2250, with the cutt keys at 50.0, and a camera position about
+        // 0.1 m further along x) is not game data, and the viewer's 50 simply looks better in the horizontal layout, so
+        // it is NOT ported.
         private void UpdateMainCamera()
         {
             if (_cameraObjects == null) return;

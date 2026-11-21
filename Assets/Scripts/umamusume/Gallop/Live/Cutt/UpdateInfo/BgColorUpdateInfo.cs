@@ -37,6 +37,14 @@ namespace Gallop.Live.Cutt
         public int BlinkLightNameHash;
         public int BlinkLightContainerIndex;
         public float BlinkLightBrightnessPower;
+        // JP BgColor1UpdateInfo (dump_jp.cs TypeDefIndex 33583579) FakeLight tail, consumed at the end of the
+        // per-character block of StageController.UpdateCharaColor1 (JP 0x7ffd5926edf0) by
+        // CharacterObject.SetFakeLightReceiveSetting (JP 0x7ffd5922ce90).
+        public bool IsEnabledFakeLight;      // 0xD0
+        public bool IsFakeLightOutline;      // 0xD1
+        public float FakeLightRate;          // 0xD4
+        public Color FakeLightReceiveColor;  // 0xD8
+        public GameDefine.BlendMode FakeLightBlendMode; // 0xE8
     }
 
     public delegate void BgColor1UpdateInfoDelegate(ref BgColor1UpdateInfo updateInfo);
@@ -65,4 +73,23 @@ namespace Gallop.Live.Cutt
     }
 
     public delegate void BgColor2UpdateInfoDelegate(ref BgColor2UpdateInfo updateInfo);
+}
+
+namespace Gallop
+{
+    // Gallop.GameDefine.BlendMode (dump_jp.cs TypeDefIndex 33558845): None, Alpha, Multiply, Screen,
+    // Additive, Overlay. The numeric values are confirmed by the game shaders' _FakeLightBlendMode
+    // property (tools 09-shaders info.txt: Enum(None,0,Alpha,1,Multiply,2,Screen,3,Additive,4,Overlay,5)).
+    public static class GameDefine
+    {
+        public enum BlendMode
+        {
+            None = 0,
+            Alpha = 1,
+            Multiply = 2,
+            Screen = 3,
+            Additive = 4,
+            Overlay = 5,
+        }
+    }
 }

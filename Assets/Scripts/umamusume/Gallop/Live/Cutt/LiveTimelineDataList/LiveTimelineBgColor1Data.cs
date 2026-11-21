@@ -28,6 +28,7 @@ namespace Gallop.Live.Cutt
         // get_IsEnabledFakeLight (& 0x40000).
         private const int ATTR_SILHOUETTE = 0x10000;
         private const int ATTR_SYNC_BLINKLIGHT = 0x20000;
+        private const int ATTR_ENABLED_FAKE_LIGHT = 0x40000;
 
         public Color color;
         public float power;
@@ -48,6 +49,14 @@ namespace Gallop.Live.Cutt
         public int BlinkLightContainerIndex;
         public float BlinkLightBrightnessPower;
         public bool IsAdjustedBlinkLightColor;
+        // JP LiveTimelineKeyBgColor1Data FakeLight fields (dump_jp.cs TypeDefIndex 33583373):
+        // FakeLightRate 0xB0, FakeLightReceiveColor 0xB4, FakeLightBlendMode 0xC4, IsFakeLightOutline 0xC8.
+        // Field initializers = the game .ctor defaults (JP 0x7ffd592d75b0): rate 1.0, receive colour
+        // (1,1,1,1), blend mode 4 (Additive).
+        public float FakeLightRate = 1f;
+        public Color FakeLightReceiveColor = Color.white;
+        public GameDefine.BlendMode FakeLightBlendMode = GameDefine.BlendMode.Additive;
+        public bool IsFakeLightOutline;
         public LiveTimelineKeyLoopType loopType;
         public int loopCount;
         public int loopExecutedCount;
@@ -63,6 +72,8 @@ namespace Gallop.Live.Cutt
 
         public bool IsSilhouette => ((int)attribute & ATTR_SILHOUETTE) != 0;
         public bool IsSyncBlinkLight => ((int)attribute & ATTR_SYNC_BLINKLIGHT) != 0;
+        // JP LiveTimelineKeyBgColor1Data.get_IsEnabledFakeLight (0x7ffd592d7460): attribute & 0x40000.
+        public bool IsEnabledFakeLight => ((int)attribute & ATTR_ENABLED_FAKE_LIGHT) != 0;
     }
 
     [Serializable]

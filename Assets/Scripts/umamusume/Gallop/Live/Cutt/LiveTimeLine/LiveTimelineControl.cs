@@ -3673,6 +3673,18 @@ namespace Gallop.Live.Cutt
                 updateInfo.CurrentColor = bgColorData != null ? bgColorData.color : Color.white;
                 updateInfo.CurrentFlags = bgColorData != null ? bgColorData.flags : 0;
 
+                // FakeLight (JP AlterUpdate_BgColor1 @0x7ffd59296d90, tail of the method): IsEnabledFakeLight /
+                // IsFakeLightOutline / FakeLightBlendMode come RAW from the current key (IsEnabledFakeLight is the
+                // key attribute 0x40000); FakeLightRate / FakeLightReceiveColor are unclamped lerps when the next
+                // key is interpolatable (see the interpolation block below).
+                updateInfo.IsEnabledFakeLight = bgColorData != null && bgColorData.IsEnabledFakeLight;
+                updateInfo.IsFakeLightOutline = bgColorData != null && bgColorData.IsFakeLightOutline;
+                updateInfo.FakeLightBlendMode = bgColorData != null
+                    ? bgColorData.FakeLightBlendMode
+                    : Gallop.GameDefine.BlendMode.Additive;
+                updateInfo.FakeLightRate = bgColorData != null ? bgColorData.FakeLightRate : 1f;
+                updateInfo.FakeLightReceiveColor = bgColorData != null ? bgColorData.FakeLightReceiveColor : Color.white;
+
                 // JP LiveTimelineControl.AlterUpdate_BgColor1 (0x7ffd59296d90): for a non-character timeline
                 // (StageController.IsCharaTimeline 0x7ffd59266250) whose current key syncs to a blink light, the key's
                 // RGB is replaced by TryGetBlinkLightColorRGB (0x7ffd592c8550) with the key's brightness power and
@@ -3699,15 +3711,23 @@ namespace Gallop.Live.Cutt
                     updateInfo.InterpolateRatio = t;
                     updateInfo.flags = bgColorData.flags;
                     // The game lerps the colour only for a non-character timeline whose next key is not synced.
+                    // AlterUpdate_BgColor1 (0x7ffd59296d90) interpolates every value as (next - cur) * t + cur, without
+                    // clamping t: colour, power, toon colours, vertexColorToonPower (key +0x74), outlineWidthPower
+                    // (key +0x78) and outlineColor (key +0x7c); outlineColorBlend (key +0x8c) is the current key's.
                     updateInfo.color = !isCharaTimeline && !bgColorData2.IsSyncBlinkLight
-                        ? Color.Lerp(baseColor, bgColorData2.color, t)
+                        ? Color.LerpUnclamped(baseColor, bgColorData2.color, t)
                         : baseColor;
                     updateInfo.colorPower = LerpWithoutClamp(bgColorData.power, bgColorData2.power, t);
-                    updateInfo.toonDarkColor = Color.Lerp(bgColorData.toonDarkColor, bgColorData2.toonDarkColor, t);
-                    updateInfo.toonBrightColor = Color.Lerp(bgColorData.toonBrightColor, bgColorData2.toonBrightColor, t);
-                    updateInfo.outlineColor = Color.Lerp(bgColorData.outlineColor, bgColorData2.outlineColor, t);
+                    updateInfo.scale = LerpWithoutClamp(bgColorData.scale, bgColorData2.scale, t);   // key +0x44
+                    updateInfo.toonDarkColor = Color.LerpUnclamped(bgColorData.toonDarkColor, bgColorData2.toonDarkColor, t);
+                    updateInfo.toonBrightColor = Color.LerpUnclamped(bgColorData.toonBrightColor, bgColorData2.toonBrightColor, t);
+                    updateInfo.vertexColorToonPower = LerpWithoutClamp(bgColorData.vertexColorToonPower, bgColorData2.vertexColorToonPower, t);
+                    updateInfo.outlineWidthPower = LerpWithoutClamp(bgColorData.outlineWidthPower, bgColorData2.outlineWidthPower, t);
+                    updateInfo.outlineColor = Color.LerpUnclamped(bgColorData.outlineColor, bgColorData2.outlineColor, t);
                     updateInfo.outlineColorBlend = bgColorData.outlineColorBlend;
                     updateInfo.Saturation = LerpWithoutClamp(bgColorData.Saturation, bgColorData2.Saturation, t);
+                    updateInfo.FakeLightRate = LerpWithoutClamp(bgColorData.FakeLightRate, bgColorData2.FakeLightRate, t);
+                    updateInfo.FakeLightReceiveColor = Color.LerpUnclamped(bgColorData.FakeLightReceiveColor, bgColorData2.FakeLightReceiveColor, t);
                     updateInfo.NextColorType = bgColorData2.ColorType;
                     updateInfo.NextColor = bgColorData2.color;
                     updateInfo.NextFlags = bgColorData2.flags;

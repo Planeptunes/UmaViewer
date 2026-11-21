@@ -1879,6 +1879,125 @@ public class UmaContainerCharacter : UmaContainer
     public Color LiveToonBrightColor = Color.white;
     public Color LiveToonDarkColor = Color.white;
 
+    // ModelController._outlineWidth (+0x5c8) / _outlineColor (+0x5cc), written by StageController.UpdateCharaColor1
+    // (JP 0x7ffd5926edf0) through SetOutlineParameter and published by UpdateMaterialPropertyBlockOutline.
+    // CharaPartsHolder.InitializeMaterialFromRenderer (JP 0x7ffd59556b00): the renderers of the alpha mesh lists get sortingOrder 1000.
+    // Without it the translucent parts sort before the stage sky (sortingOrder 55) and the camera clear colour shows through them.
+    public const int AlphaMeshSortingOrder = 1000;
+
+    public float LiveOutlineWidth;
+    public Color LiveOutlineColor;
+
+    // ModelController.GetOutlineColor (JP 0x7ffd59673e90): only the alpha changes, it encodes the blend mode for the
+    // Outline pass: Blend -> (1 - a) * 0.5, Multiply -> a * 0.5 + 0.5, otherwise 0.5 (constants 0x7ffd5a640d6c = 1,
+    // 0x7ffd5a640d60 = 0.5).
+    public static Color GetOutlineColor(Color color, LiveTimelineDefine.OutlineColorBlend blend)
+    {
+        if (blend == LiveTimelineDefine.OutlineColorBlend.Blend)
+            color.a = (1.0f - color.a) * 0.5f;
+        else if (blend == LiveTimelineDefine.OutlineColorBlend.Multiply)
+            color.a = color.a * 0.5f + 0.5f;
+        else
+            color.a = 0.5f;
+        return color;
+    }
+
+    // ModelController.SetOutlineParameter(float, Color) (JP 0x7ffd5967e420): stores width and colour as given.
+    public void SetOutlineParameter(float width, Color color)
+    {
+        LiveOutlineWidth = width;
+        LiveOutlineColor = color;
+    }
+
+    // ModelController.UpdateMaterialPropertyBlockOutline (JP 0x7ffd59685150): the model's property block gets
+    // SetFloat(_OutlineWidth, _outlineWidth) and SetVector(_OutlineColor, _outlineColor) (a vector: no colour-space
+    // conversion). The viewer has no Gallop.MaterialPropertyBlock wrapper, so the caller passes the renderer's block.
+    public void UpdateMaterialPropertyBlockOutline(MaterialPropertyBlock block)
+    {
+        // ShaderManager.GetPropertyId(0x35) = _OutlineWidth, GetPropertyId(0x36) = _OutlineColor.
+        block.SetFloat(ShaderManager.GetPropertyId(ShaderManager.PropertyId._OutlineWidth), LiveOutlineWidth);
+        block.SetVector(ShaderManager.GetPropertyId(ShaderManager.PropertyId._OutlineColor), LiveOutlineColor);
+    }
+
+    // CharacterObject fake-light receive settings (JP CharacterObject fields +0x6c..+0x84), written at the
+    // end of the per-character block of StageController.UpdateCharaColor1 (JP 0x7ffd5926edf0) by
+    // CharacterObject.SetFakeLightReceiveSetting (JP 0x7ffd5922ce90). The game consumes them later in
+    // StageController.AlterLateUpdateFakeLight (0x7ffd592611a0) -> CharacterObject.UpdateFakeLight
+    // (0x7ffd5922eb50) -> ApplyFakeLightToMaterial (0x7ffd592292c0) together with the per-character
+    // FakeLightSource list; that apply chain (FakeLightSource raycast + ModelController.SetFakeLight /
+    // ResetFakeLight / SetIsFakeLightOutline, uniforms _FakeLight* / _IsFakeLightOutline) is NOT ported yet.
+    public bool LiveFakeLightEnabled;       // CharacterObject +0x6c
+    public bool LiveFakeLightOutline;       // CharacterObject +0x6d
+    public float LiveFakeLightRate;         // CharacterObject +0x70
+    public Color LiveFakeLightReceiveColor = Color.white; // CharacterObject +0x74
+    public GameDefine.BlendMode LiveFakeLightBlendMode = GameDefine.BlendMode.Additive; // CharacterObject +0x84
+
+    // CharacterObject.SetFakeLightReceiveSetting (JP 0x7ffd5922ce90): stores the BgColor1 FakeLight settings
+    // of the character. The rate is clamped to >= 0 (JP: fVar3 = 0; if (0 <= param_4) fVar3 = param_4).
+    public void SetFakeLightReceiveSetting(bool isEnabled, bool isFakeLightOutline, float fakeLightRate,
+        Color fakeLightReceiveColor, GameDefine.BlendMode fakeLightBlendMode)
+    {
+        LiveFakeLightEnabled = isEnabled;
+        LiveFakeLightOutline = isFakeLightOutline;
+        LiveFakeLightRate = fakeLightRate >= 0f ? fakeLightRate : 0f;
+        LiveFakeLightReceiveColor = fakeLightReceiveColor;
+        LiveFakeLightBlendMode = fakeLightBlendMode;
+    }
+
+    // ModelController.GetCharaID (JP 0x7ffd578425c0) reads CharacterBuildInfo._charaId (+0x14) and
+    // ModelController.GetDressId (JP 0x7ffd57842ad0) reads CharacterBuildInfo._dressId (+0x30): the master
+    // chara id and the master dress_data id of the loaded model. The viewer container keeps the body
+    // CharaEntry for the chara id; the dress id is resolved from the loaded costume through the same
+    // dress_data mapping the props conditions use (LivePropsController.CanonicalDressId): own costumes
+    // match dress_data rows by chara_id + body_type_sub, generic costumes by body_type + body_type_sub.
+    public int LiveCharaId => CharaEntry != null ? CharaEntry.Id : 0;
+
+    public int LiveDressId
+    {
+        get
+        {
+            string costume = VarCostumeIdLong;
+            if (string.IsNullOrEmpty(costume)) costume = VarCostumeIdShort;
+            var rows = UmaDatabaseController.Instance != null ? UmaDatabaseController.Instance.DressData : null;
+            if (rows == null || string.IsNullOrEmpty(costume)) return -1;
+            string[] parts = costume.Split('_');
+            if (!int.TryParse(parts[0], out int first)) return -1;
+            bool generic = parts.Length >= 3;
+            int subtype = 0, setting = 0;
+            if (generic && (!int.TryParse(parts[1], out subtype) || !int.TryParse(parts[2], out setting)))
+                return -1;
+            int found = -1;
+            var genericIds = new List<int>();
+            var genericSettingIds = new List<int>();
+            foreach (var row in rows)
+            {
+                if (generic)
+                {
+                    if (int.Parse(row["body_type"].ToString()) != first ||
+                        int.Parse(row["body_type_sub"].ToString()) != subtype) continue;
+                    int genericId = int.Parse(row["id"].ToString());
+                    if (!genericIds.Contains(genericId)) genericIds.Add(genericId);
+                    if (int.Parse(row["body_setting"].ToString()) == setting &&
+                        !genericSettingIds.Contains(genericId)) genericSettingIds.Add(genericId);
+                    continue;
+                }
+                bool matches = CharaEntry != null && int.Parse(row["chara_id"].ToString()) == CharaEntry.Id &&
+                               int.Parse(row["body_type_sub"].ToString()) == first;
+                if (!matches) continue;
+                int id = int.Parse(row["id"].ToString());
+                if (found != -1 && found != id) return -1;
+                found = id;
+            }
+            if (generic)
+            {
+                if (genericIds.Count == 1) return genericIds[0];
+                if (genericSettingIds.Count == 1) return genericSettingIds[0];
+                return -1;
+            }
+            return found;
+        }
+    }
+
     public void SetGlobalLightRotation(Quaternion rotation)
     {
         _useGlobalLight = true;
