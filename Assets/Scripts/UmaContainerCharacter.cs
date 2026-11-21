@@ -551,6 +551,39 @@ public class UmaContainerCharacter : UmaContainer
         InvalidateMirrorLayerCache();
     }
 
+    // ModelController._defaultModelHeight (+0x624). Measured once, in the load pose.
+    private float _defaultModelHeight = -1f;
+
+    /// <summary>
+    /// Port of the _defaultModelHeight setup in ModelController (code_JP Gallop.ModelController.c
+    /// ~l.6285-6298): world position.y of the head AssetHolder object (the "head_height" locator),
+    /// default 1.6 (DAT_7ffd5a640f34) when it is missing. Used by
+    /// ModelController.SetBodyScale @0x7ffd59679390: _bodyScale = height * 0.01 (DAT_7ffd5a640d4c) / _defaultModelHeight.
+    /// Replaces the invented constant 160.7529 (game: Position lossyScale 0.99903 for height 159
+    /// = 1.59 / 1.59154, which is the Head_height Y of the model; the constant gave 0.98910).
+    /// The value is read in model space with the Position scale removed, i.e. as the game reads it
+    /// with the freshly loaded model at the origin.
+    /// </summary>
+    private float GetDefaultModelHeight()
+    {
+        if (_defaultModelHeight > 0f)
+            return _defaultModelHeight;
+
+        float height = 1.6f;
+        var holder = Head != null ? Head.GetComponent<AssetHolder>() : null;
+        var locator = holder != null && holder._assetTable != null ? holder._assetTable["head_height"] as GameObject : null;
+        Transform position = transform.Find("Position");
+        if (locator != null)
+        {
+            if (position != null)
+                height = position.localPosition.y + position.InverseTransformPoint(locator.transform.position).y;
+            else
+                height = transform.InverseTransformPoint(locator.transform.position).y;
+        }
+        _defaultModelHeight = height > 0f ? height : 1.6f;
+        return _defaultModelHeight;
+    }
+
     public void SetHeight(int scale = 0)
     {
         if (scale == 0)
@@ -561,11 +594,11 @@ public class UmaContainerCharacter : UmaContainer
         {
             //With a head override (Other Characters/Favorites) the whole model takes the HEAD character's height.
             int dbScale = HeightOverride ?? Convert.ToInt32(CharaData[IsMob ? "chara_height" : "scale"]);
-            BodyScale = (dbScale / 160.7529f);
+            BodyScale = dbScale * 0.01f / GetDefaultModelHeight();
         }
         else
         {
-            BodyScale = (scale / 160.7529f);
+            BodyScale = scale * 0.01f / GetDefaultModelHeight();
         }
         transform.Find("Position").localScale = new Vector3(BodyScale, BodyScale, BodyScale);
 
