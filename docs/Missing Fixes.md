@@ -64,7 +64,7 @@ Newest entries go at the top. Everything in this file is written in English.
     - Copied the lyrics from the Global (English) client and called them while using the JP asset.
     - The calls return far more text than needed (a sentence that Global splits in two parts now comes out in one piece).
     - Still open: verify how the lyrics call picks the text range of each segment.
-    - Details: Logs/261109-Hachimi JP scene probe.md (iteration 17)
+    - Details: local log of 09 November 2026 (iteration 17)
 
 - 05 November 2026
   - Live: 1034
@@ -77,5 +77,5 @@ Newest entries go at the top. Everything in this file is written in English.
     - Mirror texture size and format: game 512x289 vs viewer 512x281; 16-bit depth vs none is pixel-identical. Discarded.
     - DOF: same game shader, parameters and passes; at this cut (quality OnlyBackground) it only blurs the background in both. Discarded.
     - Still open: the reference is a compressed video frame (it may hide low-contrast detail), and the reconstructed `SimpleMirrorCaster` mirror renderer has not been checked. Next step: an uncompressed game screenshot of frame 739.
-    - Pending (user): verify against an uncompressed game screenshot. Frame 739 was added to the Hachimi JP probe capture list (`probe_scene_capture.txt` in the probe output dir), so the game DLL takes the screenshot when live 1034 reaches that frame.
+    - Pending (user): verify against an uncompressed game screenshot of frame 739.
     - Details: Logs/261105-Live 1034 mirror reflection intensity.md

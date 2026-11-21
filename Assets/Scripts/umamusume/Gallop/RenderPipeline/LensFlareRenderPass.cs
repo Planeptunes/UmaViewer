@@ -7,7 +7,7 @@ namespace Gallop.RenderPipeline
     /// <summary>
     /// Native <c>Gallop.RenderPipeline.LensFlareRenderPass</c>: the lens flares are drawn AFTER the camera's
     /// DOF / Diffusion / Bloom / ChromaticAberration chain and BEFORE the colour correction, so they are
-    /// never blurred by the DOF nor bloomed (JP probe, live 1053 and 1034: per-camera pass chain
+    /// never blurred by the DOF nor bloomed (JP game, live 1053 and 1034: per-camera pass chain
     /// ... DofDiffusionBloomOverlay, ChromaticAberration, ImageEffectBlit, InvokeOnRenderObjectCallback,
     /// LensFlareRender, ColorCorrection ...). The viewer used to draw the flare quads as scene meshes,
     /// i.e. before the whole post chain, which made the DOF blur the rays of the flare.

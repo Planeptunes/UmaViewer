@@ -75,8 +75,8 @@ public class LiveViewerUI : MonoBehaviour
         // tiene el Director. Ver LiveFrameDebugOverlay.cs.
         LiveFrameDebugOverlay.Ensure();
 
-        // (Probe capture) Button shown with the frame overlay + Ctrl+Shift+F10: writes one frame in the format of the
-        // game probe's Momentum Capture, to compare with compare_momentum.py. See LiveProbeCapture.cs.
+        // (Capture tool) Button shown with the frame overlay + Ctrl+Shift+F10: writes one frame in the reference
+        // capture format, for comparison with reference data. See LiveProbeCapture.cs.
         LiveProbeCapture.Ensure();
 
         // Overlay de depuración con los slots de voz del live (qué PJ canta en cada uno y si su

@@ -55,10 +55,10 @@ public class Config
     public string FfmpegPathTip = "Optional: full path to ffmpeg.exe used to encode Live recordings to MP4. Leave empty to look next to the project/executable and in the PATH.";
     public string FfmpegPath = "";
 
-    public string LiveTraceExportTip = "Developer: writes the Live timeline parameters of the viewer, per frame, to LiveTrace/<run>/render_*.csv in the same format as the Hachimi probe, to compare them with the original game. Off by default.";
+    public string LiveTraceExportTip = "Developer: writes the Live timeline parameters of the viewer, per frame, to LiveTrace/<run>/render_*.csv in a fixed reference format, for comparison with reference data. Off by default.";
     public bool LiveTraceExport = false;
 
-    public string LiveTraceTransformStepTip = "Developer: with LiveTraceExport on, the scene transform log (scene_nodes.csv / scene_changes.csv) is sampled every N timeline frames. Use the same N as the probe's probe_tlog_step.txt (default 30).";
+    public string LiveTraceTransformStepTip = "Developer: with LiveTraceExport on, the scene transform log (scene_nodes.csv / scene_changes.csv) is sampled every N timeline frames. Default 30.";
     public int LiveTraceTransformStep = 30;
 
     public string WorkModeTip = "Affects how application work, options: 0 - work with game client, 1 - work without game client(slow), Database needs to be updated manually";

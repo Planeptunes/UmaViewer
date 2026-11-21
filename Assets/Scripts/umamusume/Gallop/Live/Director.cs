@@ -606,7 +606,7 @@ namespace Gallop.Live
                         }
                     }
                 }
-                // The game never renders a main-light shadow map (probe, Live 1092/1195: MainLightShadowCasterPass
+                // The game never renders a main-light shadow map (Live 1092/1195: MainLightShadowCasterPass
                 // hits = 0 over the whole run); character shadows come only from the AdditionalLight spot lights
                 // (AdditionalLightsShadowCasterPass). The viewer's scene directional light was rotated by GlobalLight
                 // with a clamped elevation just to cast a shadow of its own, which painted black silhouettes of the
@@ -697,7 +697,7 @@ namespace Gallop.Live
                                     (nextColor.a - charaColor.a) * ratio + charaColor.a);
                             }
                             Color finalCharaColor = charaColor * updateInfo.colorPower;
-                            // SetLightProbeColor (0x7ffd5967ce90): white by default (probe, game MPB = (1,1,1,1)); a key synced
+                            // SetLightProbeColor (0x7ffd5967ce90): white by default (game MPB = (1,1,1,1)); a key synced
                             // to a blink light replaces the RGB with TryGetBlinkLightColorRGB (0x7ffd592c8550).
                             Color lightProbeColor = Color.white;
                             if (updateInfo.IsSyncBlinkLight &&
@@ -919,7 +919,7 @@ namespace Gallop.Live
             };
 
             // (Trace export) Optional, off by default (Config.LiveTraceExport): only subscribes to the events above
-            // to write the timeline values per frame, in the Hachimi probe's CSV format. It changes nothing.
+            // to write the timeline values per frame, in the reference CSV format. It changes nothing.
             LiveTraceExporter.Attach(_liveTimelineControl, () => _liveCurrentTime, () => _activeCameraIndex,
                 live != null ? live.MusicId : 0, transform);
             _gridCaptureLiveId = live != null ? live.MusicId : 0;

@@ -72,7 +72,7 @@ namespace Gallop.RenderPipeline
         // The Outline and SHADOWCASTER passes of the character / prop toon shaders (TSER...) read that global to push
         // vertices (xy) and depth (z); the SHADOWCASTER one is what DepthOnlyPass draws, so a wrong value moves the
         // props in the depth the DOF / fog read. GraphicSettings.UpdateCharacterEnv (0x7ffd58e9ccd0) also publishes
-        // _GlobalOutlineWidth / _GlobalOutlineOffset, whose defaults are 1.0 (GraphicSettings fields 0x208 / 0x20C, probe globals.csv). Inside a
+        // _GlobalOutlineWidth / _GlobalOutlineOffset, whose defaults are 1.0 (GraphicSettings fields 0x208 / 0x20C). Inside a
         // Live the viewer's own model-viewer hacks (scene values 0.1, UmaViewerGlobalShader.FixedUpdate) are replaced
         // by the game's values.
         public void OnBeforeCameraRendering()

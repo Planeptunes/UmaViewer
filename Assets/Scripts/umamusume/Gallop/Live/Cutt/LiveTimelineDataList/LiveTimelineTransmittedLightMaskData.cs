@@ -21,7 +21,7 @@ namespace Gallop.Live.Cutt
         public LiveTransmittedLightMaskGameObjectIdentifier _gameObjectIdentifier;
         public float _maskScale;
 
-        // Native BlinkLightController.LIGHT_ALPHA_REGEX (read from the running JP client by the probe).
+        // Native BlinkLightController.LIGHT_ALPHA_REGEX (JP client value).
         private static readonly System.Text.RegularExpressions.Regex LightAlphaRegex =
             new System.Text.RegularExpressions.Regex(@"alpha(?<index>\d\d\d)_");
 

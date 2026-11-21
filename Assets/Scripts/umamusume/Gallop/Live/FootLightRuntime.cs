@@ -224,8 +224,8 @@ namespace Gallop.Live
                 Vector3 position = _groundPositionResolver(binding.characterIndex);
                 if (binding.spotlight != null) binding.spotlight.AlterLateUpdate(position);
                 if (binding.spotlight != null) binding.spotlight.SetCharacterVisible(active);
-                // Sombra real del personaje (shadow map de la AdditionalLight). Medido en el juego (sonda,
-                // Live 1093): los personajes cuya FormationOffset tiene IsCastShadow proyectan (cuerpo, cara,
+                // Sombra real del personaje (shadow map de la AdditionalLight). En el juego
+                // (Live 1093): los personajes cuya FormationOffset tiene IsCastShadow proyectan (cuerpo, cara,
                 // pelo y cola) SOLO mientras la AdditionalLight esta encendida (frames 3885-4185); con la luz
                 // apagada (3189, 5382) ninguno proyecta. Antes se exigia ademas que el foco de seguimiento
                 // estuviera en LightBlendMode.Multiply, y en esos frames la pista lo pone en Add: no habia sombra.

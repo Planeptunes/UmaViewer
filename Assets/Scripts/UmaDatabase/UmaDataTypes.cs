@@ -182,7 +182,7 @@ public class LiveEntry
     // `livesettings` row type 13 (Gallop.Live.Master3dLive.LiveSettings.DataType.CharacterExpansion): the extra
     // characters of the song. Row layout: [index, 13, source slot, dress id, ...]. Expansion j becomes slot
     // MemberCount + j (Live3DSettings.ApplyCharaExpansion copies the source character and applies the dress).
-    // Live 1092: rows 13|0..5|6 -> six copies of slots 0-5 in dress 6 (body 0003_01, tracksuit); probe confirmed bdy0003_01.
+    // Live 1092: rows 13|0..5|6 -> six copies of slots 0-5 in dress 6 (body 0003_01, tracksuit); the game uses bdy0003_01.
     // The column layout is read from the decompile (CharacterExpansionArray / dress label list); the optional
     // colour index of the label is not used.
     public List<CharacterExpansion> GetCharacterExpansions()

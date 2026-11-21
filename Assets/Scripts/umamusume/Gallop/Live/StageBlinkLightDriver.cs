@@ -31,7 +31,7 @@ namespace Gallop.Live
         // 官方 LightBlinkBlend 常见 fallback 是 Multiply = DstColor / One
         public BlendMode lightBlinkBlendSrc = BlendMode.DstColor;
         public BlendMode lightBlinkBlendDst = BlendMode.One;
-        // Game (JP probe, live 1156): every LightBlinkBlend material of the stage runs at renderQueue 3112.
+        // Game (JP, live 1156): every LightBlinkBlend material of the stage runs at renderQueue 3112.
         public int lightBlinkBlendRenderQueue = 3112;
 
         public bool useTimelineLightBlendMode = true;
@@ -1383,7 +1383,7 @@ namespace Gallop.Live
                     }
                     else if (e.isBlinkSimple)
                     {
-                        // Game convention (JP probe, live 1053): the weight lives inside the colour
+                        // Game convention (JP, live 1053): the weight lives inside the colour
                         // (rgb * weight, alpha 0): "off" is therefore a zero colour, not a zero power.
                         // `_ColorPower` is NOT written here: the game's blink driver never touches it, so
                         // the block keeps whatever BgColor1 wrote (UpdateStageObjectColor1, e.g. 0.58 on
@@ -1617,11 +1617,11 @@ namespace Gallop.Live
             }
             else if (isBlinkSimple)
             {
-                // Game convention (BlinkLightController.Update, verified with the JP probe on live
+                // Game convention (BlinkLightController.Update, JP game values on live
                 // 1053 @1330: all 206 LightBlinkSimple materials show `_ColorPower` = 1.0 and
                 // `_BlinkLightColor` = rgb * weight with alpha 0): the weight is folded into the
                 // colour and `_ColorPower` is never rewritten here: the block keeps the value BgColor1
-                // wrote (UpdateStageObjectColor1; 0.58 on the live 1195 tree_a lights, JP probe f610) or,
+                // wrote (UpdateStageObjectColor1; 0.58 on the live 1195 tree_a lights, JP f610) or,
                 // when nothing wrote it, the material's authored value.
                 // The flare controller reads this same `_ColorPower` (x2) on top of the weighted
                 // colour; writing the weight here too applied it twice (p^2) and made the flares
@@ -1633,7 +1633,7 @@ namespace Gallop.Live
             }
             else if (isBlinkColorOnly)
             {
-                // JP probe, live 1053 @1329: the 6 pool "reflection" glows carry their container's
+                // JP game values, live 1053 @1329: the 6 pool "reflection" glows carry their container's
                 // colour (e.g. (0.318,0.161,0.260,0)) and the LED/fountain waves (0.365,0.761,1.0,0):
                 // rgb * weight, alpha 0, no other property written.
                 float weight = p;

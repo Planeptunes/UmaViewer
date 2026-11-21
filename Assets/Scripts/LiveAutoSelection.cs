@@ -114,7 +114,7 @@ public static class LiveAutoSelection
         };
     }
 
-    // Live3DSettings.ApplyCharaExpansion (probe 1794756197, live 1092): extra character j sits at slot MemberCount + j and is a
+    // Live3DSettings.ApplyCharaExpansion (live 1092): extra character j sits at slot MemberCount + j and is a
     // copy of slot CharacterExpansionArray[j] (livesettings row 13, column 2) wearing the live's dress (column 3; the game
     // gives it colour -1, head -1). It overrides whatever the slot had, as in the game; the source slot is not changed.
     // A copy whose dress has no body for that character is left as it was.

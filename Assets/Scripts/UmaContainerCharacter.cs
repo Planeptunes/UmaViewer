@@ -1710,8 +1710,8 @@ public class UmaContainerCharacter : UmaContainer
             _faceMaterials = FaceRenderer.materials;
 
         // ModelController.UpdateFaceLight (offsets de InitFaceLight, AssetHolder de la cabeza):
-        // - cara: posicion de la cabeza + forward * _headTubeCenterOffsetZ. Medido en el juego con la
-        //   sonda Frida: el _FaceCenterPos del material de la cara es la posicion de Head + un
+        // - cara: posicion de la cabeza + forward * _headTubeCenterOffsetZ. Valor del juego: el
+        //   _FaceCenterPos del material de la cara es la posicion de Head + un
         //   desplazamiento minimo hacia delante (head_tube_center_offset_z), sin head_center_offset_y/z.
         // - mallas de pelo: posicion + up * _headCenterOffsetY + forward * _headCenterOffsetZ.
         Vector3 pos = HeadToonBaseTransform.position;
@@ -1824,7 +1824,7 @@ public class UmaContainerCharacter : UmaContainer
             _footLightBlock.SetColor(HightLightColorId, lightColor);
             renderer.SetPropertyBlock(_footLightBlock);
         }
-        // Probe capture (no-op unless a capture is collecting): what was written, twin of the game's foot_light_apply.
+        // Capture tool (no-op unless a capture is collecting): what was written, in the reference foot_light_apply format.
         LiveTraceExporter.OnFootLightApply(heightMax, lightColor, blendMode, easing, transform, rootY);
     }
 
