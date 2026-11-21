@@ -21,6 +21,9 @@ public class UmaLyricsData
 {
     public float time;
     public string text;
+    // Gallop.Live.LyricsController.LyricsData.AdditionalSettingType / AdditionalSettingValue (CSV columns 3 and 4).
+    public int additionalSettingType;
+    public int additionalSettingValue;
 }
 
 [System.Serializable]

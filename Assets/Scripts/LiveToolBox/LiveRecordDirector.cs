@@ -1512,6 +1512,11 @@ public class LiveRecordDirector : MonoBehaviour
                 sourceScaler != null ? sourceScaler.referenceResolution.y : -1f,
                 _lyricsText.fontSize, rect.sizeDelta.x, rect.sizeDelta.y));
 
+        //Ruby offset in video pixels (the Shadow effects above are already on the label, copied to the ruby texts).
+        var sourceRubyText = source.GetComponent<Gallop.Live.RubyText>();
+        Gallop.Live.RubyText.For(_lyricsText)._offsetHeight =
+            (sourceRubyText != null ? sourceRubyText._offsetHeight : 0f) * pxPerUnit;
+
         _lyricsNeedsRender = true;   //first image of the RT, even if the text starts empty
         UpdateLyricsCanvas();
     }
@@ -1522,11 +1527,14 @@ public class LiveRecordDirector : MonoBehaviour
     private void UpdateLyricsCanvas()
     {
         if (_lyricsText == null) return;
-        string text = _lyricsSource != null ? _lyricsSource.text : "";
+        //The HUD label holds the text without ruby tags; the tagged line is kept by its RubyText.
+        var sourceRuby = _lyricsSource != null ? _lyricsSource.GetComponent<Gallop.Live.RubyText>() : null;
+        string text = sourceRuby != null ? sourceRuby.RawText : (_lyricsSource != null ? _lyricsSource.text : "");
         if (text == null) text = "";
 
-        bool changed = !string.Equals(_lyricsText.text, text, StringComparison.Ordinal);
-        if (changed) _lyricsText.text = text;
+        var ruby = Gallop.Live.RubyText.For(_lyricsText);
+        bool changed = !string.Equals(ruby.RawText, text, StringComparison.Ordinal);
+        if (changed) ruby.SetLyrics(text);
         if (changed || (_lyricsRT != null && !_lyricsRT.IsCreated())) _lyricsNeedsRender = true;
 
         //The request is only cleared once the camera has really rendered (see OnCameraRendered).

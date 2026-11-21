@@ -55,19 +55,11 @@ public static class UmaUtility
         JsonUtility.FromJsonOverwrite(json, to);
     }
 
+    // Gallop.Live.LyricsController.UpdateTime. The viewer has no live variation selection, so the sheet
+    // variation id is the default one (0), the same value its props variation filter uses.
     public static string GetCurrentLyrics(float time, List<UmaLyricsData> lyricsDatas)
     {
-        for (int i = lyricsDatas.Count - 1; i >= 0; i--)
-        {
-            if (lyricsDatas[i].time < time)
-            {
-                var lyric = lyricsDatas[i].text;
-                lyric = lyric.Replace("[COMMA]", ",");
-                lyric = lyric.Replace("\\n", "\n");
-                return lyric;
-            }
-        }
-        return "";
+        return Gallop.Live.LyricsController.GetCurrentLyrics(lyricsDatas, time, 0);
     }
 }
 

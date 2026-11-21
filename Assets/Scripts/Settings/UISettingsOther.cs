@@ -372,15 +372,6 @@ public class UISettingsOther : MonoBehaviour
             Config.Instance.GlobalNamesPath = folder;
             Config.Instance.UpdateConfig(false);
 
-            // Genera tambien las lyrics EN desde el cliente Global (solo en el Editor: leer y
-            // desencriptar los bundles del global no se hace en un build).
-            string lyricsError;
-            if (!GlobalLyrics.BuildFromGlobalFolder(folder, out lyricsError) &&
-                !string.IsNullOrEmpty(lyricsError))
-            {
-                UnityEngine.Debug.LogWarning("[GlobalLyrics] " + lyricsError);
-            }
-
             UmaViewerUI.Instance.ShowMessage("English names updated.", UIMessageType.Success);
         }
         else

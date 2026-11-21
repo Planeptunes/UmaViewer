@@ -1280,36 +1280,26 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
     {
         if (CurrentLyrics.Count > 0) CurrentLyrics.Clear();
 
-        // (AÑADIDO) Con idioma English, si hay letra EN generada desde el cliente Global, se usa
-        // en vez de la del cliente activo (que, con Region JP, viene en japones).
-        if (Config.Instance.Language == Language.En && GlobalLyrics.TryGet(songid, out var enLyrics))
+        string lyricsVar = $"live/musicscores/m{songid}/m{songid}_lyrics";
+        // Gallop.Live.LyricsController.LoadLyrics
+        try
         {
-            CurrentLyrics.AddRange(enLyrics);
-            return CurrentLyrics;
+            UmaDatabaseEntry lyricsAsset = Main.AbList[lyricsVar];
+            AssetBundle bundle = UmaAssetManager.LoadAssetBundle(lyricsAsset);
+            TextAsset asset = bundle.LoadAsset<TextAsset>(Path.GetFileNameWithoutExtension(lyricsVar));
+            CurrentLyrics.AddRange(Gallop.Live.LyricsController.LoadLyrics(asset.text));
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"[Lyrics] Could not read '{lyricsVar}': {ex.Message}");
         }
 
-        string lyricsVar = $"live/musicscores/m{songid}/m{songid}_lyrics";
-        UmaDatabaseEntry lyricsAsset = Main.AbList[lyricsVar];
-        AssetBundle bundle = UmaAssetManager.LoadAssetBundle(lyricsAsset);
-        TextAsset asset = bundle.LoadAsset<TextAsset>(Path.GetFileNameWithoutExtension(lyricsVar));
-        string[] lines = asset.text.Split("\n"[0]);
-
-        for (int i = 1; i < lines.Length; i++)
+        if (Config.Instance.Language == Language.En)
         {
-            string[] words = lines[i].Split(',');
-            if (words.Length > 0)
-            {
-                try
-                {
-                    UmaLyricsData lyricsData = new UmaLyricsData()
-                    {
-                        time = float.Parse(words[0]) / 1000,
-                        text = (words.Length > 1) ? words[1] : ""
-                    };
-                    CurrentLyrics.Add(lyricsData);
-                }
-                catch { }
-            }
+            // English lyrics by the UmaTL translation team replace the text of the lines with the same
+            // time (TranslatedLyrics, https://github.com/UmaTL/hachimi-tl-en). Songs without a
+            // translation keep the client's own lyrics.
+            TranslatedLyrics.TryApply(songid, CurrentLyrics);
         }
         return CurrentLyrics;
     }

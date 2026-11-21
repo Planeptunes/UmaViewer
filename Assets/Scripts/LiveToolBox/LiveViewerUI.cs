@@ -293,6 +293,6 @@ public class LiveViewerUI : MonoBehaviour
     public void UpdateLyrics(float time)
     {
         var text = UmaUtility.GetCurrentLyrics(time, CurrentLyrics);
-        LyricsText.text = text;
+        Gallop.Live.RubyText.For(LyricsText).SetLyrics(text);
     }
 }

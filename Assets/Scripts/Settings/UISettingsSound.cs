@@ -25,8 +25,7 @@ public class UISettingsSound : MonoBehaviour
         TitleText.text = mianSource.clip.name;
         ProgressText.text = string.Format("{0} / {1}", ToTimeFormat(mianSource.time), ToTimeFormat(mianSource.clip.length));
         ProgressSlider.SetValueWithoutNotify(mianSource.time / mianSource.clip.length);
-        LyricsText.text = UmaUtility.GetCurrentLyrics(mianSource.time, UmaViewerBuilder.Instance.CurrentLyrics);
-        LyricsText.text = LyricsText.text;
+        Gallop.Live.RubyText.For(LyricsText).SetLyrics(UmaUtility.GetCurrentLyrics(mianSource.time, UmaViewerBuilder.Instance.CurrentLyrics));
         UpdatePlayButtonIcon(mianSource.isPlaying);
     }
 

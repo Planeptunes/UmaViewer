@@ -166,6 +166,13 @@ public class UmaViewerMain : MonoBehaviour
             });
         }
 
+        // English lyrics by the UmaTL translation team (cached; refreshed at most once a week).
+        if (Config.Instance.Language == Language.En)
+        {
+            loadingUI.LoadingProgressChange(loadingStep, loadingStepsTotal, "Loading English lyrics (" + TranslatedLyrics.SourceName + ")");
+            yield return TranslatedLyrics.Prefetch();
+        }
+
         if (Config.Instance.WorkMode == WorkMode.Standalone)
         {
             var umaIcons = UmaCharaData.Select(item => AbList.TryGetValue($"chara/chr{item["id"]}/chr_icon_{item["id"]}", out UmaDatabaseEntry entry) ? entry : null).Where(entry => entry != null);
