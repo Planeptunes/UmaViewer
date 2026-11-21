@@ -108,11 +108,25 @@ public class UmaViewerGlobalShader : MonoBehaviour
         setGlobal();
     }
 
+    // Set by Gallop.RenderPipeline.CameraData.OnBeforeCameraRendering whenever it publishes the Live values of
+    // _GlobalCameraFov / _GlobalOutlineWidth / _GlobalOutlineOffset. Static on purpose: Version2 is loaded additively
+    // while the Live scene is still rendering (UmaSceneController), so the Live cameras keep overwriting the globals
+    // after this (new) component already ran Start(); a per-instance flag could miss the Live entirely.
+    public static bool LiveGlobalsWritten;
+
     private void FixedUpdate()
     {
-        // Inside a Live the game's CameraData.OnBeforeCameraRendering publishes _GlobalCameraFov per camera.
+        // Inside a Live the game's CameraData.OnBeforeCameraRendering publishes _GlobalCameraFov, _GlobalOutlineWidth
+        // and _GlobalOutlineOffset per camera (game values 1 / 1), which stay set after the Live ends: when the Live is
+        // gone the model-viewer values of this component are published again, otherwise the outline of the characters
+        // loaded in the model viewer is drawn with the Live's width.
         if (Gallop.Live.Director.instance != null)
             return;
+        if (LiveGlobalsWritten)
+        {
+            LiveGlobalsWritten = false;
+            setGlobal();
+        }
 
         //Used to calculate the correct outline
         //Outline need more adjust in live

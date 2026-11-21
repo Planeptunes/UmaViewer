@@ -113,6 +113,8 @@ namespace Gallop.RenderPipeline
             Shader.SetGlobalFloat(GlobalCameraFovId, Mathf.Min(1f, _camera.fieldOfView / 30f));
             Shader.SetGlobalFloat(GlobalOutlineWidthId, 1f);
             Shader.SetGlobalFloat(GlobalOutlineOffsetId, 1f);
+            // Lets the model viewer restore its own values once the Live is gone (UmaViewerGlobalShader.FixedUpdate).
+            UmaViewerGlobalShader.LiveGlobalsWritten = true;
         }
 
         private void OnBeginCameraRendering(UnityEngine.Rendering.ScriptableRenderContext context, Camera camera)
