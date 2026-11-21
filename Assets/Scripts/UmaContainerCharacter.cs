@@ -2442,6 +2442,7 @@ public class UmaContainerCharacter : UmaContainer
                             if (m.name.Contains("Alpha"))
                             {
                                 m.shader = UmaAssetManager.BodyAlphaShader;
+                        r.sortingOrder = AlphaMeshSortingOrder;
                             }
                             else
                             {
@@ -2548,6 +2549,7 @@ public class UmaContainerCharacter : UmaContainer
                     if (m.name.Contains("bdy") && m.name.Contains("Alpha"))
                     {
                         m.shader = UmaAssetManager.BodyAlphaShader;
+                        r.sortingOrder = AlphaMeshSortingOrder;
                     }
                 }
             }
@@ -2654,6 +2656,7 @@ public class UmaContainerCharacter : UmaContainer
                     if (r.name.Contains("Hair") && r.name.Contains("Alpha"))
                     {
                         m.shader = UmaAssetManager.AlphaShader;
+                    r.sortingOrder = AlphaMeshSortingOrder;
                     }
 
                     //Blush Setting
@@ -2686,32 +2689,22 @@ public class UmaContainerCharacter : UmaContainer
                         }
                     }
 
-                    switch (m.shader.name)
-                    {
-                        case "Gallop/3D/Chara/MultiplyCheek":
-                            m.shader = UmaAssetManager.CheekShader; ;
-                            break;
-                        case "Gallop/3D/Chara/ToonFace/TSER":
-                            m.shader = UmaAssetManager.FaceShader;
-                            m.SetFloat("_CylinderBlend", 0.25f);
-                            m.SetColor("_RimColor", new Color(0, 0, 0, 0));
-                            break;
-                        case "Gallop/3D/Chara/ToonEye/T":
-                            m.shader = UmaAssetManager.EyeShader;
-                            m.SetFloat("_CylinderBlend", 0.25f);
-                            break;
-                        case "Gallop/3D/Chara/ToonHair/TSER":
-                            m.shader = UmaAssetManager.HairShader;
-                            m.SetFloat("_CylinderBlend", 0.25f);
-                            break;
-                        case "Gallop/3D/Chara/ToonMayu":
-                            m.shader = UmaAssetManager.EyebrowShader;
-                            m.renderQueue += 1; //fix eyebrows disappearing sometimes
-                            break;
-                        default:
-                            // m.shader = Shader.Find("Nars/UmaMusume/Body");
-                            break;
-                    }
+                    // Rule 8.2 cleanup: the game does not write any of these values at load time.
+                    // _CylinderBlend is driven by the facial toon track (FacialToonDataUpdateInfo.CylinderBlend ->
+                    // ApplyFacialToon); the material keeps its bundled value until a key runs. The face _RimColor
+                    // override (0,0,0,0) was invented and removed. The ToonMayu renderQueue += 1 workaround was
+                    // invented and removed: the game assigns the head part queues at runtime through
+                    // ModelController.UpdateRenderQueue (0x7ffd59685790), now ported in LiveModelRenderQueue.
+                    //
+                    // Rule 8.2 (second pass): the old `switch (m.shader.name)` block that re-bound the
+                    // materials to the same-named shaders of shader.a (UmaAssetManager.CheekShader /
+                    // FaceShader / EyeShader / HairShader / EyebrowShader) is removed too. Verified in
+                    // code_JP: the game never reassigns Material.shader in the character load path
+                    // (ModelLoader / CharaPartsHolder init); the set_shader sites belong to runtime systems
+                    // (Live.ShaderLodManager.SwitchShader 0x7ffd59596xxx via StageController, A2UShaderReplacer,
+                    // AutoMobileShaderSwitch, CharaPropRendererAccessor, CourseBg/CourseBaseObject). The re-bind
+                    // was a same-shader-name swap whose only visible effect was resetting each material's
+                    // bundled renderQueue to the shader default (the root cause of the old eyebrow z-order bug).
                     if (!IsMini && r.name == "M_Face")
                     {
                         string matName = m.name.ToLower();
@@ -2757,6 +2750,7 @@ public class UmaContainerCharacter : UmaContainer
                 if (r.name.Contains("Hair") && r.name.Contains("Alpha"))
                 {
                     m.shader = UmaAssetManager.AlphaShader;
+                    r.sortingOrder = AlphaMeshSortingOrder;
                 }
 
                 if (m.name.EndsWith("_hair"))
@@ -2778,16 +2772,8 @@ public class UmaContainerCharacter : UmaContainer
                     }
                 }
 
-                switch (m.shader.name)
-                {
-                    case "Gallop/3D/Chara/ToonHair/TSER":
-                        m.shader = UmaAssetManager.HairShader;
-                        m.SetFloat("_CylinderBlend", 0.25f);
-                        break;
-                    default:
-                        // m.shader = Shader.Find("Nars/UmaMusume/Body");
-                        break;
-                }
+                // Same-name shader re-bind removed (rule 8.2, see the LoadHead note): the game keeps the
+                // bundled shader and renderQueue of the hair materials in the load path.
             }
         }
     }
