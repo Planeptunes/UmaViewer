@@ -105,6 +105,9 @@ public class UmaContainerCharacter : UmaContainer
     // (0015 = camisa blanca/negra; 0006 y 0009 = 4 colores) y cada color es una textura propia
     // (_00_diff, _01_diff, ...). Lo usa LoadBody para elegir _diff y _shad_c.
     public int VarColorIndex = 0;
+    // Name of the custom model (CustomModelRegistry, "cus_<name>") this body was loaded from; null for game costumes.
+    // VarCostumeIdLong holds its base costume.
+    public string CustomModelName;
     public TextureList GenericBodyTextures = new TextureList();
 
     [Header("Mini")]

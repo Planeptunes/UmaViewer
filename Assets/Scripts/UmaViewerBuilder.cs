@@ -157,6 +157,12 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
     {
         int id = chara.Id;
         umaContainer.CharaEntry = chara;
+
+        // Custom model (BodyZoneEditor): load its base costume; the cut is applied to the body mesh below.
+        CustomModelRegistry.Manifest customModel = CustomModelRegistry.Load(id, costumeId);
+        if (customModel != null) costumeId = customModel.baseCostume;
+        umaContainer.CustomModelName = customModel != null ? customModel.name : null;
+
         DataRow charaData = umaContainer.CharaData;
         bool genericCostume = umaContainer.IsGeneric = costumeId.Length >= 4;
         string skin, height, socks, bust, sex, shape, costumeIdShort = "";
@@ -259,6 +265,14 @@ public string[] NormalBodyKeywords  = new[] { "skin", "body", "bdy", "face", "he
             umaContainer.LoadPhysics(asset1);
             asset1 = Main.AbList[UmaDatabaseController.BodyPath + $"bdy{id}_{costumeId}/clothes/pfb_bdy{id}_{costumeId}_bust_cloth00"];
             umaContainer.LoadPhysics(asset1);
+        }
+
+        if (customModel != null)
+        {
+            CustomModelRegistry.ApplyCuts(umaContainer.Body, customModel);
+            CustomModelRegistry.ApplyTripleMask(umaContainer.Body, customModel);
+            CustomModelRegistry.ApplyMainTex(umaContainer.Body, customModel);
+            CustomModelRegistry.ApplyToonMap(umaContainer.Body, customModel);
         }
 
         // Record Head Data

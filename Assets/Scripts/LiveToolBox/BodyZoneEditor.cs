@@ -50,6 +50,16 @@ public class BodyZoneEditor : MonoBehaviour
     [Range(0.005f, 0.30f)] public float brushRadius = 0.06f;
     [Range(0, 4)] public int growRings = 1;
 
+    [Header("Extender borde")]
+    [Tooltip("Length (m, mesh space) added to the open border of the selected faces.")]
+    [Range(0.002f, 0.10f)] public float extendLength = 0.02f;
+
+    [Tooltip("Only borders whose outward direction points this way are extended.")]
+    public ExtendDirection extendDirection = ExtendDirection.Arriba;
+
+    [Tooltip("Skip faces classified as cloth (only skin / body is extended).")]
+    public bool extendBodyOnly = true;
+
     [Header("Modo")]
     public Mode mode = Mode.Caras;
 
@@ -86,6 +96,28 @@ public class BodyZoneEditor : MonoBehaviour
     // se vuelve a añadir la herramienta sobre un personaje cuya malla ya fue
     // recortada, la base siga siendo la original y "Restaurar" funcione.
     static readonly Dictionary<string, Mesh> _pristine = new Dictionary<string, Mesh>();
+
+    // Untouched mesh of a renderer that CustomModelRegistry cut when it loaded a custom model. Keyed by the renderer
+    // itself (not by a name): no name can fail to match, and nothing survives from a previous Play session.
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<SkinnedMeshRenderer, Mesh> _pristineByRenderer =
+        new System.Runtime.CompilerServices.ConditionalWeakTable<SkinnedMeshRenderer, Mesh>();
+
+    /// <summary>Registers the untouched mesh of a body renderer right before CustomModelRegistry replaces it with a cut one.</summary>
+    public static void RememberPristine(SkinnedMeshRenderer renderer, Mesh mesh)
+    {
+        if (renderer == null || mesh == null) return;
+        _pristineByRenderer.Remove(renderer);
+        _pristineByRenderer.Add(renderer, mesh);
+    }
+
+    /// <summary>Registers the untouched mesh of a body renderer (used by CustomModelRegistry before it cuts one).</summary>
+    public static void RememberPristine(string key, Mesh mesh)
+    {
+        // A previous Play session leaves a destroyed mesh under the key (the dictionary survives, the mesh does not):
+        // it must be replaced, otherwise the editor would take the already cut mesh as its base.
+        Mesh existing;
+        if (mesh != null && (!_pristine.TryGetValue(key, out existing) || existing == null)) _pristine[key] = mesh;
+    }
 
     // The "body" is several renderers: M_Body plus its M_Body_Alpha* cloth layers
     // (skirt, frills...). All of them share one face/vertex index space so picking
@@ -135,6 +167,7 @@ public class BodyZoneEditor : MonoBehaviour
         public string name;
         public string saved;
         public List<PresetTargetCut> targets = new List<PresetTargetCut>();
+        public List<CustomModelRegistry.TargetAdd> additions = new List<CustomModelRegistry.TargetAdd>();   // border extensions
     }
 
     [System.Serializable]
@@ -286,7 +319,11 @@ public class BodyZoneEditor : MonoBehaviour
             Mesh current = t.sm.sharedMesh;
             string key = BodyKey() + "/" + t.sm.name;
             Mesh cached;
-            if (_pristine.TryGetValue(key, out cached) && cached != null)
+            if (_pristineByRenderer.TryGetValue(t.sm, out cached) && cached != null)
+            {
+                t.baseMesh = cached;   // the custom model loader cut this renderer: the base is the mesh it started from
+            }
+            else if (_pristine.TryGetValue(key, out cached) && cached != null)
             {
                 t.baseMesh = cached;
                 if (current != cached) Debug.Log("[BodyZoneEditor] Malla actual recortada (" + current.name +
@@ -308,7 +345,7 @@ public class BodyZoneEditor : MonoBehaviour
             Debug.Log("[BodyZoneEditor] Base " + t.sm.name + ": " + CountTriangles(t.baseMesh) + " caras / " +
                       t.baseMesh.vertexCount + " vértices (mesh '" + t.baseMesh.name + "')");
 
-            if (t.baseMesh.name.EndsWith("_cut"))
+            if (t.baseMesh.name.EndsWith("_cut") || t.baseMesh.name.EndsWith("_custom"))
             {
                 Debug.LogError("[BodyZoneEditor] La malla base ya es un corte (" + t.baseMesh.name +
                                "). Restaura o recarga el personaje antes de usar la herramienta.");
@@ -344,10 +381,29 @@ public class BodyZoneEditor : MonoBehaviour
 
         _presetKey = PresetKey();
         LoadPresetFile();
+        ApplyLoadedCustomModel();
 
         Debug.Log("[BodyZoneEditor] " + _status + " · islas: " + IslandCount +
                   " · islas de cara: " + FaceIslandCount + " · islas UV: " + UvIslandCount +
                   " · preset key: " + _presetKey + " · " + partList);
+    }
+
+    /// <summary>
+    /// When the character was loaded from a custom model, the editor starts from that model (its cuts and border
+    /// extensions) and the name box holds its name, so "Guardar" overwrites it instead of starting from the base outfit.
+    /// </summary>
+    void ApplyLoadedCustomModel()
+    {
+        UmaContainerCharacter c = GetComponent<UmaContainerCharacter>();
+        int charaId;
+        string baseCostume;
+        if (c == null || string.IsNullOrEmpty(c.CustomModelName) || !OwnerIds(out charaId, out baseCostume)) return;
+
+        CustomModelRegistry.Manifest m = CustomModelRegistry.Load(charaId, CustomModelRegistry.IdOf(c.CustomModelName));
+        if (m == null) return;
+
+        ApplyPreset(new ZonePreset { name = m.name, saved = m.saved, targets = m.targets, additions = m.additions });
+        _presetName = m.name;
     }
 
     /// <summary>Collects M_Body and its M_Body_* layers (alpha cloth) as editable targets.</summary>
@@ -575,7 +631,7 @@ public class BodyZoneEditor : MonoBehaviour
                 if (mask[f]) { any = true; break; }
             }
 
-            SetMesh(t, any ? BuildCutMesh(t, mask) : t.baseMesh);
+            SetMesh(t, any || _extensions.Count > 0 ? BuildCutMesh(t, mask) : t.baseMesh);
         }
     }
 
@@ -2103,6 +2159,7 @@ public class BodyZoneEditor : MonoBehaviour
         Mesh mesh = Instantiate(bt.baseMesh);
         mesh.name = bt.baseMesh.name + "_cut";
 
+        List<int>[] keeps = new List<int>[mesh.subMeshCount];
         for (int s = 0; s < mesh.subMeshCount; s++)
         {
             int[] tris = bt.baseMesh.GetTriangles(s);
@@ -2121,11 +2178,226 @@ public class BodyZoneEditor : MonoBehaviour
                 keep.Add(tris[t + 2]);
             }
 
-            mesh.SetTriangles(keep, s, false);
+            keeps[s] = keep;
         }
+
+        // Border extension (adds vertices + a strip of quads); must run before the triangles are assigned.
+        if (_extensions.Count > 0) AppendExtensions(mesh, bt, keeps);
+
+        for (int s = 0; s < mesh.subMeshCount; s++) mesh.SetTriangles(keeps[s], s, false);
 
         mesh.RecalculateBounds();
         return mesh;
+    }
+
+    // ── border extension (extrude the open edge of a layer) ──────────────────
+    // Viewer-only tool (the game has no equivalent). The open edge of the selected faces is
+    // duplicated, pushed outwards inside the surface plane and bridged with a strip of quads.
+    // New vertices copy bone weights / UV / normal / colour of the vertex they come from, so the
+    // strip deforms with the skeleton and the texture is stretched (clamped) from the old edge.
+    // The result is stored resolved (CustomModelRegistry.TargetAdd: absolute positions + triangles),
+    // so it can be saved in the model manifest and rebuilt identically on load.
+    public enum ExtendDirection
+    {
+        Arriba = 0,      // only borders whose outward direction points up (+Y)
+        Abajo = 1,       // only borders pointing down (-Y)
+        Cualquiera = 2
+    }
+
+    struct OpenEdge
+    {
+        public int a, b;         // local vertex ids in the winding direction of the owner face
+        public int face;         // global face id of the owner face
+        public int count;        // faces of the same submesh that use this edge
+    }
+
+    // One entry per "Extender borde" press (undo removes the last one); each holds one TargetAdd per renderer.
+    readonly List<List<CustomModelRegistry.TargetAdd>> _extensions = new List<List<CustomModelRegistry.TargetAdd>>();
+
+    /// <summary>Flat list of every stored extension (op = order of the extension), for presets / manifests.</summary>
+    List<CustomModelRegistry.TargetAdd> CollectAdditions()
+    {
+        List<CustomModelRegistry.TargetAdd> all = new List<CustomModelRegistry.TargetAdd>();
+        for (int e = 0; e < _extensions.Count; e++)
+            for (int i = 0; i < _extensions[e].Count; i++)
+            {
+                _extensions[e][i].op = e;
+                all.Add(_extensions[e][i]);
+            }
+        return all;
+    }
+
+    void AppendExtensions(Mesh mesh, BodyTarget bt, List<int>[] keeps)
+    {
+        for (int e = 0; e < _extensions.Count; e++)
+            for (int i = 0; i < _extensions[e].Count; i++)
+            {
+                CustomModelRegistry.TargetAdd add = _extensions[e][i];
+                if (add.target == bt.sm.name && add.baseVertexCount == bt.baseMesh.vertexCount)
+                    CustomModelRegistry.ApplyAdd(mesh, add, keeps);
+            }
+    }
+
+    /// <summary>Resolves the extension of the open border of the selected faces of one renderer (null when it has none).</summary>
+    CustomModelRegistry.TargetAdd ComputeAdd(BodyTarget bt, bool[] selected, float length, ExtendDirection direction, bool bodyOnly)
+    {
+        if (bt.baseMesh.blendShapeCount > 0)
+        {
+            Debug.LogWarning("[BodyZoneEditor] " + bt.sm.name + " has blend shapes; border extension skipped.");
+            return null;
+        }
+
+        CustomModelRegistry.TargetAdd add = new CustomModelRegistry.TargetAdd
+        {
+            target = bt.sm.name,
+            baseVertexCount = bt.baseMesh.vertexCount
+        };
+
+        for (int s = 0; s < bt.subCount; s++)
+        {
+            int globalSub = bt.subOffset + s;
+
+            // open edges of this submesh (after the cuts), keyed by welded position
+            Dictionary<long, OpenEdge> edges = new Dictionary<long, OpenEdge>();
+            for (int f = bt.faceOffset; f < bt.faceOffset + bt.faceCount; f++)
+            {
+                if (_faceSub[f] != globalSub || _cutFaces[f]) continue;
+
+                for (int k = 0; k < 3; k++)
+                {
+                    int ga = _faces[f * 3 + k];
+                    int gb = _faces[f * 3 + (k + 1) % 3];
+                    int wa = _weld[ga], wb = _weld[gb];
+                    long key = wa < wb ? ((long)wa << 32) | (uint)wb : ((long)wb << 32) | (uint)wa;
+
+                    OpenEdge oe;
+                    if (edges.TryGetValue(key, out oe)) { oe.count++; edges[key] = oe; }
+                    else edges[key] = new OpenEdge { a = ga - bt.vertOffset, b = gb - bt.vertOffset, face = f, count = 1 };
+                }
+            }
+
+            // outward direction (inside the face plane) per welded position
+            Dictionary<int, Vector3> dirs = new Dictionary<int, Vector3>();
+            List<OpenEdge> border = new List<OpenEdge>();
+            foreach (OpenEdge oe in edges.Values)
+            {
+                if (oe.count != 1 || !selected[oe.face]) continue;
+                if (bodyOnly && _faceCloth != null && _faceCloth[oe.face]) continue;
+
+                Vector3 p0 = bt.verts[_faces[oe.face * 3] - bt.vertOffset];
+                Vector3 p1 = bt.verts[_faces[oe.face * 3 + 1] - bt.vertOffset];
+                Vector3 p2 = bt.verts[_faces[oe.face * 3 + 2] - bt.vertOffset];
+                Vector3 n = Vector3.Cross(p1 - p0, p2 - p0);
+                if (n.sqrMagnitude < 1e-14f) continue;
+                n.Normalize();
+
+                Vector3 mid = (bt.verts[oe.a] + bt.verts[oe.b]) * 0.5f;
+                Vector3 o = mid - (p0 + p1 + p2) / 3f;
+                o -= n * Vector3.Dot(o, n);
+                if (o.sqrMagnitude < 1e-14f) continue;
+                o.Normalize();
+
+                // direction filter in mesh space (+Y = up in the bind pose)
+                if (direction == ExtendDirection.Arriba && o.y < 0.5f) continue;
+                if (direction == ExtendDirection.Abajo && o.y > -0.5f) continue;
+                border.Add(oe);
+
+                int wa2 = _weld[oe.a + bt.vertOffset], wb2 = _weld[oe.b + bt.vertOffset];
+                Vector3 d;
+                dirs.TryGetValue(wa2, out d); dirs[wa2] = d + o;
+                dirs.TryGetValue(wb2, out d); dirs[wb2] = d + o;
+            }
+
+            // one new vertex per original vertex of the border
+            Dictionary<int, int> remap = new Dictionary<int, int>();
+            for (int i = 0; i < border.Count; i++)
+            {
+                int a = border[i].a, b = border[i].b;
+                int a2 = NewAddVertex(add, bt, dirs, remap, a, length);
+                int b2 = NewAddVertex(add, bt, dirs, remap, b, length);
+
+                // the strip lies on the other side of the edge: it runs b -> a
+                AddTri(add, s, b, a, a2);
+                AddTri(add, s, b, a2, b2);
+            }
+        }
+
+        return add.srcVerts.Count > 0 ? add : null;
+    }
+
+    int NewAddVertex(CustomModelRegistry.TargetAdd add, BodyTarget bt, Dictionary<int, Vector3> dirs,
+                     Dictionary<int, int> remap, int local, float length)
+    {
+        int idx;
+        if (remap.TryGetValue(local, out idx)) return idx;
+
+        Vector3 d;
+        dirs.TryGetValue(_weld[local + bt.vertOffset], out d);
+        d = d.sqrMagnitude > 1e-12f ? d.normalized : Vector3.zero;
+
+        idx = add.baseVertexCount + add.srcVerts.Count;
+        add.srcVerts.Add(local);
+        add.pos.Add(bt.verts[local] + d * length);
+        remap[local] = idx;
+        return idx;
+    }
+
+    static void AddTri(CustomModelRegistry.TargetAdd add, int sub, int a, int b, int c)
+    {
+        add.tris.Add(a); add.tris.Add(b); add.tris.Add(c);
+        add.triSub.Add(sub);
+    }
+
+    /// <summary>Extends the open border of the selected faces by <see cref="extendLength"/> metres.</summary>
+    public void ExtendSelection()
+    {
+        if (CountSelectedFaces() == 0 && CountSelectedVerts() == 0)
+        {
+            _status = "Nada seleccionado";
+            return;
+        }
+
+        bool[] selected = SelectedFacesAsMask();
+        List<CustomModelRegistry.TargetAdd> op = new List<CustomModelRegistry.TargetAdd>();
+        int newVerts = 0;
+        for (int i = 0; i < _targets.Count; i++)
+        {
+            CustomModelRegistry.TargetAdd add = ComputeAdd(_targets[i], selected, extendLength, extendDirection, extendBodyOnly);
+            if (add == null) continue;
+            op.Add(add);
+            newVerts += add.srcVerts.Count;
+        }
+
+        if (op.Count == 0)
+        {
+            _status = "No hay borde abierto que extender en la selección (" + extendDirection + ")";
+            return;
+        }
+
+        _extensions.Add(op);
+        RebuildMeshes();
+
+        _selectedFaces = new bool[_faceCount];
+        _selectedVerts = new bool[_vertCount];
+        _dirty = true;
+        _presetDirty = true;
+
+        _status = "Borde extendido " + extendLength.ToString("F3") + " m (" + newVerts + " vértices) · extensiones: " + _extensions.Count;
+        Debug.Log("[BodyZoneEditor] " + _status);
+    }
+
+    public void UndoExtension()
+    {
+        if (_extensions.Count == 0)
+        {
+            _status = "Sin extensiones";
+            return;
+        }
+
+        _extensions.RemoveAt(_extensions.Count - 1);
+        RebuildMeshes();
+        _presetDirty = true;
+        _status = "Extensión deshecha · extensiones: " + _extensions.Count;
     }
 
     public void ApplySelection()
@@ -2181,6 +2453,7 @@ public class BodyZoneEditor : MonoBehaviour
     public void RestoreAll()
     {
         _applied.Clear();
+        _extensions.Clear();
         _cutFaces = new bool[_faceCount];
         _cutVerts = new bool[_vertCount];
         RebuildMeshes();
@@ -2272,12 +2545,34 @@ public class BodyZoneEditor : MonoBehaviour
 
         bool any = false;
         for (int f = 0; f < _faceCount; f++) if (_cutFaces[f]) { any = true; break; }
-        if (!any) { _status = "Nada que guardar: no hay caras quitadas"; return; }
+        if (!any && _extensions.Count == 0) { _status = "Nada que guardar: no hay caras quitadas ni bordes extendidos"; return; }
+
+        // The cuts are numbered over the base mesh: if that mesh is already a cut one, the saved model would be corrupt.
+        for (int i = 0; i < _targets.Count; i++)
+        {
+            string bn = _targets[i].baseMesh.name;
+            if (bn.EndsWith("_cut") || bn.EndsWith("_custom"))
+            {
+                _status = "No se guarda: la base de " + _targets[i].sm.name + " ya está recortada (" + bn + "). Recarga el personaje.";
+                Debug.LogError("[BodyZoneEditor] " + _status);
+                return;
+            }
+        }
+
+        int charaId;
+        string baseCostume;
+        bool hasOwner = OwnerIds(out charaId, out baseCostume);
+        if (hasOwner && CustomModelRegistry.NameTakenByOtherCostume(charaId, presetName, baseCostume))
+        {
+            _status = "Ya hay un modelo \"" + presetName + "\" de otro traje de este personaje: usa otro nombre";
+            return;
+        }
 
         ZonePreset preset = new ZonePreset
         {
             name = presetName,
-            saved = System.DateTime.Now.ToString("yyyy-MM-dd HH:mm")
+            saved = System.DateTime.Now.ToString("yyyy-MM-dd HH:mm"),
+            additions = CollectAdditions()
         };
 
         for (int i = 0; i < _targets.Count; i++)
@@ -2306,9 +2601,17 @@ public class BodyZoneEditor : MonoBehaviour
         _presetFile.presets.Add(preset);
         SavePresetFile();
 
+        // Saving under the same name overwrites the model (its textures stay). Saving under a new name from a loaded
+        // custom/recolor keeps the colours that are on screen (its textures are copied to the new model).
+        UmaContainerCharacter owner = GetComponent<UmaContainerCharacter>();
+        string loaded = owner != null ? owner.CustomModelName : null;
+        bool sameModel = !string.IsNullOrEmpty(loaded) && string.Equals(loaded, preset.name, System.StringComparison.OrdinalIgnoreCase);
+        if (hasOwner) CustomModelRegistry.Save(charaId, baseCostume, preset, sameModel ? null : loaded);
+
         _currentPreset = preset.name;
         _presetDirty = false;
-        _status = "Preset \"" + preset.name + "\" guardado (" + _presetKey + ")";
+        _status = "Preset \"" + preset.name + "\" guardado (" + _presetKey + ")" +
+                  (hasOwner ? " · modelo en CustomModels/" + charaId + "/" + CustomModelRegistry.FolderName(preset.name) : string.Empty);
     }
 
     public void ApplyPreset(ZonePreset preset)
@@ -2345,6 +2648,21 @@ public class BodyZoneEditor : MonoBehaviour
         _cutFaces = mask;
         _applied.Add((bool[])mask.Clone());
         RebuildCutVerts();
+
+        // border extensions of the preset, grouped by the operation that made them
+        _extensions.Clear();
+        if (preset.additions != null)
+        {
+            SortedDictionary<int, List<CustomModelRegistry.TargetAdd>> byOp = new SortedDictionary<int, List<CustomModelRegistry.TargetAdd>>();
+            for (int i = 0; i < preset.additions.Count; i++)
+            {
+                List<CustomModelRegistry.TargetAdd> list;
+                if (!byOp.TryGetValue(preset.additions[i].op, out list)) byOp[preset.additions[i].op] = list = new List<CustomModelRegistry.TargetAdd>();
+                list.Add(preset.additions[i]);
+            }
+            foreach (KeyValuePair<int, List<CustomModelRegistry.TargetAdd>> kv in byOp) _extensions.Add(kv.Value);
+        }
+
         RebuildMeshes();
 
         _selectedFaces = new bool[_faceCount];
@@ -2364,10 +2682,29 @@ public class BodyZoneEditor : MonoBehaviour
         _presetFile.presets.Remove(p);
         SavePresetFile();
 
+        int charaId;
+        string baseCostume;
+        if (OwnerIds(out charaId, out baseCostume))
+            CustomModelRegistry.Delete(charaId, presetName, baseCostume);
+
         if (string.Equals(_currentPreset, presetName, System.StringComparison.OrdinalIgnoreCase))
             _currentPreset = DefaultPresetName;
 
-        _status = "Preset \"" + presetName + "\" borrado";
+        _status = "Preset \"" + presetName + "\" borrado (y su modelo)";
+    }
+
+    /// <summary>Character and base outfit of the body this editor is on (false when unknown).</summary>
+    bool OwnerIds(out int charaId, out string baseCostume)
+    {
+        charaId = 0;
+        baseCostume = null;
+
+        UmaContainerCharacter c = GetComponent<UmaContainerCharacter>();
+        if (c == null || c.CharaEntry == null || string.IsNullOrEmpty(c.VarCostumeIdLong)) return false;
+
+        charaId = c.CharaEntry.Id;
+        baseCostume = c.VarCostumeIdLong;
+        return true;
     }
 
     void DrawPresetUI()
@@ -2411,6 +2748,12 @@ public class BodyZoneEditor : MonoBehaviour
         if (GUILayout.Button("Guardar", GUILayout.Width(70f))) SavePreset(_presetName);
         if (GUILayout.Button("Borrar", GUILayout.Width(60f))) DeletePreset(_currentPreset);
         GUILayout.EndHorizontal();
+
+        int ownerChara;
+        string ownerCostume;
+        string typed = (_presetName ?? string.Empty).Trim();
+        if (typed.Length > 0 && OwnerIds(out ownerChara, out ownerCostume) && CustomModelRegistry.Exists(ownerChara, typed, ownerCostume))
+            GUILayout.Label("Ya existe un modelo \"" + typed + "\" de este traje: Guardar lo sobrescribe (sus texturas se conservan).");
 
         GUILayout.Space(4);
     }
@@ -2498,8 +2841,8 @@ public class BodyZoneEditor : MonoBehaviour
         if (e.type == EventType.MouseDown && !_panelRect.Contains(e.mousePosition))
             GUI.FocusControl(null);
 
-        // fondo sólido
-        GUI.color = new Color(0f, 0f, 0f, 0.92f);
+        // fondo sólido (opaco, gris #575C63)
+        GUI.color = new Color32(0x57, 0x5C, 0x63, 255);
         GUI.DrawTexture(_panelRect, Texture2D.whiteTexture);
         GUI.color = new Color(0.18f, 0.18f, 0.22f, 1f);
         GUI.DrawTexture(titleRect, Texture2D.whiteTexture);
@@ -2614,6 +2957,18 @@ public class BodyZoneEditor : MonoBehaviour
         if (GUILayout.Button("Quitar zona")) ApplySelection();
         if (GUILayout.Button("Deshacer")) Undo();
         if (GUILayout.Button("Restaurar")) RestoreAll();
+        GUILayout.EndHorizontal();
+        GUILayout.Label("Extender borde abierto: " + extendLength.ToString("F3") + " m");
+        extendLength = GUILayout.HorizontalSlider(extendLength, 0.002f, 0.10f);
+        extendBodyOnly = GUILayout.Toggle(extendBodyOnly, " Solo piel (no extender ropa)");
+        GUILayout.BeginHorizontal();
+        if (GUILayout.Toggle(extendDirection == ExtendDirection.Arriba, " Arriba", GUI.skin.button)) extendDirection = ExtendDirection.Arriba;
+        if (GUILayout.Toggle(extendDirection == ExtendDirection.Abajo, " Abajo", GUI.skin.button)) extendDirection = ExtendDirection.Abajo;
+        if (GUILayout.Toggle(extendDirection == ExtendDirection.Cualquiera, " Cualquiera", GUI.skin.button)) extendDirection = ExtendDirection.Cualquiera;
+        GUILayout.EndHorizontal();
+        GUILayout.BeginHorizontal();
+        if (GUILayout.Button("Extender borde")) ExtendSelection();
+        if (GUILayout.Button("Deshacer extensión")) UndoExtension();
         GUILayout.EndHorizontal();
         GUILayout.BeginHorizontal();
         if (GUILayout.Button("Limpiar selección")) ClearSelection();

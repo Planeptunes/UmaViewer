@@ -71,7 +71,9 @@ namespace Gallop.Live
                     // Body/costume come from BodyChara; with a body override the head and
                     // tail come from the slot's own character (CharaEntry).
                     var chara = selection?.BodyChara;
-                    string costume = selection?.CostumeId;
+                    string costume = chara != null
+                        ? CustomModelRegistry.ResolveBaseCostume(chara.Id, selection?.CostumeId)
+                        : selection?.CostumeId;
                     if (chara == null || string.IsNullOrEmpty(costume))
                     {
                         skipped++;

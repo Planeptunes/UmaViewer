@@ -5,7 +5,8 @@ using UnityEngine;
 
 public static class BodyZoneEditorMenu
 {
-    const string MenuPath = "Tools/Editor de zonas de M_Body (añadir al personaje)";
+    // %#e = Ctrl+Shift+E
+    const string MenuPath = "Tools/Editor de zonas de M_Body (añadir al personaje) %#e";
 
     [MenuItem(MenuPath)]
     static void AddToCharacter()

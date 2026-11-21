@@ -1652,6 +1652,13 @@ public class UmaViewerUI : MonoBehaviour
                 var favChara = Main.Characters.FirstOrDefault(c => c != null && !c.IsMob && c.Id == fav.charaId);
                 if (favChara == null) continue;
                 //Same body/blacklist check as the own costume of its own character.
+                //Custom models (cus_<name>) live in CustomModels, not in the game bundles.
+                if (CustomModelRegistry.IsCustom(fav.costumeId))
+                {
+                    var favModel = CustomModelRegistry.Load(favChara.Id, fav.costumeId);
+                    if (favModel != null) AddCustomCostumeItem(favChara, favModel, true);
+                    continue;
+                }
                 AddOwnCostumeItem(favChara, fav.costumeId, true, UmaDatabaseController.ReadCharaData(favChara) != null);
             }
         }
@@ -1665,6 +1672,66 @@ public class UmaViewerUI : MonoBehaviour
                 string costumeId = split[split.Length - 1];
                 AddOwnCostumeItem(listChara, costumeId, otherMode, filtrarSinCuerpo);
             }
+        }
+
+        //(Custom models) Modelos guardados con el editor de zonas (CustomModels/<charaId>/<nombre>). Van justo
+        //despues de los uniques del juego, en Uniques y All. Al pulsarlos se carga el traje base con sus cortes
+        //(id "cus_<nombre>", que LoadNormalUma resuelve; los shows lo reciben igual que cualquier traje).
+        // bodyOverride: "Other Characters" -> the body is bodyChara and the head/hair/tail stay those of the current character.
+        void AddCustomCostumeItem(CharaEntry bodyChara, CustomModelRegistry.Manifest model, bool bodyOverride)
+        {
+            CharaEntry headOwner = bodyOverride ? chara : bodyChara;
+            string customId = CustomModelRegistry.IdOf(model.name);
+            int sub;
+            if (!int.TryParse(model.baseCostume, out sub)) sub = int.MinValue;
+            var dressdata = Main.Costumes.FirstOrDefault(a => a.CharaId == bodyChara.Id && a.BodyTypeSub == sub);
+
+            var container = Instantiate(UmaContainerCostumePrefab, costumeList.content).GetComponent<UmaUIContainer>();
+            UIPressScaleFeedback.AddTo(container.gameObject);
+            container.Name = container.name = model.name;
+            container.Image.sprite = CustomCostumeIcons.Get(bodyChara.Id, model.baseCostume, false)
+                ?? (dressdata == null ? CostumeIconDefault : dressdata.Icon);
+            container.Image.enabled = true;
+            container.Id = customId;
+
+            //(FAVORITES) Custom models get the same star as the unique costumes (keyed by their cus_ id).
+            CostumeFavoriteStar.Attach(container, bodyChara.Id, customId, OnFavoriteStarChanged);
+
+            //(FAVORITES) Only in the Favorites list: second line with the character the model comes from.
+            if (favoritesMode)
+                CostumeOriginLabel.Attach(container, bodyChara.GetName());
+            container.Button.onClick.AddListener(() =>
+            {
+                if (LiveSelectPannel.activeInHierarchy && CurrentSeletChara)
+                {
+                    CurrentSeletChara.SetValue(headOwner, customId, container.Image.sprite, CurrentHeadCostumeId, 0, bodyOverride ? bodyChara : null);
+                }
+                else
+                {
+                    HighlightChildImage(costumeList.content, container);
+                    var list = new List<UmaDatabaseEntry>();
+                    list.AddRange(Main.AbChara.Where(a => a.Name.StartsWith(UmaDatabaseController.BodyPath) && a.Name.Contains(bodyChara.Id.ToString())));
+                    list.AddRange(Main.AbChara.Where(a => a.Name.StartsWith(UmaDatabaseController.HeadPath) && a.Name.Contains(headOwner.Id.ToString())));
+                    var tail_path = getCharaTailPath(headOwner);
+                    if (!string.IsNullOrEmpty(tail_path))
+                    {
+                        list.AddRange(Main.AbChara.Where(a => a.Name.StartsWith(tail_path)));
+                    }
+                    list.Add(Main.AbList["3d/animator/drivenkeylocator"]);
+                    list.Add(Main.AbList[$"3d/motion/event/body/chara/chr{bodyChara.Id}_00/anm_eve_chr{bodyChara.Id}_00_idle01_loop"]);
+
+                    Builder.UnloadUma();
+                    UmaAssetManager.PreLoadAndRun(list, delegate {
+                        StartCoroutine(Builder.LoadUma(bodyChara, customId, false, CurrentHeadCostumeId, bodyOverride ? chara : null));
+                    });
+                }
+            });
+        }
+
+        if (!mini && !listChara.IsMob && !favoritesMode && (mode == CostumeListMode.Uniques || mode == CostumeListMode.All || otherMode))
+        {
+            foreach (var model in CustomModelRegistry.List(listChara.Id))
+                AddCustomCostumeItem(listChara, model, otherMode);
         }
 
         // (COLOR) Crea el item de un traje COMUN para un color concreto (0 = el de siempre).
@@ -3217,6 +3284,7 @@ public class UmaViewerUI : MonoBehaviour
     //Icon of a costume as ListCostumes assigns it to the item (own costume = short id, common = XXXX_XX_XX).
     Sprite ResolveSlotCostumeIcon(CharaEntry bodyChara, string costumeId, int colorIndex)
     {
+        costumeId = CustomModelRegistry.ResolveBaseCostume(bodyChara.Id, costumeId);
         if (!TrajeComun.IsMatch(costumeId))
         {
             int sub;
