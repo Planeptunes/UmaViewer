@@ -79,14 +79,31 @@ namespace Gallop.Live
 
         // Projectors owned by other runtimes (foot shadow projection) that must be drawn by the
         // same projector pass. They are not timeline-bound and are not restored on Dispose.
+        // Draw order of the projector pass. The game has no sorting: ProjectorRenderPass.Execute @0x7ffd595f8400 ->
+        // ProjectorManager.RenderingProjector @0x7ffd5960bcf0 walks the manager's slots in order, and every
+        // CustomProjector takes its slot in Awake (CustomProjector.Awake @0x7ffd595bc8b0 -> ProjectorManager.AddProjector
+        // @0x7ffd5960b710: first free slot, else append; only OnDestroy frees it, RemoveToManager @0x7ffd595bd180).
+        // So the order is the creation order. In the game the CharacterObject00..17 (each with its two foot-shadow
+        // instances "pfb_env_live_cmn_shadow000(Clone)" / "#1" = left / right) are created BEFORE the stage controller
+        // that owns the light projectors (scene order of live 1001 f6091: CharacterObject00 = node 37 ...
+        // CharacterObject17 = 9271, pfb_env_live10102_controller000(Clone) = 9817). The foot shadows are therefore drawn
+        // BEFORE the stage's white light projectors (otherwise the dark cross is drawn on top of the lit floor).
+        // The external (foot shadow) projectors are kept as a prefix of the list, in registration order.
+        private int _externalProjectorCount;
+
         public void AddExternalProjector(CustomProjector projector)
         {
-            if (projector != null && !_projectors.Contains(projector)) _projectors.Add(projector);
+            if (projector == null || _projectors.Contains(projector)) return;
+            _projectors.Insert(_externalProjectorCount++, projector);
         }
 
         public void RemoveExternalProjector(CustomProjector projector)
         {
-            if (projector != null) _projectors.Remove(projector);
+            if (projector == null) return;
+            int index = _projectors.IndexOf(projector);
+            if (index < 0) return;
+            _projectors.RemoveAt(index);
+            if (index < _externalProjectorCount) _externalProjectorCount--;
         }
 
         public void ConfigureMovieFrames(MovieFrameResolver resolver) { _movieResolver = resolver; }
@@ -265,6 +282,7 @@ namespace Gallop.Live
             }
             _bindings.Clear();
             _projectors.Clear();
+            _externalProjectorCount = 0;
             _missingGroups.Clear();
             _mirrorRuntime.Dispose();
             _mirrorTextureResolver = null;
