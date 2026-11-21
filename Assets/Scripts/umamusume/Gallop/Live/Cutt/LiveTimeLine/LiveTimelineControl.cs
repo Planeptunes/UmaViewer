@@ -1715,6 +1715,13 @@ namespace Gallop.Live.Cutt
             if (chara.LiveLocator != null && chara.LiveLocator.liveCharaVisible != curKey.visible)
                 chara.LiveLocator.liveCharaVisible = curKey.visible;
 
+            // First call of <AlterUpdate_FormationOffset>g__UpdateCharactorLocater|706_0 @0x7ffd592c8ab0, every frame:
+            // ILiveTimelineCharactorLocator.set_IsPositionNodePositionAddParent(key.IsPositionAddParentNode (+0x8D)).
+            // CharacterObject.set_IsPositionNodePositionAddParent @0x7ffd59231f50 stores it in LiveModelController +0x728, where
+            // UmaContainerCharacter.AlterLateUpdatePositionNodeFold (LiveModelController.AlterLateUpdate @0x7ffd59b34f40) reads it.
+            if (chara.LiveLocator != null)
+                chara.LiveLocator.IsPositionNodePositionAddParent = curKey.IsPositionAddParentNode;
+
             if (ControlMode)
             {
                 if (chara.LiveVisible != curKey.visible)

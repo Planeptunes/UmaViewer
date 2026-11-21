@@ -1566,8 +1566,58 @@ public class UmaContainerCharacter : UmaContainer
         return _bindReadyFrames >= 2;
     }
 
+    // Cache of the model root's local position taken before the Position-node fold (LiveModelController +0x72C).
+    private Vector3 _positionNodeFoldCache;
+    private bool _positionNodeFolded;   // viewer-only: R currently carries a fold (see AlterLateUpdatePositionNodeFold)
+
+    // Port of the first part of Gallop.LiveModelController.AlterLateUpdate @0x7ffd59b34f40 (it runs before
+    // ModelController.AlterLateUpdate, i.e. before the CySpring solve). R = the model root (LiveModelController +0x50,
+    // _cacheTransform), T = the Position node (vcall +0x1E8, ModelController.get_PositionNode).
+    //   flag (+0x728 = key.IsPositionAddParentNode) off: cache = R.localPosition.
+    //   flag on and R.hasChanged: cache = R.lp; R.lp += R.localRotation * T.lp; T.lp = 0; R.hasChanged = false
+    //     (the travel of the animated Position bone moves into the model root, which is the CySpring owner: the solver,
+    //     that works in the owner's space, no longer sees it, and in the game Position stays at 0).
+    //   flag on and not R.hasChanged: R.lp = cache + T.lp (T untouched); R.hasChanged = false.
+    // In the game the formation locator (UpdateCharactorLocater @0x7ffd592c8ab0) writes R every frame, so hasChanged is
+    // always true there. The viewer does not port that write outside ControlMode, so when R was not written this frame the
+    // locator write is emulated: R is put back to the cached formation position before folding (otherwise the travel
+    // would accumulate or be counted twice). Reported difference.
+    private void AlterLateUpdatePositionNodeFold()
+    {
+        Transform r = transform;
+        Transform t = Position;
+        if (t == null || t == r)
+            return;
+
+        bool flag = LiveLocator != null && LiveLocator.IsPositionNodePositionAddParent;
+        if (!flag)
+        {
+            // Emulated locator write when the flag goes off (e.g. a seek back before the flag key): the model root returns
+            // to its cached formation position instead of keeping the folded travel.
+            if (_positionNodeFolded)
+            {
+                r.localPosition = _positionNodeFoldCache;
+                _positionNodeFolded = false;
+            }
+            _positionNodeFoldCache = r.localPosition;
+            return;
+        }
+        _positionNodeFolded = true;
+
+        if (!r.hasChanged)
+            r.localPosition = _positionNodeFoldCache;   // emulated locator write
+        else
+            _positionNodeFoldCache = r.localPosition;
+
+        r.localPosition = r.localPosition + r.localRotation * t.localPosition;
+        t.localPosition = Vector3.zero;
+        r.hasChanged = false;
+    }
+
     private void AlterLateUpdateRuntime()
     {
+        AlterLateUpdatePositionNodeFold();
+
         // Ligado pendiente: el modelo no estaba montado cuando el builder llamo a LoadPhysics.
         // Se liga en el primer frame en que ya existe el rig completo, que es cuando la pose de
         // reposo del spring tiene sentido.
