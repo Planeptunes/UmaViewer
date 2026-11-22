@@ -1435,13 +1435,35 @@ namespace Gallop.Live.Cutt
 
             // Game call order in AlterUpdate_FacialData @0x7ffd592a02f0: Face, Mouth, Eye, Eyebrow, Ear, Effect,
             // Tail, EyeTrack. The game walks 20 character slots and resolves each slot's facial set through a
-            // per-slot indirection table (LiveTimelineControl +0x290); the viewer maps slot 0 to facial1Set and
-            // slots 1..N to other4FacialArray[i - 1] (the table's "mode 1" mapping).
+            // per-slot selector keyed by LiveTimelineData.FacialLineType (LiveTimelineData +0x90):
+            //   Motion (0):    index = characterSettings.motionSequenceIndices[slot] (the slot is skipped when beyond
+            //                  the array); 0 -> facial1Set (+0x170), 1..19 -> other4FacialArray[index - 1] (+0x1B8),
+            //                  anything else -> the slot is skipped;
+            //   Character (1): slot 0 -> facial1Set, slot N -> other4FacialArray[N - 1].
             var otherFacialDataList = sheet.other4FacialArray;
+            var facialType = data.FacialLineType;
+            int[] facialSlotTable = data.characterSettings != null ? data.characterSettings.motionSequenceIndices : null;
             for (int i = 0; i < Director.instance.characterCount; i++)
             {
-                var facialDataList = i == 0 ? sheet.facial1Set
-                    : (otherFacialDataList != null && i - 1 < otherFacialDataList.Length ? otherFacialDataList[i - 1] : null);
+                LiveTimelineFacialData facialDataList;
+                if (facialType == LiveTimelineData.FacialTimelineType.Motion)
+                {
+                    if (facialSlotTable == null || i >= facialSlotTable.Length)
+                        continue;
+                    int facialIndex = facialSlotTable[i];
+                    if (facialIndex == 0)
+                        facialDataList = sheet.facial1Set;
+                    else if (facialIndex >= 1 && facialIndex <= 19)
+                        facialDataList = otherFacialDataList != null && facialIndex - 1 < otherFacialDataList.Length
+                            ? otherFacialDataList[facialIndex - 1] : null;
+                    else
+                        continue;
+                }
+                else
+                {
+                    facialDataList = i == 0 ? sheet.facial1Set
+                        : (otherFacialDataList != null && i - 1 < otherFacialDataList.Length ? otherFacialDataList[i - 1] : null);
+                }
                 if (facialDataList == null)
                     continue;
 
@@ -1784,6 +1806,15 @@ namespace Gallop.Live.Cutt
             chara.PrevFrameWarmUpCySpring = key.frame;
         }
 
+        // Active formation key index of each slot whose layer has already been resolved (see below).
+        private readonly int[] _formationLayerKeyIndex = CreateFormationLayerKeyIndex();
+        private static int[] CreateFormationLayerKeyIndex()
+        {
+            var arr = new int[32];
+            for (int i = 0; i < arr.Length; i++) arr[i] = -2;
+            return arr;
+        }
+
         private void AlterLateUpdate_FormationOffset(float liveTime)
         {
 
@@ -1804,9 +1835,29 @@ namespace Gallop.Live.Cutt
                     if (layerKey != null && liveCharactorLocators != null &&
                         i < liveCharactorLocators.Length && liveCharactorLocators[i] != null)
                     {
+                        // The game only writes LayerIndex when the active key has IsLayerIndex and the value
+                        // persists until the next such key (CharacterObject.set_LayerIndex @0x7ffd59231fa0).
+                        // Playing continuously that equals "the latest IsLayerIndex key at or before the current
+                        // one"; after a timeline jump the intermediate keys are skipped, so resolve it explicitly
+                        // (re-evaluated only when the active key of the slot changes).
                         if (layerKey.IsLayerIndex)
                         {
                             liveCharactorLocators[i].LayerIndex = layerKey.LayerIndex;
+                            _formationLayerKeyIndex[i] = curKey.index;
+                        }
+                        else if (_formationLayerKeyIndex[i] != curKey.index)
+                        {
+                            _formationLayerKeyIndex[i] = curKey.index;
+                            var keyList = formationList[i];
+                            for (int k = curKey.index - 1; k >= 0; k--)
+                            {
+                                var prevLayerKey = keyList[k] as LiveTimelineKeyFormationOffsetData;
+                                if (prevLayerKey != null && prevLayerKey.IsLayerIndex)
+                                {
+                                    liveCharactorLocators[i].LayerIndex = prevLayerKey.LayerIndex;
+                                    break;
+                                }
+                            }
                         }
                         // Sombra real del personaje según la key actual.
                         liveCharactorLocators[i].IsCastShadow = layerKey.IsCastShadow;
