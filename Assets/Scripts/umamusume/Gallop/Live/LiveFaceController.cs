@@ -39,6 +39,13 @@ namespace Gallop
         int GetPartsCount(FaceGroupType type);
         void SetPartsWeights(FaceGroupType type, float[] weights, int count);
         void ApplyParts(FaceGroupType type);
+
+        // Eye blink hooks (Gallop.Model.Component.EyeBlinkController): EyeTraceController delayed tracking off while the
+        // eyes open, EyeHighlightController.IsSuppressEyeBlink, and FaceOverrideData.IsDisableEyeBlink (copied by
+        // ModelController.InitEyeBlinkController @0x7ffd59674b00 into EyeBlinkController.IsDisableByOverride).
+        void DisableDelayedEyeTracking();
+        bool IsEyeHighlightSuppressingBlink();
+        bool IsEyeBlinkDisabledByOverride { get; }
     }
 
     // Port of the DrivenKeyComponent face-parts weight group (Gallop.FaceWeightGroup : WeightGroupBase,
@@ -52,8 +59,9 @@ namespace Gallop
     // duration > 0 writes the TARGET region and captures Prev (SetPrevWeight, force = false); with
     // duration <= 0 it writes CURRENT (and TARGET too when the target is replaced). BlendProgrammable ramps
     // Current = Prev + (Target - Prev) * rate while CurrentTime < DurationTime. The weight -> TRS job
-    // (CalcTRS / AddTRS) is not ported (same documented adaptation as EarWeightGroup): the viewer applies the
-    // weights through the additive facial morphs.
+    // (WeightCalcJob.CalcTRS / AddTRS) is ported in WeightCalcJob.cs but not wired for the eye / eyebrow / mouth groups
+    // (the ear group runs EarWeightJob through EarWeightJobRunner): the viewer applies these weights through the
+    // additive facial morphs.
     public class FacePartsWeightRamp
     {
         public float[] Current;
@@ -180,12 +188,14 @@ namespace Gallop.Live
     //   GetFacePartsSetFromFacialId                 0x4EC32D0 (@0x7ffd592432d0)
     //   IsEqualFacePartsArray                       0x4EC39C0 / CopyFacePartsArray 0x4EC2E50
     //   UpdateWeight                                0x4EC6220 / UpdateDurationTime 0x4EC4E90
-    // NOT ported (ModelController side, reported as pending): the auto-blink state machine
-    // (RequestBlink / IsEyeBlinking / ResetEyeCurrentTime, EyeTraceController restore), EnableEyePupli,
-    // SetFacePartsScaleEnabled (eyebrow usePartsScale), the teardrop and mangame model calls of the effect key
-    // block, and the SystemText facial branch (_isSystemTextFace, 0x4EC20E0 head). The eye-highlight animation of
-    // the effect key (PlayEyeHighlightAnimation) is applied in FaceDrivenKeyTarget through EyeHighlightController.
-    public class LiveFaceController
+    // The eye blink goes through Gallop.Model.Component.EyeBlinkController (ModelController +0x3B8): UpdateEye asks it
+    // for the key blinks (RequestBlink), SetEye waits while it is mid blink (IsEyeBlinking) and UpdateEyeBlink runs its
+    // per-frame BeforeApplyDrivenKey. NOT ported (ModelController side, reported as pending): EnableEyePupli,
+    // ModelController.GetDurationTimeEye (zero duration for some eye faces), SetFacePartsScaleEnabled (eyebrow
+    // usePartsScale), the teardrop and mangame model calls of the effect key block, and the SystemText facial branch
+    // (_isSystemTextFace, 0x4EC20E0 head). The eye-highlight animation of the effect key (PlayEyeHighlightAnimation) is
+    // applied in FaceDrivenKeyTarget through EyeHighlightController.
+    public class LiveFaceController : Gallop.Model.Component.EyeBlinkController.IOwner
     {
         public float _earWeight = 1f;                    // 0x20 (ctor: 1.0)
         public float _earDurationTime;                   // 0x24
@@ -216,7 +226,39 @@ namespace Gallop.Live
         public bool _forceUpdateMouth;                   // 0x122
         public bool _forceUpdateEyebrow;                 // 0x123
         public bool _forceUpdateEar;                     // 0x124
-        public int _currentStartFrameOfEye;              // 0x160 (blink state machine input, see UpdateEye)
+        public int _currentStartFrameOfEye = -1;         // 0x160 (blink state machine input, see UpdateEye; ctor: -1)
+
+        // LiveFaceController.BlinkStep (dump_jp TypeDefIndex 33583196): the controller's own auto blink timer.
+        public enum BlinkStep
+        {
+            WaitStart = 0,
+            SyncBlink = 1,
+        }
+
+        public BlinkStep _autoBlinkStep;                 // 0x80
+        public float _autoBlinkTimeCount;                // 0x84
+        public float _autoBlinkTimeInterval;             // 0x88 (Initialize: Random.Range(3, 5))
+        public bool _isRepressAutoBlink;                 // 0xC4
+        public int _blinkRno;                            // 0x15C
+        public bool IsUpdateAutoBlink = true;            // 0x15A (ctor: true; LiveModelController.Pause / Resume toggle it)
+
+        // AutoBlinkIntervalMin / Max: DAT_7ffd5a640d7c / DAT_7ffd5a640fc8 (3.0 / 5.0).
+        private const float kAutoBlinkIntervalMin = 3f;
+        private const float kAutoBlinkIntervalMax = 5f;
+
+        // ModelController +0x380 (StoredFacePartsSet): the last parts handed to ModelController.SetFaceEyeType /
+        // SetFaceEyebrowType / SetFaceMouthType, kept BY REFERENCE (StoreFacePatsSet @0x7ffd59681380). The eye blink
+        // restores these parts when it ends.
+        private readonly FacePartsSet _storedFacePartsSet = new FacePartsSet
+        {
+            _eyeR = new FaceParts[0],
+            _eyeL = new FaceParts[0],
+            _eyebrowR = new FaceParts[0],
+            _eyebrowL = new FaceParts[0],
+            _mouth = new FaceParts[0],
+        };
+
+        private readonly Gallop.Model.Component.EyeBlinkController _eyeBlinkController;  // ModelController +0x3B8
 
         // LiveFaceController.FacePartsSetInfo (dump_jp TypeDefIndex 33583195): the parts state resolved from the
         // timeline keys. FacePartsSetArray is a level stack: level k holds arrays of capacity k + 1 (Initialize
@@ -271,6 +313,22 @@ namespace Gallop.Live
             {
                 int size = _applier != null ? _applier.GetPartsCount(type) + 1 : 1;
                 _ramps[type] = new FacePartsWeightRamp(size);
+            }
+
+            // Initialize (0x4EC3710): _autoBlinkTimeInterval = Random.Range(3, 5).
+            _autoBlinkTimeInterval = UnityEngine.Random.Range(kAutoBlinkIntervalMin, kAutoBlinkIntervalMax);
+
+            // ModelController.InitEyeBlinkController @0x7ffd59674b00: MakeEyeBlinkController(Context{StoredFacePartsSet})
+            // and IsDisableByOverride = FaceOverrideData.IsDisableEyeBlink.
+            _eyeBlinkController = new Gallop.Model.Component.EyeBlinkController(this, _storedFacePartsSet);
+            // LiveModelController.Init @0x7ffd59b36b70 -> ModelController.SetAutoBlinkEnable(false, true): in a live the
+            // random auto blink is OFF (IsAutoBlink false, IsEnabledAutoDoubleBlink true). The characters only blink when
+            // a facial key asks for it (IsBlink -> RequestBlink in UpdateEye); game capture of live 1001, slot 0: 35 key
+            // blinks, 0 random, 0 double over frames 1249-7712.
+            _eyeBlinkController.IsAutoBlink = false;
+            if (_applier != null)
+            {
+                _eyeBlinkController.IsDisableByOverride = _applier.IsEyeBlinkDisabledByOverride;
             }
         }
 
@@ -544,9 +602,99 @@ namespace Gallop.Live
         private void SetFaceParts(FaceGroupType type, FaceParts[] parts, float duration)
         {
             if (_applier == null) return;
+            StoreFacePartsSet(type, parts);
+            ApplyFaceParts(type, parts, duration);
+        }
+
+        // DrivenKeyComponent.SetFaceEyeType / SetFaceEyebrowType / SetFaceMouthType -> SetFace on the group's ramp,
+        // without storing the parts (the eye blink uses this path directly).
+        private void ApplyFaceParts(FaceGroupType type, FaceParts[] parts, float duration)
+        {
+            if (_applier == null) return;
             if (_ramps.TryGetValue(type, out var ramp))
             {
                 ramp.SetFace(parts, 1f, duration);
+            }
+        }
+
+        // ModelController.StoreFacePatsSet @0x7ffd59681380: the parts array of each group is stored by reference
+        // (group 2 EyeR +0x10, 3 EyeL +0x18, 4 EyebrowR +0x20, 5 EyebrowL +0x28, 6 Mouth +0x30).
+        private void StoreFacePartsSet(FaceGroupType type, FaceParts[] parts)
+        {
+            switch (type)
+            {
+                case FaceGroupType.EyeR: _storedFacePartsSet._eyeR = parts; break;
+                case FaceGroupType.EyeL: _storedFacePartsSet._eyeL = parts; break;
+                case FaceGroupType.EyebrowR: _storedFacePartsSet._eyebrowR = parts; break;
+                case FaceGroupType.EyebrowL: _storedFacePartsSet._eyebrowL = parts; break;
+                case FaceGroupType.Mouth: _storedFacePartsSet._mouth = parts; break;
+            }
+        }
+
+        // ---- Gallop.Model.Component.EyeBlinkController.IOwner (DrivenKeyComponent side of the blink) ----
+
+        // DrivenKeyComponent.SetFaceEyeBlink: EYE_R_ARRAY writes only the right eye group and EYE_L_ARRAY only the left
+        // one (SetFace is called for every group, but only the groups listed in the array take the parts).
+        void Gallop.Model.Component.EyeBlinkController.IOwner.SetFaceEyeBlink(FaceParts[] eyeR, FaceParts[] eyeL, float duration)
+        {
+            ApplyFaceParts(FaceGroupType.EyeR, eyeR, duration);
+            ApplyFaceParts(FaceGroupType.EyeL, eyeL, duration);
+        }
+
+        void Gallop.Model.Component.EyeBlinkController.IOwner.SetFaceEyeType(FaceParts[] parts, FaceGroupType group, float duration)
+        {
+            ApplyFaceParts(group, parts, duration);
+        }
+
+        void Gallop.Model.Component.EyeBlinkController.IOwner.DisableDelayedTracking()
+        {
+            _applier?.DisableDelayedEyeTracking();
+        }
+
+        bool Gallop.Model.Component.EyeBlinkController.IOwner.IsSuppressEyeBlink()
+        {
+            return _applier != null && _applier.IsEyeHighlightSuppressingBlink();
+        }
+
+        // ModelController.IsEyeBlinking @0x7ffd59677cb0.
+        private bool IsEyeBlinking()
+        {
+            return _eyeBlinkController != null && _eyeBlinkController.IsEyeBlinking;
+        }
+
+        // EyeBlinkController.BeforeApplyDrivenKey: runs once per frame, after the facial keys of the frame were applied
+        // and before the weight ramps advance (the game runs it in the model component update, before the driven keys).
+        //
+        // Viewer-only (paused): the game never seeks or scrubs a paused show (its pause stops the component with
+        // _isPause, freezing a blink in flight). The viewer shows the key faces while paused or dragging the slider and
+        // SetEye waits during a blink, so a blink in flight is cancelled instead (Clear) and the eye group is forced to
+        // re-apply the key parts, which the blink may have left half closed.
+        public void UpdateEyeBlink(float deltaTime, bool paused)
+        {
+            if (_eyeBlinkController == null) return;
+            if (paused)
+            {
+                if (_eyeBlinkController.IsBlinking)
+                {
+                    _eyeBlinkController.Clear();
+                    _forceUpdateEye = true;
+                }
+                return;
+            }
+            _eyeBlinkController.BeforeApplyDrivenKey(deltaTime);
+        }
+
+        // ModelController.ResetEyeCurrentTime @0x7ffd59678c00 -> DrivenKeyComponent.ResetEyeCurrentTime @0x7ffd58e70a10:
+        // the duration and current time of both eye groups are zeroed (an in flight eye ramp stops where it is).
+        private void ResetEyeCurrentTime()
+        {
+            foreach (FaceGroupType type in new[] { FaceGroupType.EyeR, FaceGroupType.EyeL })
+            {
+                if (_ramps.TryGetValue(type, out var ramp))
+                {
+                    ramp.DurationTime = 0f;
+                    ramp.CurrentTime = 0f;
+                }
             }
         }
 
@@ -560,11 +708,12 @@ namespace Gallop.Live
             }
         }
 
-        // LiveFaceController.SetEye RVA 0x4EC3FF0. Game extras not ported (ModelController side): the
-        // IsEyeBlinking early-out (the game skips the eye update during a blink) and the DrivenKeyTarget enabled
-        // flag (+0xf0).
+        // LiveFaceController.SetEye RVA 0x4EC3FF0. The game skips the eye update while the character is mid blink
+        // (ModelController.IsEyeBlinking); the key is applied on a later frame once the blink ended. Not ported: the
+        // DrivenKeyTarget enabled flag (+0xf0).
         public void SetEye()
         {
+            if (IsEyeBlinking()) return;
             if (_applier == null || _facePartsSet == null) return;
             if (!(0 < _facePartsSet.EyeLCount && 0 < _facePartsSet.EyeRCount)) return;
 
@@ -651,11 +800,9 @@ namespace Gallop.Live
 
         // LiveFaceController.UpdateEye RVA 0x4EC5030 (called between SetMouth and the eyebrow key block). The
         // game picks the newer of the face key and the eye key for the EYE group (frame comparison when both are
-        // active), resolves the parts, and hands them to SetEye. NOT ported (ModelController side): the pupil
-        // flag (EnableEyePupli(!IsDisableEyePupli)), the auto-blink / blink-step state machine
-        // (_blinkRno 0x15C, _currentStartFrameOfEye 0x160, RequestBlink / IsEyeBlinking / ResetEyeCurrentTime)
-        // and the "next key starts within one second" pre-repression check; the blink attribute gates are kept
-        // in the ported comments below for when the blink system is wired.
+        // active), resolves the parts, runs the key blink request and hands the parts to SetEye. NOT ported
+        // (ModelController side): the pupil flag (EnableEyePupli(!IsDisableEyePupli)). The "next key starts within one
+        // second" pre-repression check is unreachable in the game (see the blink request below).
         public void UpdateEye(float time, int frameRate, ref FacialDataUpdateInfo info)
         {
             bool faceActive = info.faceCur != null && !info.faceCur.IsNop;
@@ -679,13 +826,15 @@ namespace Gallop.Live
                 return;
             }
 
-            // The game also stores the key's frame into _currentStartFrameOfEye (0x160) to run the blink state
-            // machine (not ported); keyFrame mirrors that input.
+            // keyFrame / isBlink: the chosen key's frame (+0x10) and IsBlink (attribute 0x20000, get_IsBlink 0x4F70650),
+            // the inputs of the blink request below.
             int keyFrame;
+            bool isBlink;
             if (phase == 1)
             {
                 LiveTimelineKeyFacialFaceData key = info.faceCur;
                 keyFrame = key.frame;
+                isBlink = key.IsBlink;
                 UpdateFacePartsSetFromFacialId(key.facialId, key.weight, FaceGroupSet.Eye);
                 UpdateDurationTime(key.speed, key.time, ref _eyeDurationTime);
                 _eyeInterpolateType = key.interpolateType;
@@ -694,6 +843,7 @@ namespace Gallop.Live
             {
                 LiveTimelineKeyFacialEyeData key = info.eyeCur;
                 keyFrame = key.frame;
+                isBlink = key.IsBlink;
                 if (!key.IsEnabledFaceParts)
                 {
                     UpdateFacePartsSetFromFacialId(key.facialId, key.weight, FaceGroupSet.Eye);
@@ -707,10 +857,81 @@ namespace Gallop.Live
                 _eyeInterpolateType = key.interpolateType;
             }
 
-            // Game: the key's frame is stored into _currentStartFrameOfEye (0x160) for the blink state machine
-            // (RequestBlink / IsEyeBlinking - not ported).
+            // Blink request of the key (UpdateEye @0x7ffd59245030, after EnableEyePupli). _isRepressAutoBlink (0xC4) is
+            // written true unconditionally here, so the "next key starts within one second" pre-check the game has
+            // behind `if (!_isRepressAutoBlink)` is unreachable and the controller's own timer below never counts.
+            _isRepressAutoBlink = true;
+            if (_currentStartFrameOfEye == keyFrame)
+            {
+                if (isBlink)
+                {
+                    RequestKeyBlink();
+                }
+            }
+            else
+            {
+                // A new key: _blinkRno restarts, and a key with IsBlink also stops the eye ramp in flight and blinks.
+                _blinkRno = 0;
+                if (isBlink)
+                {
+                    ResetEyeCurrentTime();
+                    RequestKeyBlink();
+                }
+            }
+
+            if (IsUpdateAutoBlink)
+            {
+                if (_autoBlinkStep == BlinkStep.WaitStart)
+                {
+                    if (!_isRepressAutoBlink)
+                    {
+                        _autoBlinkTimeCount += Time.deltaTime;
+                        if (_autoBlinkTimeCount > _autoBlinkTimeInterval)
+                        {
+                            _eyeBlinkController?.RequestBlink(false);
+                            _autoBlinkStep = BlinkStep.SyncBlink;
+                        }
+                    }
+                    else
+                    {
+                        _autoBlinkTimeCount = 0f;
+                    }
+                }
+                else if (_autoBlinkStep == BlinkStep.SyncBlink)
+                {
+                    if (!IsEyeBlinking())
+                    {
+                        _autoBlinkStep = BlinkStep.WaitStart;
+                        _autoBlinkTimeInterval = UnityEngine.Random.Range(kAutoBlinkIntervalMin, kAutoBlinkIntervalMax);
+                    }
+                }
+            }
+
             _currentStartFrameOfEye = keyFrame;
             SetEye();
+        }
+
+        // The _blinkRno state machine of UpdateEye (0x15C): 0 -> RequestBlink(false), 1 waits for the blink to end
+        // (IsEyeBlinking), 2 = done for this key.
+        private void RequestKeyBlink()
+        {
+            if (_blinkRno == 0)
+            {
+                _blinkRno = 1;
+                _eyeBlinkController?.RequestBlink(false);
+            }
+            else if (_blinkRno == 1)
+            {
+                if (!IsEyeBlinking())
+                {
+                    _blinkRno = 2;
+                }
+            }
+
+            if (_blinkRno <= 1)
+            {
+                _isRepressAutoBlink = true;
+            }
         }
 
         // LiveFaceController.AlterUpdateAutoLip @0x7ffd59241fd0. Called by the lip-sync delegate

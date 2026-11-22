@@ -16,11 +16,16 @@ namespace Gallop
     //   DrivenKeyComponent.GetInterpolateRate                                                        RVA 0x4AEBC60
     //   DrivenKeyComponent.SetInterpolateType (ear slot +0x248)                                      RVA 0x4AF2450
     //
-    // NOT ported (data/semantics not recovered): the EarWeightJob / WeightCalcJob TRS blend (SetTRS / CalcTRS /
-    // AddTRS / BlendTRS, RVA 0x4AF78B0 / 0x4AF75B0) that turns these weights into bone transforms. The viewer keeps
-    // applying the resulting weights through FaceDrivenKeyTarget's additive morphs. The blend-face list bookkeeping
-    // (AddBlendEar / ClearEarBlendFaces / GetEarTypes) is not needed because BlendProgrammable only changes types whose
-    // previous and target weights differ, which is the same set the list holds on this path.
+    // The EarWeightJob / WeightCalcJob TRS blend that turns these weights into bone transforms is ported in
+    // EarWeightJob.cs / WeightCalcJob.cs and driven by EarWeightJobRunner. The blend-face list bookkeeping
+    // (AddBlendEar / ClearEarBlendFaces / GetEarTypes) is not ported: BlendProgrammable only changes types whose
+    // previous and target weights differ, which is the same set the list holds on this path, and the runner rebuilds the
+    // job's face list from the weights.
+    //
+    // WeightGroupBase.Initialize (RVA 0x4AFA8B0) sets every segment of EarType.Base to 1.0 in the current and previous
+    // weights (the Base face is the reference pose the job accumulates the other faces onto). The target weights of Base
+    // are not set by the game; they start at 1.0 here as well so that BlendProgrammable, which scans every type instead of
+    // the game's face list, leaves Base alone (documented adaptation).
     public class EarWeightGroup
     {
         public const int EAR_TYPE_NUM = 17;   // Gallop.EarType Base..Roll
@@ -40,6 +45,22 @@ namespace Gallop
         // DrivenKeyComponent +0x130: blend-face list of the ear group, assigned at the end of SetEar. While it is null
         // BlendProgrammable does not ramp the ears.
         private bool _hasBlendList;
+
+        public EarWeightGroup()
+        {
+            InitBaseWeights();
+        }
+
+        // WeightGroupBase.Initialize RVA 0x4AFA8B0 (see the class comment).
+        private void InitBaseWeights()
+        {
+            for (int seg = 0; seg < SIDE_NUM * WEIGHT_SIZE; seg++)
+            {
+                WeightArray[0, seg] = 1f;
+                PrevWeightArray[0, seg] = 1f;
+                TargetWeightArray[0, seg] = 1f;
+            }
+        }
 
         // EarWeightGroup.SetPrevWeight(int, bool) RVA 0x4AF73B0.
         // Note: the game reads CurrentTimeArray/DurationTimeArray at [side] here (not [side * 3]); kept as is.
@@ -176,6 +197,7 @@ namespace Gallop
             System.Array.Clear(PrevWeightArray, 0, PrevWeightArray.Length);
             System.Array.Clear(DurationTimeArray, 0, DurationTimeArray.Length);
             System.Array.Clear(CurrentTimeArray, 0, CurrentTimeArray.Length);
+            InitBaseWeights();
             IsCalcWeight = false;
             EarInterpolateType = DrivenKeyComponent.InterpolateType.Linear;
             _hasBlendList = false;

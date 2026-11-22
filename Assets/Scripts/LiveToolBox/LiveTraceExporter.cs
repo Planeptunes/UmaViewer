@@ -77,6 +77,7 @@ public static partial class LiveTraceExporter
     private static Transform _root;
     private static int _step = 30;
     private static int _builtFrame = int.MinValue;
+    private static int _hierarchyCount;   // nodes under the Director root at the last refresh (rebuild trigger)
     private static int _lastSampleFrame = int.MinValue;
     private static int _listed;
     private static readonly Dictionary<string, int> NodeIds = new Dictionary<string, int>();
@@ -203,7 +204,10 @@ public static partial class LiveTraceExporter
         _lastSampleFrame = frame;
         try
         {
-            if (Nodes.Count == 0 || frame < _builtFrame || frame - _builtFrame >= 600) RefreshNodes(frame);
+            // Also rebuilt when the hierarchy size changed (the character models are created after the first samples),
+            // otherwise the skeletons would never enter the log.
+            if (Nodes.Count == 0 || frame < _builtFrame || frame - _builtFrame >= 600
+                || _root.GetComponentsInChildren<Transform>(true).Length != _hierarchyCount) RefreshNodes(frame);
             WriteChanges(frame);
         }
         catch (Exception ex)
@@ -228,7 +232,22 @@ public static partial class LiveTraceExporter
     private static void RefreshNodes(int frame)
     {
         var list = new List<KeyValuePair<Transform, string>>();
-        Collect(_root, "", 0, new Dictionary<string, int>(), list);
+        var seenPaths = new Dictionary<string, int>();
+        Collect(_root, "", 0, seenPaths, list);
+        _hierarchyCount = list.Count;
+        // The viewer's LiveTimelineControl (character position key without ParentObjectName) detaches each character
+        // container from its CharacterObjectN, so the skeletons are not under the Director. The game keeps them at
+        // <Director>/CharacterObjectN/chara_*, so log them under that virtual path.
+        var dir = Gallop.Live.Director.instance;
+        if (dir != null && dir.CharaContainerScript != null)
+        {
+            for (int i = 0; i < dir.CharaContainerScript.Count; i++)
+            {
+                var c = dir.CharaContainerScript[i];
+                if (c == null || c.transform.IsChildOf(_root)) continue;
+                Collect(c.transform, _root.name + "/CharacterObject" + i, 1, seenPaths, list);
+            }
+        }
         Nodes.Clear();
         foreach (var node in list)
         {

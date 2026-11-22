@@ -333,6 +333,9 @@ public class UmaContainerCharacter : UmaContainer
     // SkirtParamDataAsset pendiente de crear (el modelo no estaba montado al cargar la falda).
     private SkirtParamDataAsset _pendingSkirtParam;
     // Acumulador del paso fijo del solver (30/60 Hz), no el del render.
+    // Viewer-only frame-rate adaptation (see AlterLateUpdateRuntime): real frame time not yet spent in whole solver steps.
+    private float _cySpringStepAccumulator;
+    private const int CySpringMaxStepsPerFrame = 4;
     // CySpringUpdater._skipFrame (+0x81).
     private bool _cySpringSkipFrame;
     // Estabilidad del modelo antes de ligar (ver IsModelReadyForCySpringBind).
@@ -1593,12 +1596,12 @@ public class UmaContainerCharacter : UmaContainer
                 _cySpringController.Resume();
                 _cySpringPausedByLive = false;
             }
-            // KNOWN LIMITATION (parked on purpose, not to be fixed): like the game, the solver runs ONCE per rendered
-            // frame and is tuned for 60 fps. Below 60 fps (the viewer often runs at ~50 in real time) the skirt, hair
-            // and tail move differently from the game (live 1001 f1300-1400, characters going down the stairs: the
-            // skirts lift too much; clearly visible at 30 fps). At the Motion Probe's fixed 1/60 step the chains match the
-            // game (cloth_skirt finalRot ~2 deg, tips 1-3 cm). Above 60 fps (e.g. 120 fps record) no problem was seen.
-            // Details: Logs/261118-Live 1001 skirt raised on stairs (fps dependent).md
+            // The game steps the solver ONCE per rendered frame, tuned for 60 fps; the viewer used to do the same and
+            // parked the frame-rate dependence as a known limitation (live 1001 f1300-1400 skirts, Logs/261118-Live 1001
+            // skirt raised on stairs (fps dependent).md). Reopened on 22 Nov 2026 (ears with the virtual parent show it at
+            // 90 and 30 fps; the viewer records at 120 fps): see the viewer-only fixed-step adaptation just below, which
+            // reverts the earlier decision to keep the game's one step per frame at any frame rate.
+            if (holdPause) _cySpringStepAccumulator = 0f;
             float dt = LiveProbeMotion.StepActive ? LiveProbeMotion.StepDelta : Time.deltaTime;
 
             int mode = (int)_cySpringController.UpdateMode;
@@ -1607,11 +1610,51 @@ public class UmaContainerCharacter : UmaContainer
                               (mode == (int)CySpringController.SpringUpdateMode.SkipFrame ||
                                mode == (int)CySpringController.SpringUpdateMode.SkipFramePostAlways);
 
+            // VIEWER-ONLY frame-rate adaptation (decided by the user: the viewer is mainly used to record at 120 fps, and
+            // the game has no 120 fps live: LiveModelController.c:2532 only picks Mode60FPS at 60 fps and ModeNormal
+            // otherwise, always one solver step per frame). The solver is calibrated for a fixed step
+            // (CySpringController.TargetCySpringFPS: 1/60 s in Mode60FPS), so the real frame time is turned into whole
+            // fixed steps: 120 fps -> a step every other frame, 90 fps -> 0 / 1 / 1, 30 fps -> 2 steps per frame. On a
+            // frame without a step the last solver result is re-applied (CySpringController.PostSpringAll, the same call
+            // the game's SkipFramePostAlways mode makes on its skipped frames). At exactly 60 fps this is the game's
+            // one step per frame. Not used for the Motion Probe steps (already a fixed 1/60 s) nor in the skip modes.
+            bool fixedStep = !LiveProbeMotion.StepActive && !isSkipMode && dt > 1e-6f;
+            int fixedSteps = 1;
+            if (fixedStep)
+            {
+                float stepTime = 1f / _cySpringController.TargetCySpringFPS;
+                // 0.1 step of tolerance: Time.deltaTime jitters around 1/60 and must not drop or double steps at 60 fps.
+                _cySpringStepAccumulator = Mathf.Min(_cySpringStepAccumulator + dt, stepTime * (CySpringMaxStepsPerFrame + 1));
+                fixedSteps = Mathf.Min((int)(_cySpringStepAccumulator / stepTime + 0.1f), CySpringMaxStepsPerFrame);
+                _cySpringStepAccumulator -= fixedSteps * stepTime;
+                dt = stepTime;
+            }
+
             // BeginSimulation: TryUpdateWarmUp, then BeginSimulation(dt) when dt > 1e-6 (DAT_7ffd5a640d34); with a
             // smaller dt the game runs UpdatePreviousPosture and begins the step ONLY when the owner's virtual bool
             // get_IsForcedPostSpring (ModelControllerBehaviour vtable slot 10, ModelController override reading
             // _isForcedPostSpring +0x370) is true; otherwise it does nothing and EndSimulation is skipped.
             bool isBeginSimulation = false;
+            if (fixedStep)
+            {
+                // Frame-rate adaptation (see above): `fixedSteps` whole solver steps of 1 / TargetCySpringFPS.
+                _cySpringController.TryUpdateWarmUp();
+                for (int step = 0; step < fixedSteps; step++)
+                {
+                    _cySpringController.BeginSimulation(dt, false);
+                    _cySpringController.EndSimulation();
+                    isBeginSimulation = true;
+                }
+                // No step this frame: re-apply the last result (the animation has just overwritten the spring bones).
+                if (fixedSteps == 0)
+                    _cySpringController.PostSpringAll();
+                // CySpringUpdater.EndSimulation @0x7ffd5957a310 fires its after-end event after the step: the handler is
+                // DrivenKeyComponent.ApplyVirtualParentTransform (Ear_02 / Ear_03 follow the spring ear chain).
+                if (FaceDrivenKeyTarget != null) FaceDrivenKeyTarget.ApplyVirtualParentTransform();
+                _cySpringController.TryUpdateWarmUp();
+            }
+            else
+            {
             if (!(isSkipMode && _cySpringSkipFrame))
             {
                 _cySpringController.TryUpdateWarmUp();
@@ -1640,8 +1683,15 @@ public class UmaContainerCharacter : UmaContainer
             else
             {
                 if (isBeginSimulation)
+                {
                     _cySpringController.EndSimulation();
+                    // CySpringUpdater.EndSimulation @0x7ffd5957a310: right after CySpringController.EndSimulation the
+                    // game fires its after-end event, whose handler is DrivenKeyComponent.ApplyVirtualParentTransform
+                    // (Ear_02 / Ear_03 follow the spring ear chain).
+                    if (FaceDrivenKeyTarget != null) FaceDrivenKeyTarget.ApplyVirtualParentTransform();
+                }
                 _cySpringController.TryUpdateWarmUp();
+            }
             }
 
             // AfterEndSimulation: skip-frame toggle, then SkirtController.UpdateSkirt with

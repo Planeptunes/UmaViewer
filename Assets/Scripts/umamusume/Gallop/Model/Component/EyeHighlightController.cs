@@ -397,6 +397,13 @@ namespace Gallop.Model.Component
 
         public bool IsPlayAnimation() { return _currentState != 0; }
 
+        // The attribute test of EyeBlinkController.IsSuppressEyeBlink (@0x7ffd5957dfe0): HIGHLIGHTANIMATION_ARRAY
+        // [_currentState (+0x78)].attribute has bit 2 (Twinkle's EyeOpeningOnly) -> no blink while it plays.
+        public bool IsSuppressEyeBlink()
+        {
+            return _currentState >= 0 && _currentState < PARAM_ATTRIBUTE.Length && (PARAM_ATTRIBUTE[_currentState] & 2) != 0;
+        }
+
         /// <summary>True while a state plays or a fade is still running (the eye pass has to keep re-running).</summary>
         public bool IsBusy => _currentState != 0 || _interpNeed;
 

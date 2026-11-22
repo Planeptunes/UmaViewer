@@ -31,8 +31,9 @@ namespace Gallop
     // (both constants verified in GameAssembly_jp_dumped.dll; the class constants are
     // DrivenKeyComponent.TRANSLATE_TO_UNITY_POSITION = -100 and ..._VALUE = 100, global dump.cs.)
     // The game then turns the weights into ear bone transforms with DrivenKeyComponent.EarWeightJob
-    // (SetTRS/CalcTRS/AddTRS/BlendTRS); that job is NOT ported (see EarWeightGroup header), so in
-    // the viewer the weights stop at EarWeightGroup.WeightArray.
+    // (SetTRS/CalcTRS/AddTRS/BlendTRS); that job is ported in EarWeightJob.cs and driven by
+    // EarWeightJobRunner for the characters' facial update (FaceDrivenKeyTarget). The mini
+    // characters do not run it: their weights stop at EarWeightGroup.WeightArray.
     //
     // NOT ported (unused by the mini timeline path or not decodable):
     //   - PlayEar's weight > 0 blend-list branch (EarWeightGroup.GetEarTypes bookkeeping): the

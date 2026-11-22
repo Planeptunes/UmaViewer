@@ -508,24 +508,51 @@ namespace Gallop
             ApplyRotationEar();
         }
 
-        // EarWeightGroup weights -> ear morphs. The game's EarWeightJob / WeightCalcJob TRS blend (SetTRS / CalcTRS /
-        // AddTRS / BlendTRS, RVA 0x4AF78B0 / 0x4AF75B0) is not ported (see EarWeightGroup header): the viewer applies
-        // the weights through the additive facial_target morphs instead (documented adaptation). Morph k of
-        // leftEarMorph/rightEarMorph is EarType k + 1 (Initialize skips EarType.Base); EarType.Base (index 0) is the
-        // reference pose of the additive morphs (FacialReset target), so its weight is never applied directly.
+        // EarWeightGroup weights -> ear bone TRS: the game's EarWeightJob (SetTRS / CalcTRS / AddTRS / BlendTRS, RVA
+        // 0x4AF78B0 / 0x4AF75B0) ported in EarWeightJob.cs and run by EarWeightJobRunner (see its header). The ear bones
+        // are written by the job, not by the viewer's additive morph pass (ChangeMorphEar stays for the viewer UI only).
+        private EarWeightJobRunner _earJobRunner;
+
         private void ApplyEarWeights()
         {
-            // All WEIGHT_SIZE segments hold the same value on this path: DrivenKeyComponent_SetEar writes them equal.
-            const int seg = 0;
-            for (int type = 1; type < EarWeightGroup.EAR_TYPE_NUM; type++)
+            if (_earJobRunner == null)
             {
-                // LiveFaceController.SetEar passes the left ear with side 1 and the right ear with side 0.
-                float weightL = _earWeightGroup.WeightArray[type, 1 * EarWeightGroup.WEIGHT_SIZE + seg];
-                float weightR = _earWeightGroup.WeightArray[type, 0 * EarWeightGroup.WEIGHT_SIZE + seg];
-                int morphIndex = type - 1;
-                if (morphIndex < leftEarMorph.Count) leftEarMorph[morphIndex].weight = weightL;
-                if (morphIndex < rightEarMorph.Count) rightEarMorph[morphIndex].weight = weightR;
+                _earJobRunner = new EarWeightJobRunner(_earTarget);
+                RegisterEarVirtualParents();
             }
+            _earJobRunner.Apply(_earWeightGroup);
+        }
+
+        // ModelController.InitDrivenKey @0x7ffd59674700: DrivenKeyComponent.SetVirtualParentTransform (0x4AF27F0) for the
+        // second and third ear bone of each side, following the CySpring ear chain. Group 1 = left, 0 = right (as
+        // LiveFaceController.SetEar). The names are the values the game passes (read from the game at those calls):
+        //   group 1: Ear_02_L (root Sp_He_Ear0_L_00, parent Sp_He_Ear0_L_01), Ear_03_L (root _01, parent _02)
+        //   group 0: Ear_02_R (root Sp_He_Ear0_R_00, parent Sp_He_Ear0_R_01), Ear_03_R (root _01, parent _02)
+        private void RegisterEarVirtualParents()
+        {
+            if (_earJobRunner == null || !_earJobRunner.IsValid || Container == null) return;
+            var all = Container.transform.GetComponentsInChildren<Transform>(true);
+            Transform Find(string name)
+            {
+                foreach (var t in all) if (t != null && t.name == name) return t;
+                return null;
+            }
+
+            var entries = new[]
+            {
+                (group: 1, target: "Ear_02_L", root: "Sp_He_Ear0_L_00", parent: "Sp_He_Ear0_L_01"),
+                (group: 1, target: "Ear_03_L", root: "Sp_He_Ear0_L_01", parent: "Sp_He_Ear0_L_02"),
+                (group: 0, target: "Ear_02_R", root: "Sp_He_Ear0_R_00", parent: "Sp_He_Ear0_R_01"),
+                (group: 0, target: "Ear_03_R", root: "Sp_He_Ear0_R_01", parent: "Sp_He_Ear0_R_02"),
+            };
+            foreach (var e in entries)
+                _earJobRunner.SetVirtualParentTransform(e.group, e.target, Find(e.root), Find(e.parent));
+        }
+
+        // DrivenKeyComponent.ApplyVirtualParentTransform (0x4AE9560); called by the CySpring step right after EndSimulation.
+        public void ApplyVirtualParentTransform()
+        {
+            _earJobRunner?.ApplyVirtualParentTransform();
         }
 
         public void ChangeMorphEffect()
@@ -1093,6 +1120,14 @@ namespace Gallop
             // ramps (LiveFaceController.AdvanceFaceRamps), then the weights are applied to the additive morphs.
             // DrivenKeyComponent.PostJob (@0x7ffd58e702a0) order: the ear clip (UpdateEarWeight) first, then
             // BlendProgrammable.
+            // EyeBlinkController.BeforeApplyDrivenKey @0x7ffd5957d350: once per frame, after the facial keys and before
+            // the driven keys (the weight ramps below) are applied. Its delta is the owner's delta time, which in the game
+            // is Time.deltaTime (ModelController.get_DeltaTime; _isEnabledOriginalDeltaTime is off in a live), NOT the
+            // timeline time: seeking or dragging the slider must not feed the blink timer. Time.deltaTime already follows
+            // the video speed (Time.timeScale). The game pauses with the components' _isPause; the viewer pauses by
+            // freezing the timeline (Director.IsPlaybackPaused, also set while dragging the slider).
+            bool blinkPaused = Gallop.Live.Director.IsPlaybackPaused && !LiveProbeMotion.StepActive;
+            _liveFaceController.UpdateEyeBlink(LiveProbeMotion.Delta(Time.deltaTime), blinkPaused);
             _earDrivenKey?.UpdateEarLive(earDeltaTime);
             if (rampDeltaTime > 0f)
             {
@@ -1111,7 +1146,6 @@ namespace Gallop
             }
 
             ApplyEarWeights();
-            ChangeMorphEar();
 
             // Eye track. In the game this runs in the facial delegate AFTER AlterUpdateFacialNew
             // (Director.<InitializeTimeline>b__476_3 RVA 0x4E84230): the key's rates feed
@@ -1138,6 +1172,15 @@ namespace Gallop
                     _eyeTraceL.SetDurationTime(eyeTrackKey.time * 0.016666668f, (int)eyeTrackKey.interpolateType);
                     _eyeTraceKeyFrame = eyeTrackKey.frame;
                 }
+                // EyeBlinkController.DisableDelayedTracking (while the eyes open): both EyeTraceObjects restart their
+                // smoothing with a zero duration, i.e. the aim is followed without delay (the same writes as
+                // EyeTraceObject.SetDurationTime(0, 0): +0x54 on, previous offset = offset, +0x58/+0x5C/+0x60 zero). The
+                // blink runs after the eye track key handling above in the game's frame, hence the pending flag.
+                if (_eyeTraceDisableDelayed)
+                {
+                    _eyeTrace.SetDurationTime(0f, 0);
+                    _eyeTraceL.SetDurationTime(0f, 0);
+                }
                 // EyeTraceController.AfterEndCySpringSimulation @0x7ffd59582f10: while no eye has a duration time the step is
                 // deltaTime / (DeltaTimeFactor (+0x50, default 1.0, ctor) / Application.targetFrameRate).
                 bool durationRunning = _eyeTrace.IsEnabledDurationTime || _eyeTraceL.IsEnabledDurationTime;
@@ -1147,7 +1190,11 @@ namespace Gallop
                 Vector2 offR = _eyeTrace.Advance(GetTimelineEyeTrackOffset(eyeTrackKey, false, durationRunning), eyeDt);
                 ApplyEyeTraceOffset(offL, offR);
             }
+            _eyeTraceDisableDelayed = false;
         }
+
+        // Set by EyeBlinkController.DisableDelayedTracking for the current frame (see the eye track block above).
+        private bool _eyeTraceDisableDelayed;
 
         // Port of the key-rate handling of the facial delegate (Director.<InitializeTimeline>b__476_3
         // RVA 0x4E84230) and the aim + rate section of EyeTraceObject.AlterLateUpdate (RVA 0x52055F0):
@@ -1507,6 +1554,22 @@ namespace Gallop
                 {
                     morphs[i].weight = weights[i + 1];
                 }
+            }
+
+            public void DisableDelayedEyeTracking()
+            {
+                _target._eyeTraceDisableDelayed = true;
+            }
+
+            public bool IsEyeHighlightSuppressingBlink()
+            {
+                return _target.EyeHighlight != null && _target.EyeHighlight.IsSuppressEyeBlink();
+            }
+
+            // ModelController.InitEyeBlinkController @0x7ffd59674b00: IsDisableByOverride = FaceOverrideData.IsDisableEyeBlink.
+            public bool IsEyeBlinkDisabledByOverride
+            {
+                get { return _target.Container != null && _target.Container.FaceOverrideData != null && _target.Container.FaceOverrideData.IsDisableEyeBlink; }
             }
 
             public void ApplyParts(FaceGroupType type)
